@@ -18,9 +18,13 @@ function getQueue() {
 
 /** Enqueues a catalog-sync job. Uses a deterministic job id
  * (`catalogSyncJobId`) so a burst of repeat triggers (e.g. Shopify
- * redelivering the same webhook) collapses into one queued job rather than
- * piling up duplicate work — BullMQ treats adding a job with an id that's
- * still active/waiting as a no-op. */
+ * redelivering the same webhook) collapses into one in-flight job rather
+ * than piling up duplicate work — BullMQ treats adding a job with an id
+ * that's still waiting/active as a no-op. Once that job finishes, the same
+ * id is free again for the next legitimate sync — see
+ * `lib/queue/queue.server.ts`'s doc comment for why that's safe (its
+ * `removeOnComplete`/`removeOnFail` defaults are what make reuse possible;
+ * without them this would silently stop syncing after the first run). */
 export async function enqueueCatalogSync(payload: CatalogSyncJobPayload): Promise<void> {
   await getQueue().add(payload.type, payload, { jobId: catalogSyncJobId(payload) });
 }

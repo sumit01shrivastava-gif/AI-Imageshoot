@@ -31,11 +31,19 @@ export async function markSyncStarted(shop: string): Promise<void> {
   });
 }
 
-export async function markSyncSucceeded(shop: string): Promise<void> {
+/**
+ * `syncedAt` must be the timestamp the sync *started* at, not when it
+ * finished — see services/products/sync.server.ts's `runCatalogSync` for
+ * why (using completion time as the next incremental sync's watermark
+ * opens a race window that can permanently skip products edited while a
+ * sync was running). This function only persists whatever timestamp the
+ * caller hands it; it doesn't decide that policy.
+ */
+export async function markSyncSucceeded(shop: string, syncedAt: Date): Promise<void> {
   await prisma.shopSyncState.upsert({
     where: { shop },
-    create: { shop, status: "IDLE", lastSyncedAt: new Date() },
-    update: { status: "IDLE", lastSyncedAt: new Date(), lastError: null },
+    create: { shop, status: "IDLE", lastSyncedAt: syncedAt },
+    update: { status: "IDLE", lastSyncedAt: syncedAt, lastError: null },
   });
 }
 

@@ -48,6 +48,25 @@ function fakeProductsClient(pages: Page[], onQuery?: (variables: Record<string, 
   };
 }
 
+/** A products-page client whose response is delayed, so a test can tell
+ * "watermark stamped at call start" apart from "watermark stamped at call
+ * completion" by measuring elapsed time. */
+function slowFakeProductsClient(delayMs: number, pages: Page[]): AdminGraphQLClient {
+  let call = 0;
+  return {
+    graphql: async () => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const page = pages[call++] ?? { nodes: [], hasNextPage: false, endCursor: null };
+      return new Response(
+        JSON.stringify({
+          data: { products: { pageInfo: { hasNextPage: page.hasNextPage, endCursor: page.endCursor }, nodes: page.nodes } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  };
+}
+
 function fakeSingleProductClient(node: RawShopifyProductNode | null): AdminGraphQLClient {
   return {
     graphql: async () =>
@@ -130,6 +149,89 @@ describe("runCatalogSync", () => {
     const state = await prisma.shopSyncState.findUniqueOrThrow({ where: { shop: SHOP } });
     expect(state.status).toBe("FAILED");
     expect(state.lastError).not.toContain("ECONNRESET");
+  });
+});
+
+describe("runCatalogSync watermark semantics", () => {
+  it("persists the sync's START time as the watermark, not its completion time", async () => {
+    // A deliberately slow fetch so "start" and "completion" are far enough
+    // apart (well beyond DB/clock jitter) to tell them apart reliably.
+    const DELAY_MS = 150;
+    const client = slowFakeProductsClient(DELAY_MS, [{ nodes: [], hasNextPage: false, endCursor: null }]);
+
+    const callStart = Date.now();
+    await runCatalogSync(client, SHOP, "full");
+    const callEnd = Date.now();
+
+    const state = await prisma.shopSyncState.findUniqueOrThrow({ where: { shop: SHOP } });
+    const watermark = state.lastSyncedAt!.getTime();
+
+    // The watermark must fall within this call's execution window...
+    expect(watermark).toBeGreaterThanOrEqual(callStart);
+    expect(watermark).toBeLessThanOrEqual(callEnd);
+    // ...and, specifically, close to when the call STARTED, not when it
+    // finished — proving completion time isn't what got persisted.
+    expect(watermark - callStart).toBeLessThan(DELAY_MS / 2);
+    expect(callEnd - watermark).toBeGreaterThanOrEqual(DELAY_MS / 2);
+  });
+
+  it("re-covers its own run window on the next incremental sync, so a product edited mid-run is never permanently skipped", async () => {
+    // Simulates: sync #1 starts, (conceptually) a product is edited on
+    // Shopify partway through, sync #1 finishes. Sync #2 (incremental)
+    // must query from sync #1's START, not its completion — otherwise the
+    // mid-run edit's `updated_at` (necessarily earlier than sync #1's
+    // completion time) would fall before sync #2's floor and be skipped
+    // forever. This test asserts that floor precisely.
+    const DELAY_MS = 150;
+    const client1 = slowFakeProductsClient(DELAY_MS, [{ nodes: [], hasNextPage: false, endCursor: null }]);
+
+    const sync1Start = Date.now();
+    await runCatalogSync(client1, SHOP, "full");
+
+    const queries: Record<string, unknown>[] = [];
+    const client2 = fakeProductsClient(
+      [{ nodes: [], hasNextPage: false, endCursor: null }],
+      (variables) => queries.push(variables),
+    );
+    await runCatalogSync(client2, SHOP, "incremental");
+
+    const flooredAt = new Date((queries[0].query as string).replace("updated_at:>='", "").replace("'", "")).getTime();
+    // The floor used for sync #2 must be at/near sync #1's START, not its
+    // completion — i.e. well before sync #1's ~150ms duration elapsed.
+    expect(flooredAt - sync1Start).toBeLessThan(DELAY_MS / 2);
+  });
+
+  it("does not advance the watermark on a failed sync — a prior successful watermark is preserved", async () => {
+    const priorWatermark = new Date("2026-01-05T00:00:00Z");
+    await prisma.shopSyncState.create({
+      data: { shop: SHOP, status: "IDLE", lastSyncedAt: priorWatermark },
+    });
+
+    const failingClient: AdminGraphQLClient = {
+      graphql: async () => {
+        throw new Error("simulated Shopify failure");
+      },
+    };
+
+    await expect(runCatalogSync(failingClient, SHOP, "incremental")).rejects.toThrow();
+
+    const state = await prisma.shopSyncState.findUniqueOrThrow({ where: { shop: SHOP } });
+    expect(state.status).toBe("FAILED");
+    expect(state.lastSyncedAt?.toISOString()).toBe(priorWatermark.toISOString());
+  });
+
+  it("advances the watermark forward on each successful sync", async () => {
+    const client1 = fakeProductsClient([{ nodes: [], hasNextPage: false, endCursor: null }]);
+    await runCatalogSync(client1, SHOP, "full");
+    const first = (await prisma.shopSyncState.findUniqueOrThrow({ where: { shop: SHOP } })).lastSyncedAt!;
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const client2 = fakeProductsClient([{ nodes: [], hasNextPage: false, endCursor: null }]);
+    await runCatalogSync(client2, SHOP, "incremental");
+    const second = (await prisma.shopSyncState.findUniqueOrThrow({ where: { shop: SHOP } })).lastSyncedAt!;
+
+    expect(second.getTime()).toBeGreaterThan(first.getTime());
   });
 });
 

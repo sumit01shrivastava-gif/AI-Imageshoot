@@ -44,12 +44,54 @@ const GENERIC_SYNC_FAILURE_MESSAGE =
  * `mode: "incremental"` scopes the Shopify query to `updated_at >=` the
  * shop's last successful sync; falls back to a full sync if there isn't
  * one yet.
+ *
+ * ## Watermark semantics (the "next incremental sync's floor")
+ *
+ * `syncStartedAt` is captured *before* this run does anything, and — only
+ * on success — is what gets persisted as the new watermark, NOT the time
+ * the run finished. This is deliberate, not an oversight:
+ *
+ * Picture recording the completion time instead. A sync starts at T1 and
+ * takes a few minutes to page through a large catalog, finishing at T2. A
+ * merchant edits a product on Shopify at T1.5 (mid-run, after this run
+ * already fetched the page that product would have been on). If we
+ * recorded T2 as the watermark, the *next* incremental sync would query
+ * `updated_at >= T2` — but that product's `updated_at` is T1.5, which is
+ * earlier than T2, so it would never match `>= T2` on any future sync. The
+ * edit is silently, permanently lost.
+ *
+ * Recording `syncStartedAt` (T1) instead means the next sync queries
+ * `updated_at >= T1` — which necessarily re-covers this entire run's
+ * duration (T1 through T2) as a safety overlap, so nothing that changed
+ * while this run was executing can fall into a gap between two sync
+ * windows. The cost is bounded, deliberate re-processing of this run's own
+ * window on the next pass — safe because every upsert here is idempotent
+ * (see db/repositories/shopify-product.repository.ts's `upsertSyncedProduct`).
+ *
+ * The `>=` (inclusive) comparison in the Shopify query itself (see
+ * services/products/shopify-queries.server.ts's `fetchProductsPage`) means
+ * a product updated at exactly the watermark instant is safely
+ * re-processed rather than dropped by an off-by-one boundary — the same
+ * "prefer redundant work over a missed update" bias.
+ *
+ * A failed run (see the `catch` below) never advances the watermark —
+ * `markSyncFailed` doesn't touch `lastSyncedAt` — so a failure can't lose
+ * updates either; the next attempt (manual retry or the next incremental
+ * run) still starts from the last *successful* run's watermark.
+ *
+ * Concurrency: only one `full-sync` job can be in flight per shop at a
+ * time (see `services/products/sync-job.server.ts`'s deterministic
+ * `full-sync:{shop}` job id + `lib/queue/queue.server.ts`'s dedup
+ * semantics), so two calls to this function can't race each other's
+ * watermark writes for the same shop.
  */
 export async function runCatalogSync(
   client: AdminGraphQLClient,
   shop: string,
   mode: SyncMode,
 ): Promise<SyncResult> {
+  const syncStartedAt = new Date();
+
   await markSyncStarted(shop);
 
   const previousState = mode === "incremental" ? await getSyncState(shop) : null;
@@ -76,7 +118,7 @@ export async function runCatalogSync(
       after = page.endCursor;
     }
 
-    await markSyncSucceeded(shop);
+    await markSyncSucceeded(shop, syncStartedAt);
     logger.info("products.sync.completed", { shop, mode: effectiveMode, productsSynced, pagesFetched });
     return { mode: effectiveMode, productsSynced, pagesFetched };
   } catch (error) {

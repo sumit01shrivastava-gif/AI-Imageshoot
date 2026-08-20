@@ -6,15 +6,38 @@ import { requireAdminContext } from "../../services/shopify";
 import { findProductForShop } from "../../db/repositories/shopify-product.repository";
 import { fetchProductVariants, type ProductVariant } from "../../services/products/shopify-queries.server";
 import { logger } from "../../lib/logging/logger.server";
+import { TenantMismatchError } from "../../lib/auth";
 import { useSelection } from "../components/selection-context";
 import { SelectionBar } from "../components/selection-bar";
+
+const NOT_FOUND_RESPONSE = () => new Response("Product not found", { status: 404 });
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, context } = await requireAdminContext(request);
 
-  const product = await findProductForShop(context, params.id!);
+  let product: Awaited<ReturnType<typeof findProductForShop>>;
+  try {
+    product = await findProductForShop(context, params.id!);
+  } catch (error) {
+    if (error instanceof TenantMismatchError) {
+      // A real product id, just not one belonging to this shop — e.g. a
+      // merchant editing the URL to probe another tenant's data. Respond
+      // exactly like "doesn't exist" (same status, same generic message)
+      // so this is never distinguishable from a not-found id — see the
+      // Phase 0/1 security audit ("existence oracle" finding). The
+      // specific detail (which shop attempted this, which id) stays
+      // server-side only, in this log line.
+      logger.warn("products.detail.tenant_mismatch", {
+        shop: context.shop,
+        requestedId: params.id,
+      });
+      throw NOT_FOUND_RESPONSE();
+    }
+    throw error;
+  }
+
   if (!product) {
-    throw new Response("Product not found", { status: 404 });
+    throw NOT_FOUND_RESPONSE();
   }
 
   let variants: { count: number; variants: ProductVariant[] } | null = null;

@@ -35,4 +35,29 @@ describe("catalogSyncJobId", () => {
 
     expect(ids.size).toBe(5);
   });
+
+  it("never contains a ':' — BullMQ rejects a custom jobId containing ':' unless it splits into exactly 3 parts (see bullmq's Job.validateOptions), and Shopify's GraphQL ids (e.g. 'gid://shopify/Product/1') contain one", () => {
+    const ids = [
+      catalogSyncJobId({ type: "full-sync", shop: "a.myshopify.com", mode: "full" }),
+      catalogSyncJobId({
+        type: "product-upsert",
+        shop: "a.myshopify.com",
+        shopifyProductId: "gid://shopify/Product/1",
+      }),
+      catalogSyncJobId({
+        type: "product-delete",
+        shop: "a.myshopify.com",
+        shopifyProductId: "gid://shopify/Product/1",
+      }),
+    ];
+
+    for (const id of ids) {
+      expect(id).not.toContain(":");
+    }
+  });
+
+  it("is not parseable as an integer (BullMQ also rejects that)", () => {
+    const id = catalogSyncJobId({ type: "full-sync", shop: "a.myshopify.com", mode: "full" });
+    expect(Number.isNaN(Number(id))).toBe(true);
+  });
 });
