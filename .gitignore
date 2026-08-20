@@ -1,0 +1,63 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Environment / secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Build output
+/build
+/app/build
+/public/build/
+/public/_dev
+/app/public/build
+/.cache
+.react-router/
+/extensions/*/dist
+
+# Local databases
+/prisma/dev.sqlite
+/prisma/dev.sqlite-journal
+*.sqlite
+*.sqlite-journal
+database.sqlite
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs
+*.log
+
+# Generated / temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+tmp/
+.DS_Store
+
+# Shopify CLI local state
+.shopify/*
+.shopify.lock
+
+# Test / coverage output
+/coverage
+/playwright-report
+/test-results
+/blob-report
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Claude Code local (machine/session-specific) settings — not shared config
+.claude/settings.local.json
+
+# Lockfiles for package managers we don't use (npm is canonical)
+yarn.lock
+pnpm-lock.yaml

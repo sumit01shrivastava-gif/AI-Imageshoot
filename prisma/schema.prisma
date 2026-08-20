@@ -1,0 +1,48 @@
+// AI ImageShoot — Prisma schema
+// Phase 0 (foundation): only the Shopify session table required by
+// @shopify/shopify-app-session-storage-prisma lives here.
+//
+// Domain models (ProductAsset, ProductIdentity, GenerationJob, GenerationResult,
+// GenerationPreset, BrandStyle, ModelPreset, MediaAsset, MediaVersion, UsageRecord,
+// CreditBalance, CreditTransaction, Publication, AuditLog, ...) are intentionally
+// NOT defined yet — they belong to later phases. See docs/database.md and
+// docs/roadmap.md.
+//
+// learn more about Prisma schema: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Required, as-is, by @shopify/shopify-app-session-storage-prisma.
+// Do not rename fields or change types — the session storage adapter
+// depends on this exact shape.
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  // Every session belongs to exactly one shop (tenant). Indexed because
+  // shop-scoped lookups are the foundation of tenant isolation — see
+  // lib/auth/tenant.server.ts and docs/architecture.md.
+  @@index([shop])
+}

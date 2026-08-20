@@ -1,0 +1,33 @@
+# Local development services only — Postgres + Redis to match
+# DATABASE_URL / REDIS_URL in .env.example. Not used in production; the
+# production database/cache are provisioned separately.
+#
+# Usage: docker compose up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_imageshoot
+    ports:
+      # Host port 5433 (not 5432) — this machine already runs another
+      # project's Postgres on 5432. Update DATABASE_URL if you change this.
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      # Host port 6380 (not 6379) — this machine already runs another
+      # project's Redis on 6379. Update REDIS_URL if you change this.
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:
