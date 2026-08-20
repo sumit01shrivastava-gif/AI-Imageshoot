@@ -2,13 +2,15 @@
  * Known queue names.
  *
  * Declared now so the rest of the codebase has one canonical set of names to
- * reference; no job is registered on any of them yet (see workers/README.md).
- * Each will get real producers/processors in a later phase:
+ * reference. Each gets real producers/processors when the phase that needs
+ * it lands:
  *
- *   - "generation"  → AI image generation jobs
- *   - "enhancement" → background removal / cleanup / upscale jobs
- *   - "publishing"  → publishing approved assets back to Shopify
+ *   - "catalog-sync" → Shopify product/media catalog sync (Phase 1) — see
+ *     services/products/sync.server.ts and workers/index.ts
+ *   - "generation"   → AI image generation jobs (future)
+ *   - "enhancement"  → background removal / cleanup / upscale jobs (future)
+ *   - "publishing"   → publishing approved assets back to Shopify (future)
  */
-export const QUEUE_NAMES = ["generation", "enhancement", "publishing"] as const;
+export const QUEUE_NAMES = ["catalog-sync", "generation", "enhancement", "publishing"] as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[number];

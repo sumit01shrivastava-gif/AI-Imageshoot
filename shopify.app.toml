@@ -33,6 +33,23 @@ api_version = "2025-10"
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
+  # Phase 1 — keeps the local catalog sync (ShopifyProduct/ShopifyProductMedia)
+  # up to date. See services/products/sync.server.ts and docs/database.md.
+  # Handled by: /app/routes/webhooks.products.create.tsx
+  [[webhooks.subscriptions]]
+  topics = [ "products/create" ]
+  uri = "/webhooks/products/create"
+
+  # Handled by: /app/routes/webhooks.products.update.tsx
+  [[webhooks.subscriptions]]
+  topics = [ "products/update" ]
+  uri = "/webhooks/products/update"
+
+  # Handled by: /app/routes/webhooks.products.delete.tsx
+  [[webhooks.subscriptions]]
+  topics = [ "products/delete" ]
+  uri = "/webhooks/products/delete"
+
   # Webhooks can have filters
   # Only receive webhooks for product updates with a product price >= 10.00
   # See: https://shopify.dev/docs/apps/build/webhooks/customize/filters

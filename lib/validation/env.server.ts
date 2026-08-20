@@ -55,6 +55,12 @@ const envSchema = z.object({
   AI_PROVIDER_BASE_URL: z.string().optional(),
 
   PORT: z.coerce.number().int().positive().optional(),
+
+  // --- Testing -------------------------------------------------------------
+  // E2E-only opt-in (see services/shopify/admin-context.server.ts). Set only
+  // by playwright.config.ts's webServer env — never in .env/.env.example.
+  // A second, independent check alongside NODE_ENV==="test"; both must hold.
+  ALLOW_E2E_AUTH_BYPASS: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

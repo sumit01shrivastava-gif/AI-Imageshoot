@@ -5,10 +5,14 @@ process from the React Router web server (started with `npm run worker`,
 see `workers/index.ts`), so long-running/CPU- or IO-heavy job processing
 never blocks request handling.
 
-`workers/index.ts` currently starts zero workers: `WORKER_REGISTRY` is
-empty. No queue has a processor yet — see `lib/queue/names.ts` for the
-queue names reserved for later phases (`generation`, `enhancement`,
-`publishing`) and docs/generation-pipeline.md for what each will do.
+`workers/index.ts` registers one worker as of Phase 1: `"catalog-sync"`,
+processed by `services/products/sync-job.server.ts`'s
+`processCatalogSyncJob` (full/incremental catalog sync, and the
+webhook-triggered single-product upsert/delete — see
+docs/shopify-integration.md "Webhooks" and services/products/sync.server.ts).
+`"generation"`, `"enhancement"`, and `"publishing"` (see `lib/queue/names.ts`)
+remain unregistered until the phases that need them; docs/generation-pipeline.md
+describes what each will eventually do.
 
 To add a worker in a later phase:
 

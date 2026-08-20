@@ -5,15 +5,15 @@
  * non-watching run). Separate process from the web server — see README.md
  * in this directory.
  *
- * WORKER_REGISTRY is empty on purpose: no job processing is implemented
- * yet (Step 6 is infrastructure only). This file still boots cleanly and
- * exits/idles sensibly with zero workers registered, so the process is
- * safe to start in any environment today.
+ * `"catalog-sync"` (Phase 1) is the first registered queue — see
+ * services/products/sync-job.server.ts. `"generation"`/`"enhancement"`/
+ * `"publishing"` remain unregistered until the phases that need them.
  */
 import type { Job, Processor } from "bullmq";
 import { closeRedisConnection, createWorker } from "../lib/queue";
 import type { QueueName } from "../lib/queue";
 import { logger } from "../lib/logging/logger.server";
+import { processCatalogSyncJob } from "../services/products/sync-job.server";
 
 interface WorkerRegistration {
   queue: QueueName;
@@ -21,9 +21,7 @@ interface WorkerRegistration {
 }
 
 const WORKER_REGISTRY: WorkerRegistration[] = [
-  // Example of the shape a future registration will take — intentionally
-  // commented out, not implemented:
-  // { queue: "generation", processor: processGenerationJob },
+  { queue: "catalog-sync", processor: processCatalogSyncJob as Processor },
 ];
 
 async function main(): Promise<void> {

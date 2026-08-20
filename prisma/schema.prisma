@@ -1,12 +1,17 @@
 // AI ImageShoot — Prisma schema
-// Phase 0 (foundation): only the Shopify session table required by
-// @shopify/shopify-app-session-storage-prisma lives here.
 //
-// Domain models (ProductAsset, ProductIdentity, GenerationJob, GenerationResult,
-// GenerationPreset, BrandStyle, ModelPreset, MediaAsset, MediaVersion, UsageRecord,
-// CreditBalance, CreditTransaction, Publication, AuditLog, ...) are intentionally
-// NOT defined yet — they belong to later phases. See docs/database.md and
-// docs/roadmap.md.
+// Phase 0 added the Shopify session table required by
+// @shopify/shopify-app-session-storage-prisma.
+//
+// Phase 1 adds the minimum catalog-sync + source-image-selection models:
+// ShopifyProduct, ShopifyProductMedia, ShopSyncState, ImageSelection,
+// ImageSelectionItem. See docs/database.md for the reasoning behind each.
+//
+// Remaining domain models (GenerationJob, GenerationResult, GenerationPreset,
+// BrandStyle, ModelPreset, MediaAsset, MediaVersion, UsageRecord,
+// CreditBalance, CreditTransaction, Publication, AuditLog, ...) are
+// intentionally NOT defined yet — they belong to later phases. See
+// docs/database.md and docs/roadmap.md.
 //
 // learn more about Prisma schema: https://pris.ly/d/prisma-schema
 
@@ -44,5 +49,183 @@ model Session {
   // Every session belongs to exactly one shop (tenant). Indexed because
   // shop-scoped lookups are the foundation of tenant isolation — see
   // lib/auth/tenant.server.ts and docs/architecture.md.
+  @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — Shopify catalog sync + source-image selection
+// ---------------------------------------------------------------------------
+
+// Mirrors Shopify's ProductStatus enum (Admin GraphQL). Kept as our own enum
+// (rather than a raw string) so Prisma/TypeScript catch a mismatch if
+// Shopify's set of values is used incorrectly elsewhere in the app.
+enum ProductStatus {
+  ACTIVE
+  ARCHIVED
+  DRAFT
+}
+
+// Bookkeeping for the catalog synchronization job, one row per shop. Not a
+// mirror of any Shopify object — purely local sync state (see
+// services/products/sync.server.ts and docs/database.md "Sync strategy").
+enum SyncStatus {
+  IDLE
+  SYNCING
+  FAILED
+}
+
+// Local, synchronized copy of the subset of a Shopify product our UI/AI
+// pipeline needs. Shopify remains the source of truth — this row exists for
+// fast, paginated, searchable product listing without hitting the Admin API
+// on every request (see docs/database.md "Why Shopify's catalog isn't fully
+// mirrored" and docs/shopify-integration.md).
+model ShopifyProduct {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  // Shopify's GraphQL global ID, e.g. "gid://shopify/Product/123456789".
+  shopifyProductId String
+
+  title       String
+  handle      String
+  description String        @default("")
+  productType String        @default("")
+  // Shopify's product taxonomy category (Product.category.fullName), where
+  // Shopify has one assigned. Free text — not a foreign key into a local
+  // taxonomy table, since we don't mirror Shopify's taxonomy.
+  category    String?
+  vendor      String        @default("")
+  tags        String[]      @default([])
+  status      ProductStatus
+
+  // Shopify's own timestamps for this product (used to drive incremental
+  // sync — see services/products/sync.server.ts).
+  shopifyCreatedAt DateTime
+  shopifyUpdatedAt DateTime
+
+  // When our local row was last synchronized from Shopify.
+  syncedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  media          ShopifyProductMedia[]
+  selectionItems ImageSelectionItem[]
+
+  // One local row per Shopify product per shop; safe-upsert target for sync.
+  @@unique([shop, shopifyProductId])
+  // Product list filters/sorts by these — see services/products/search.server.ts.
+  @@index([shop, status])
+  @@index([shop, updatedAt])
+  @@index([shop, title])
+}
+
+// One row per synchronized product image. Phase 1 only syncs image media
+// (Shopify's MediaImage) — video/3D/external-video media types aren't
+// meaningful "source images" for the future AI pipeline, so they're not
+// persisted here (see docs/database.md).
+//
+// `originalUrl`/`previewUrl` are Shopify-hosted CDN URLs, stored as
+// references only. CLAUDE.md "Storage rules": Shopify-hosted image URLs are
+// never treated as permanent application-owned assets, and the original
+// image is never modified or overwritten by this app.
+model ShopifyProductMedia {
+  id String @id @default(cuid())
+
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Denormalized alongside productId so a webhook-driven upsert (which only
+  // has Shopify's GraphQL IDs, not our local cuids) can target this table
+  // directly.
+  shopifyProductId String
+  shopifyMediaId   String
+
+  // Shopify's mediaContentType (currently always "IMAGE" — see above).
+  // Left as a string rather than an enum with one member.
+  mediaType String
+
+  // Reference-only Shopify CDN URLs — never our own storage. See model doc
+  // comment above.
+  originalUrl String
+  previewUrl  String?
+
+  width    Int?
+  height   Int?
+  altText  String?
+  // Shopify's media ordering for this product (0-based).
+  position Int     @default(0)
+
+  syncedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  selectionItems ImageSelectionItem[]
+
+  @@unique([shop, shopifyMediaId])
+  @@index([shop, productId, position])
+}
+
+// Bookkeeping for the catalog synchronization job, one row per shop.
+model ShopSyncState {
+  shop String @id
+
+  status       SyncStatus @default(IDLE)
+  lastSyncedAt DateTime?
+  // Merchant-safe summary of the last failure, if any (see CLAUDE.md "Safe
+  // error handling" — no stack traces/internal detail here).
+  lastError    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A merchant's chosen set of source images, captured once (on "Continue")
+// so the next phase has a concrete, server-validated request to consume
+// instead of only ever-transient browser state — see
+// docs/database.md#selection-model and CLAUDE.md's Phase 1 instructions
+// ("do not create the final GenerationJob model yet").
+//
+// Deliberately minimal: no "operation" or "generation configuration" field
+// exists yet, because no operation has been chosen at this point in the
+// flow — those belong to the GenerationJob model a future phase will add.
+model ImageSelection {
+  id   String @id @default(cuid())
+  shop String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items ImageSelectionItem[]
+
+  @@index([shop])
+}
+
+// One selected source image within an ImageSelection. Cascades if the
+// underlying product/media is later removed by sync (e.g. the merchant
+// deleted the product in Shopify before this selection was consumed).
+model ImageSelectionItem {
+  id String @id @default(cuid())
+
+  selectionId String
+  selection   ImageSelection @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  productMediaId String
+  productMedia   ShopifyProductMedia @relation(fields: [productMediaId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([selectionId, productMediaId])
   @@index([shop])
 }
