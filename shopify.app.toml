@@ -10,9 +10,14 @@ embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# Minimal scope for the foundation. Product read/write scopes will be
-# extended in later phases as import/publish features are built.
-scopes = "write_products"
+# Phase 1 (catalog sync, product/image browsing, source-image selection) is
+# entirely read-only against the Shopify Admin API — see
+# docs/shopify-integration.md "Access scopes". `write_products` is not
+# requested; it will be added, deliberately and with its own merchant
+# consent flow, only when a later phase publishes generated media back to
+# Shopify. See tests/unit/shopify-scope-safety.test.ts for the regression
+# guard on this.
+scopes = "read_products"
 
 [auth]
 redirect_urls = [ "https://example.com/auth/callback" ]

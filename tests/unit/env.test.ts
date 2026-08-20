@@ -5,7 +5,7 @@ const validEnv = {
   SHOPIFY_API_KEY: "key",
   SHOPIFY_API_SECRET: "secret",
   SHOPIFY_APP_URL: "https://example.com",
-  SHOPIFY_SCOPES: "write_products",
+  SHOPIFY_SCOPES: "read_products",
   DATABASE_URL: "postgresql://localhost:5433/db",
 };
 

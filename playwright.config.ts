@@ -36,7 +36,7 @@ export default defineConfig({
       SHOPIFY_API_KEY: "e2e_test_api_key",
       SHOPIFY_API_SECRET: "e2e_test_api_secret",
       SHOPIFY_APP_URL: `http://localhost:${PORT}`,
-      SHOPIFY_SCOPES: "write_products",
+      SHOPIFY_SCOPES: "read_products",
       DATABASE_URL:
         process.env.DATABASE_URL ??
         "postgresql://postgres:postgres@localhost:5433/ai_imageshoot?schema=public",

@@ -18,6 +18,23 @@
 using the conventional `../shopify.server` relative import (see
 docs/architecture.md).
 
+## Access scopes
+
+Current scope: **`read_products`** (`shopify.app.toml`'s `[access_scopes]`,
+mirrored by `SHOPIFY_SCOPES` in `.env`/`.env.example`). This is
+deliberately minimal for what Phase 1 actually does — catalog sync,
+product/image browsing, source-image selection — all of which only ever
+*read* Shopify data. See `services/products/shopify-queries.server.ts`
+(every operation there is a GraphQL `query`, never a `mutation`) and
+`tests/unit/shopify-scope-safety.test.ts`, which regression-tests both the
+configured scope and the absence of any mutation in Phase 1 code.
+
+`write_products` is **not** requested. It will be added — deliberately,
+with its own explicit merchant consent flow designed at that time, not
+silently — when a future phase publishes AI-generated media back to
+Shopify. Until then, requesting it would violate CLAUDE.md's "minimum
+scopes" rule for no functional benefit.
+
 ## Authenticating a request
 
 Every loader/action that touches merchant data calls:
@@ -68,6 +85,9 @@ submission.
 
 ## Not yet built (future phases)
 
-- Product/catalog synchronization (queries, sync strategy)
-- Any Admin GraphQL mutation (publishing assets back to Shopify)
+- Any Admin GraphQL mutation (publishing generated assets back to Shopify —
+  see "Access scopes" above; this is also when `write_products` gets added)
 - Billing API integration
+
+Product/catalog synchronization (queries, sync strategy) was built in
+Phase 1 — see docs/database.md and services/products/sync.server.ts.
