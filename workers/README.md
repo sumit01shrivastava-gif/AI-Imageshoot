@@ -5,7 +5,7 @@ process from the React Router web server (started with `npm run worker`,
 see `workers/index.ts`), so long-running/CPU- or IO-heavy job processing
 never blocks request handling.
 
-`workers/index.ts` registers two workers:
+`workers/index.ts` registers three workers:
 
 - `"catalog-sync"` (Phase 1) — `services/products/sync-job.server.ts`'s
   `processCatalogSyncJob` (full/incremental catalog sync, and the
@@ -14,9 +14,16 @@ never blocks request handling.
 - `"product-intelligence"` (Phase 2) — `services/intelligence/job.server.ts`'s
   `processProductIntelligenceJob` (analyzes one product per job — see
   docs/product-intelligence.md).
+- `"generation"` (Phase 3) — `services/generation/job.server.ts`'s
+  `processGenerationJob` (runs one generation request per job — calls the
+  configured `ImageGenerationProvider`, persists outputs through the
+  storage abstraction — see docs/generation.md). Unlike the other two
+  queues, this one carries BullMQ-level `attempts`/`backoff` (automatic
+  retry on a transient provider failure) — see
+  services/generation/job.server.ts's and queue.server.ts's doc comments.
 
-`"generation"`, `"enhancement"`, and `"publishing"` (see `lib/queue/names.ts`)
-remain unregistered until the phases that need them; docs/generation-pipeline.md
+`"enhancement"` and `"publishing"` (see `lib/queue/names.ts`) remain
+unregistered until the phases that need them; docs/generation-pipeline.md
 describes what each will eventually do.
 
 To add a worker in a later phase:

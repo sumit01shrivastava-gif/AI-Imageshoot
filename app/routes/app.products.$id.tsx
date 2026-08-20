@@ -16,6 +16,15 @@ import {
   ProductNotFoundError,
   type IntelligenceDisplayState,
 } from "../../services/intelligence/product-intelligence.server";
+import {
+  requestGeneration,
+  listGenerationHistory,
+  ProductNotFoundError as GenerationProductNotFoundError,
+  MissingSourceImagesError,
+  ProductNotAnalyzedError,
+  InvalidGenerationRequestError,
+} from "../../services/generation/request-generation.server";
+import type { GenerationResultRow } from "../../db/repositories/generation-job.repository";
 import { useSelection } from "../components/selection-context";
 import { SelectionBar } from "../components/selection-bar";
 
@@ -68,7 +77,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const intelligence = await getProductIntelligence(context, product.id);
   const intelligenceState = getIntelligenceDisplayState(intelligence, product);
 
-  return { product, variants, variantsError, intelligence, intelligenceState };
+  // Most-recent-first — see docs/generation.md "Generation history". The
+  // UI only ever renders the latest as "current" plus a compact list of
+  // the rest; nothing here fetches results eagerly beyond what the
+  // repository's select already includes.
+  const generationHistory = await listGenerationHistory(context, product.id);
+
+  return { product, variants, variantsError, intelligence, intelligenceState, generationHistory };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -99,6 +114,40 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "generate") {
+    try {
+      // "Generate Test Image" (docs/generation.md "UI") — no image picker,
+      // no generation-type selector: PRODUCT_CLEANUP against every one of
+      // the product's current media (see request-generation.server.ts's
+      // `sourceMediaIds` default). Proving the architecture, not the full
+      // studio UI — see the Phase 3 instructions.
+      await requestGeneration(context, { productId: params.id!, generationType: "PRODUCT_CLEANUP" });
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof GenerationProductNotFoundError) {
+        // Same "indistinguishable from not-found" handling as the loader —
+        // see its comment above.
+        logger.warn("products.detail.generate_tenant_mismatch_or_missing", {
+          shop: context.shop,
+          requestedId: params.id,
+        });
+        throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof ProductNotAnalyzedError) {
+        return { ok: false as const, error: error.message };
+      }
+      if (error instanceof MissingSourceImagesError || error instanceof InvalidGenerationRequestError) {
+        return { ok: false as const, error: error.message };
+      }
+      logger.error("products.detail.generate_request_failed", {
+        shop: context.shop,
+        productId: params.id,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
+  }
+
   return { ok: false as const, error: "Unknown action." };
 };
 
@@ -118,12 +167,35 @@ const INTELLIGENCE_STATE_TONE: Record<IntelligenceDisplayState, "info" | "succes
   failed: "critical",
 };
 
+// PENDING/QUEUED share one label — see build-plan.ts's model comment for
+// why PENDING is a real but typically-instantaneous state (immediately
+// followed by QUEUED within the same request) that a merchant is unlikely
+// to ever actually observe.
+const GENERATION_STATUS_LABEL: Record<string, string> = {
+  PENDING: "Queued",
+  QUEUED: "Queued",
+  PROCESSING: "Processing",
+  SUCCEEDED: "Succeeded",
+  FAILED: "Failed",
+  CANCELLED: "Cancelled",
+};
+
+const GENERATION_STATUS_TONE: Record<string, "info" | "success" | "warning" | "critical"> = {
+  PENDING: "info",
+  QUEUED: "info",
+  PROCESSING: "info",
+  SUCCEEDED: "success",
+  FAILED: "critical",
+  CANCELLED: "warning",
+};
+
 export default function ProductDetail() {
-  const { product, variants, variantsError, intelligence, intelligenceState } =
+  const { product, variants, variantsError, intelligence, intelligenceState, generationHistory } =
     useLoaderData<typeof loader>();
   const { isImageSelected, toggleImage, setProductImages, productSelectionState, selectedCountForProduct } =
     useSelection();
   const analyzeFetcher = useFetcher<typeof action>();
+  const generateFetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
   const shopify = useAppBridge();
 
@@ -192,6 +264,58 @@ export default function ProductDetail() {
   const requestAnalysis = () => {
     setAwaitingResult(true);
     analyzeFetcher.submit({ intent: "analyze" }, { method: "POST" });
+  };
+
+  // --- Image Generation (Phase 3) ---------------------------------------
+  // Each "Generate"/"Regenerate" click creates a brand-new GenerationJob
+  // row (see docs/generation.md "Generation history") — so, unlike
+  // Product Intelligence's single upserted row, `generationHistory[0]`
+  // (most-recent-first) is unambiguously the request this click just
+  // made, the moment the post-action revalidation lands. No "which state
+  // means 'not started yet' vs. 'a fresh request that hasn't been picked
+  // up'" ambiguity to work around here.
+  const latestGeneration = generationHistory[0] ?? null;
+  const generationStatus = latestGeneration?.status;
+  const isTerminalGenerationStatus =
+    generationStatus === "SUCCEEDED" || generationStatus === "FAILED" || generationStatus === "CANCELLED";
+
+  const [awaitingGeneration, setAwaitingGeneration] = useState(false);
+  const isGenerating = awaitingGeneration || (generationStatus !== undefined && !isTerminalGenerationStatus);
+
+  const [prevGenerationStatus, setPrevGenerationStatus] = useState(generationStatus);
+  if (generationStatus !== prevGenerationStatus) {
+    setPrevGenerationStatus(generationStatus);
+    if (isTerminalGenerationStatus) {
+      setAwaitingGeneration(false);
+    }
+  }
+
+  const [prevGenerateFetcherData, setPrevGenerateFetcherData] = useState(generateFetcher.data);
+  if (generateFetcher.data !== prevGenerateFetcherData) {
+    setPrevGenerateFetcherData(generateFetcher.data);
+    if (generateFetcher.data && !generateFetcher.data.ok) {
+      setAwaitingGeneration(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!awaitingGeneration || isTerminalGenerationStatus) return;
+    const id = setInterval(() => revalidator.revalidate(), 3000);
+    return () => clearInterval(id);
+  }, [awaitingGeneration, isTerminalGenerationStatus, revalidator]);
+
+  useEffect(() => {
+    if (generateFetcher.data?.ok) {
+      shopify.toast.show("Generation started");
+    } else if (generateFetcher.data && !generateFetcher.data.ok) {
+      shopify.toast.show(generateFetcher.data.error, { isError: true });
+    }
+  }, [generateFetcher.data, shopify]);
+
+  const canGenerate = intelligenceState === "ready" || intelligenceState === "stale";
+  const requestGenerationClick = () => {
+    setAwaitingGeneration(true);
+    generateFetcher.submit({ intent: "generate" }, { method: "POST" });
   };
 
   return (
@@ -344,6 +468,75 @@ export default function ProductDetail() {
         </s-stack>
       </s-section>
 
+      <s-section heading="Image Generation">
+        <s-stack direction="block" gap="base">
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+            {generationStatus ? (
+              <s-badge tone={GENERATION_STATUS_TONE[generationStatus]}>
+                {GENERATION_STATUS_LABEL[generationStatus]}
+              </s-badge>
+            ) : (
+              <s-badge tone="info">Not generated yet</s-badge>
+            )}
+            <s-button
+              variant={latestGeneration ? "tertiary" : "primary"}
+              onClick={requestGenerationClick}
+              disabled={isGenerating || !canGenerate}
+              {...(isGenerating ? { loading: true } : {})}
+            >
+              {latestGeneration ? "Regenerate" : "Generate Test Image"}
+            </s-button>
+          </s-stack>
+
+          {!canGenerate && (
+            <s-paragraph color="subdued">
+              Analyze this product (see Product Intelligence above) before generating images —
+              generation needs its identity anchors to preserve the product&rsquo;s real category,
+              material, and color.
+            </s-paragraph>
+          )}
+
+          {generationStatus === "FAILED" && (
+            <s-banner tone="critical">
+              <s-paragraph>{latestGeneration?.errorMessage ?? "Generation failed."}</s-paragraph>
+            </s-banner>
+          )}
+
+          {!latestGeneration && canGenerate && (
+            <s-paragraph color="subdued">
+              No test generation yet. This uses the safe, deterministic development provider — see
+              docs/generation.md — to prove the request → job → provider → storage → result
+              pipeline end to end. No real AI image is produced.
+            </s-paragraph>
+          )}
+
+          {generationStatus === "SUCCEEDED" && latestGeneration && (
+            <s-grid gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))" gap="base">
+              {latestGeneration.results.map((result, index) => (
+                <GenerationResultCard key={result.id} result={result} index={index} />
+              ))}
+            </s-grid>
+          )}
+
+          {generationHistory.length > 1 && (
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Generation history</s-text>
+              <s-stack direction="block" gap="small-200">
+                {generationHistory.map((job, index) => (
+                  <s-paragraph key={job.id}>
+                    Generation #{generationHistory.length - index} —{" "}
+                    <s-badge tone={GENERATION_STATUS_TONE[job.status]}>
+                      {GENERATION_STATUS_LABEL[job.status]}
+                    </s-badge>{" "}
+                    <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
+                  </s-paragraph>
+                ))}
+              </s-stack>
+            </s-stack>
+          )}
+        </s-stack>
+      </s-section>
+
       <s-section slot="aside" heading="Details">
         <s-stack direction="block" gap="base">
           <s-paragraph>
@@ -409,6 +602,31 @@ function IntelligenceField({ label, value }: { label: string; value: string | nu
       <s-text color="subdued">{label}</s-text>
       <s-text>{value || "—"}</s-text>
     </s-stack>
+  );
+}
+
+/**
+ * Renders a generation result's METADATA, not the image itself — the
+ * deterministic test provider (this phase's only wired-up provider)
+ * produces a placeholder 1x1 pixel, and `result.url` is a reference into
+ * `MemoryStorageProvider` (a fake, non-fetchable `memory://` URL — see
+ * lib/storage/provider.server.ts's doc comment), not a real photo. Once a
+ * real storage vendor + AI provider are selected, this becomes an actual
+ * `<s-image>`; showing the structured metadata now still proves results
+ * persisted correctly. See docs/generation.md "Storage".
+ */
+function GenerationResultCard({ result, index }: { result: GenerationResultRow; index: number }) {
+  return (
+    <s-box padding="small-200" borderWidth="base" borderRadius="base" borderColor="subdued">
+      <s-stack direction="block" gap="small-200">
+        <s-text type="strong">Result {index + 1}</s-text>
+        <s-text color="subdued">
+          {result.format ?? "—"}
+          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""}
+        </s-text>
+        <s-text color="subdued">{result.providerName ?? "—"}</s-text>
+      </s-stack>
+    </s-box>
   );
 }
 

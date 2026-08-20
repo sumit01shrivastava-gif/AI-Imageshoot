@@ -21,7 +21,6 @@
  * both required, neither set outside test config (see that file).
  */
 import type { AIProvider, AnalyzeProductInput, ProductAnalysisRawOutput } from "../ai/types";
-import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import { getCategoryRecommendation } from "./category-recommendations";
 
 export class DeterministicTestAIProvider implements AIProvider {
@@ -85,24 +84,5 @@ export class DeterministicTestAIProvider implements AIProvider {
 
       confidence: 0.5,
     };
-  }
-
-  // Not relevant to Product Intelligence (Phase 2) — this test double
-  // deliberately doesn't implement generation/editing capabilities.
-
-  async removeBackground(): Promise<never> {
-    throw new UnconfiguredAIProviderError("removeBackground");
-  }
-
-  async enhanceImage(): Promise<never> {
-    throw new UnconfiguredAIProviderError("enhanceImage");
-  }
-
-  async generateLifestyle(): Promise<never> {
-    throw new UnconfiguredAIProviderError("generateLifestyle");
-  }
-
-  async generateModelImage(): Promise<never> {
-    throw new UnconfiguredAIProviderError("generateModelImage");
   }
 }

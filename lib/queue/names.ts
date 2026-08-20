@@ -9,7 +9,8 @@
  *     (Phase 1) — see services/products/sync.server.ts and workers/index.ts
  *   - "product-intelligence"  → Product Intelligence analysis (Phase 2) —
  *     see services/intelligence/job.server.ts and workers/index.ts
- *   - "generation"            → AI image generation jobs (future)
+ *   - "generation"            → AI image generation jobs (Phase 3) — see
+ *     services/generation/job.server.ts and workers/index.ts
  *   - "enhancement"           → background removal / cleanup / upscale jobs (future)
  *   - "publishing"            → publishing approved assets back to Shopify (future)
  */

@@ -5,9 +5,11 @@
  * non-watching run). Separate process from the web server — see README.md
  * in this directory.
  *
- * `"catalog-sync"` (Phase 1) is the first registered queue — see
- * services/products/sync-job.server.ts. `"generation"`/`"enhancement"`/
- * `"publishing"` remain unregistered until the phases that need them.
+ * `"catalog-sync"` (Phase 1), `"product-intelligence"` (Phase 2), and
+ * `"generation"` (Phase 3) are registered — see services/products/
+ * sync-job.server.ts, services/intelligence/job.server.ts, and
+ * services/generation/job.server.ts. `"enhancement"`/`"publishing"`
+ * remain unregistered until the phases that need them.
  */
 import type { Job, Processor } from "bullmq";
 import { closeRedisConnection, createWorker } from "../lib/queue";
@@ -15,6 +17,7 @@ import type { QueueName } from "../lib/queue";
 import { logger } from "../lib/logging/logger.server";
 import { processCatalogSyncJob } from "../services/products/sync-job.server";
 import { processProductIntelligenceJob } from "../services/intelligence/job.server";
+import { processGenerationJob } from "../services/generation/job.server";
 
 interface WorkerRegistration {
   queue: QueueName;
@@ -24,6 +27,7 @@ interface WorkerRegistration {
 const WORKER_REGISTRY: WorkerRegistration[] = [
   { queue: "catalog-sync", processor: processCatalogSyncJob as Processor },
   { queue: "product-intelligence", processor: processProductIntelligenceJob as Processor },
+  { queue: "generation", processor: processGenerationJob as Processor },
 ];
 
 async function main(): Promise<void> {

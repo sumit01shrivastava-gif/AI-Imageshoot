@@ -1,45 +1,55 @@
 # Generation pipeline
 
-## Current state (Phase 0)
+## Current state (Phase 3)
 
-Not built. This document exists to record the intended shape so later
-phases build toward a consistent design — none of the following exists in
-code yet.
-
-## Intended flow (future)
+The foundation described below is now implemented — see docs/generation.md
+for the actual, current design (data model, provider abstraction, queue
+lifecycle, identity preservation). This document now only tracks what's
+still ahead: the parts of the original sketch Phase 3 deliberately did
+NOT build.
 
 ```
-Merchant selects product(s) + source image(s) in the UI
-  → services/generation: builds a generation request
-      (shop, product, source image, operation, configuration)
-  → enqueued onto the "generation" or "enhancement" queue (lib/queue)
-  → workers/ picks up the job
-      → services/ai: calls the configured AIProvider capability
-          (removeBackground / enhanceImage / generateLifestyle /
-           generateModelImage / analyzeProduct)
-      → lib/storage: persists the result as a MediaAsset/MediaVersion
-  → merchant reviews/approves in the UI
-  → services/publishing: publishes approved assets back to Shopify
+Merchant selects a product (Phase 3: always every one of its own images —
+no picker yet) in the UI
+  → services/generation: builds a structured GenerationPlan
+      (shop, product, source images, Product Intelligence identity
+       anchors, generation type, creative direction)
+  → enqueued onto the "generation" queue (lib/queue) — IMPLEMENTED
+      → workers/ picks up the job — IMPLEMENTED
+          → services/ai: calls the configured ImageGenerationProvider
+            (generateImage) — IMPLEMENTED, no real vendor selected
+          → lib/storage: persists the result via StorageProvider,
+            referenced by a GenerationResult row — IMPLEMENTED, no real
+            storage vendor selected
+  → merchant reviews/approves in the UI — NOT BUILT (Phase 3's UI shows
+    the raw result only; no approval workflow)
+  → services/publishing: publishes approved assets back to Shopify —
+    NOT BUILT
 ```
 
-## Infrastructure that already exists for this
+`removeBackground`/`enhanceImage` are no longer `AIProvider` methods —
+Phase 3 split them out into a separate `ImageProcessingProvider`
+interface (established as an abstraction only, nothing calls it yet) —
+see docs/ai-pipeline.md and docs/generation.md "Processing abstraction".
+`"enhancement"` (background removal/cleanup/upscale as their own queue)
+remains unregistered.
 
-- `lib/queue/names.ts` reserves `"generation"`, `"enhancement"`, and
-  `"publishing"` as queue names — no processor is registered on any of
-  them yet (`workers/index.ts`'s `WORKER_REGISTRY` is empty).
-- `services/ai/types.ts`'s `AIProvider` interface defines the capability
-  surface a generation job will call into.
-- `lib/storage/types.ts`'s `StorageProvider` interface defines where
-  generation output will eventually be persisted.
+## Explicitly not decided/built yet
 
-## Explicitly not decided yet
-
-- The shape of a generation request/job record (a `GenerationJob` model —
-  see docs/database.md — is deliberately not created until the phase that
-  needs it)
-- Retry/failure semantics for generation jobs
-- How generation cost maps to usage/credit accounting
-- Aspect-ratio and batch-generation mechanics
+- A `MediaAsset`/`MediaVersion` promoted-asset layer distinct from
+  `GenerationResult` (see docs/database.md) — this phase's terminal
+  artifact is a `GenerationResult`; "promoting" one into a durable,
+  merchant-approved asset is future work
+- Review/approval workflow (`GenerationStatus` has no approval-related
+  state; "SUCCEEDED" is not "approved")
+- Publishing approved assets back to Shopify (`services/publishing/`)
+- How generation cost maps to usage/credit accounting (Phase 3 records
+  the structured metadata a future phase would need — provider, duration,
+  output count — but computes no cost)
+- A source-image picker for generation, a prompt editor, a model/pose
+  selector, batch/campaign generation
+- Real background-removal/enhancement/upscale infrastructure — the
+  `ImageProcessingProvider` interface exists; nothing implements it
 
 Do not implement any of the above ahead of its phase — see CLAUDE.md
 "Incremental development".

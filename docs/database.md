@@ -38,8 +38,9 @@ ahead of the phase that needs them:
 
 - `ProductAsset`, `ProductIdentity` — synchronized Shopify product data and
   our own product-level metadata
-- `GenerationJob`, `GenerationResult`, `GenerationPreset` — AI generation
-  requests, their outputs, and reusable presets
+- `GenerationPreset` — reusable generation configuration (`GenerationJob`/
+  `GenerationResult` themselves are implemented — Phase 3, see
+  docs/generation.md)
 - `BrandStyle`, `ModelPreset` — merchant-defined generation configuration
 - `MediaAsset`, `MediaVersion` — our own storage-backed assets and their
   version history (see docs/ai-pipeline.md for why Shopify-hosted URLs

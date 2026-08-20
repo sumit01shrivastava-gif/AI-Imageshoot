@@ -108,7 +108,11 @@ test.describe("Product Intelligence", () => {
 
     // Shopify product → product detail.
     await page.goto(`/app/products/${product.id}`);
-    await expect(page.getByText("Product Intelligence")).toBeVisible();
+    // Scoped to the section heading specifically (not a substring match) —
+    // Phase 3's Image Generation section also mentions "Product
+    // Intelligence" in its own not-analyzed helper text, so a bare
+    // substring match is ambiguous now.
+    await expect(page.getByRole("heading", { name: "Product Intelligence" })).toBeVisible();
     await expect(page.getByText("Not analyzed", { exact: true })).toBeVisible();
 
     // → Analyze Product.

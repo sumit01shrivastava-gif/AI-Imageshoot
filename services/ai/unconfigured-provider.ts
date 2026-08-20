@@ -1,24 +1,24 @@
 /**
- * Placeholder AIProvider that makes zero network calls.
+ * Placeholder providers that make zero network calls.
  *
- * Used as the default provider until a real one is selected and configured
- * (see docs/ai-pipeline.md, docs/product-intelligence.md). Also useful
- * directly in tests: it satisfies the AIProvider interface so calling code
- * can be type-checked and unit tested against the abstraction without ever
+ * Used as the default for each of the three AI-capability interfaces
+ * (`AIProvider`, `ImageGenerationProvider`, `ImageProcessingProvider`)
+ * until a real vendor is selected and configured (see docs/ai-pipeline.md,
+ * docs/product-intelligence.md, docs/generation.md). Also useful directly
+ * in tests: each satisfies its interface so calling code can be
+ * type-checked and unit tested against the abstraction without ever
  * reaching a real AI API.
  */
 import type {
   AIProvider,
   AnalyzeProductInput,
-  EnhanceImageInput,
-  EnhanceImageResult,
-  GenerateLifestyleInput,
-  GenerateLifestyleResult,
-  GenerateModelImageInput,
-  GenerateModelImageResult,
+  GenerateImageInput,
+  GenerateImageResult,
+  ImageGenerationProvider,
+  ImageProcessingInput,
+  ImageProcessingOutput,
+  ImageProcessingProvider,
   ProductAnalysisRawOutput,
-  RemoveBackgroundInput,
-  RemoveBackgroundResult,
 } from "./types";
 
 export class UnconfiguredAIProviderError extends Error {
@@ -34,33 +34,54 @@ export class UnconfiguredAIProviderError extends Error {
 export class UnconfiguredAIProvider implements AIProvider {
   readonly name = "unconfigured";
 
-  // Every method below intentionally ignores its input — there's nothing
-  // to call. Parameters are still named (not `_input`) and explicitly
-  // `void`-ed rather than dropped, so each signature stays self-documenting
-  // and satisfies `AIProvider` without an unused-variable lint exception.
-
+  // Parameter stays named (not `_input`) and explicitly `void`-ed rather
+  // than dropped, so the signature stays self-documenting and satisfies
+  // `AIProvider` without an unused-variable lint exception.
   async analyzeProduct(input: AnalyzeProductInput): Promise<ProductAnalysisRawOutput> {
     void input;
     throw new UnconfiguredAIProviderError("analyzeProduct");
   }
+}
 
-  async removeBackground(input: RemoveBackgroundInput): Promise<RemoveBackgroundResult> {
+export class UnconfiguredImageGenerationProvider implements ImageGenerationProvider {
+  readonly name = "unconfigured";
+
+  async generateImage(input: GenerateImageInput): Promise<GenerateImageResult> {
+    void input;
+    throw new UnconfiguredAIProviderError("generateImage");
+  }
+}
+
+export class UnconfiguredImageProcessingProvider implements ImageProcessingProvider {
+  readonly name = "unconfigured";
+
+  async removeBackground(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
     void input;
     throw new UnconfiguredAIProviderError("removeBackground");
   }
 
-  async enhanceImage(input: EnhanceImageInput): Promise<EnhanceImageResult> {
+  async enhance(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
     void input;
-    throw new UnconfiguredAIProviderError("enhanceImage");
+    throw new UnconfiguredAIProviderError("enhance");
   }
 
-  async generateLifestyle(input: GenerateLifestyleInput): Promise<GenerateLifestyleResult> {
+  async upscale(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
     void input;
-    throw new UnconfiguredAIProviderError("generateLifestyle");
+    throw new UnconfiguredAIProviderError("upscale");
   }
 
-  async generateModelImage(input: GenerateModelImageInput): Promise<GenerateModelImageResult> {
+  async generateShadow(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
     void input;
-    throw new UnconfiguredAIProviderError("generateModelImage");
+    throw new UnconfiguredAIProviderError("generateShadow");
+  }
+
+  async crop(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
+    void input;
+    throw new UnconfiguredAIProviderError("crop");
+  }
+
+  async resize(input: ImageProcessingInput): Promise<ImageProcessingOutput> {
+    void input;
+    throw new UnconfiguredAIProviderError("resize");
   }
 }

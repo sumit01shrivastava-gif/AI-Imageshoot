@@ -10,11 +10,13 @@
 // Phase 2 adds the Product Intelligence model: ProductIntelligence. See
 // docs/product-intelligence.md.
 //
-// Remaining domain models (GenerationJob, GenerationResult, GenerationPreset,
-// BrandStyle, ModelPreset, MediaAsset, MediaVersion, UsageRecord,
-// CreditBalance, CreditTransaction, Publication, AuditLog, ...) are
-// intentionally NOT defined yet — they belong to later phases. See
-// docs/database.md and docs/roadmap.md.
+// Phase 3 adds the image-generation foundation: GenerationJob,
+// GenerationResult. See docs/generation.md.
+//
+// Remaining domain models (GenerationPreset, BrandStyle, ModelPreset,
+// MediaAsset, MediaVersion, UsageRecord, CreditBalance, CreditTransaction,
+// Publication, AuditLog, ...) are intentionally NOT defined yet — they
+// belong to later phases. See docs/database.md and docs/roadmap.md.
 //
 // learn more about Prisma schema: https://pris.ly/d/prisma-schema
 
@@ -118,6 +120,7 @@ model ShopifyProduct {
   media          ShopifyProductMedia[]
   selectionItems ImageSelectionItem[]
   intelligence   ProductIntelligence?
+  generationJobs GenerationJob[]
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -364,4 +367,154 @@ model ProductIntelligence {
   updatedAt DateTime @updatedAt
 
   @@index([shop, status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Image generation foundation
+// ---------------------------------------------------------------------------
+
+// The generation taxonomy — see docs/generation.md "Generation types".
+// Establishing room for all nine now (per the Phase 3 instructions) does
+// NOT mean all nine are implemented: this phase only ever actually drives
+// PRODUCT_CLEANUP end to end (services/generation/deterministic-test-
+// provider.server.ts, the "Generate Test Image" UI). The rest are valid,
+// schema-accepted values with no dedicated plan-building logic yet.
+enum GenerationType {
+  PRODUCT_CLEANUP
+  BACKGROUND_REMOVAL
+  BACKGROUND_REPLACEMENT
+  LIFESTYLE
+  MODEL_SHOOT
+  BANNER
+  CATEGORY_BANNER
+  CTA
+  CAMPAIGN
+}
+
+// PENDING: row created, not yet enqueued. QUEUED: enqueued onto BullMQ,
+// waiting for a worker. PROCESSING: a worker is actively calling the
+// provider (including during an automatic BullMQ retry backoff — there is
+// deliberately no separate "RETRYING" status; `retryCount` below is where
+// that's visible). SUCCEEDED/FAILED/CANCELLED are terminal. CANCELLED has
+// no producer yet this phase (no cancel action exists) — included now so
+// the status column's domain is complete from the start rather than
+// needing a migration later. See docs/generation.md "Lifecycle".
+enum GenerationStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// One row per generation REQUEST — NOT one row per product. Unlike
+// ProductIntelligence (one current profile per product, overwritten on
+// re-analysis), a product accumulates GenerationJob history: Generation
+// #1, #2, #3, ... never overwritten — see docs/generation.md "Generation
+// history". "GENERATION REQUEST" and "GENERATION JOB" (the pipeline's own
+// terminology) are deliberately the same row here, not two tables: one
+// merchant action (Generate / Regenerate) creates exactly one job and
+// nothing separates "the request" from "the job" in this system's
+// lifecycle — a dedicated GenerationRequest table would just duplicate
+// this row 1:1 (see CLAUDE.md "Do not create unnecessary normalization
+// tables for simple AI attributes", applied here to the job/request
+// distinction rather than an AI attribute, but the same reasoning holds).
+model GenerationJob {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  type   GenerationType
+  status GenerationStatus @default(PENDING)
+
+  // Our internal ShopifyProductMedia ids this generation was requested
+  // from — one or many source images (see docs/generation.md "Generation
+  // data model").
+  sourceMediaIds String[] @default([])
+
+  // The full structured request — see services/generation/schema.ts's
+  // GenerationPlanSchema and docs/generation.md "Generation plan".
+  // Snapshotted at request time (not re-derived when the job actually
+  // runs) so generation history stays accurate even if the product or its
+  // Product Intelligence profile changes later — see docs/generation.md
+  // "Generation history".
+  plan Json
+
+  // Denormalized off `plan.identityAnchors` for direct readability/
+  // querying — the product-fact constraints this generation must never
+  // violate. See docs/generation.md "Identity preservation".
+  identityAnchors Json?
+
+  // Merchant-safe summary of the last failure, if any (see CLAUDE.md "Safe
+  // error handling" — no stack traces/internal detail here).
+  errorMessage String?
+  // How many attempts BullMQ has made at this job — see
+  // services/generation/job.server.ts. Distinct from a merchant clicking
+  // "Regenerate" (which creates a brand-new row, not a retry of this one).
+  retryCount Int @default(0)
+
+  providerName  String?
+  providerJobId String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  // Wall-clock duration of the last processing attempt, in milliseconds —
+  // usage-accounting foundation only; no billing is computed from this.
+  // See docs/generation.md "Usage tracking foundation".
+  durationMs Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results GenerationResult[]
+
+  @@index([shop, productId])
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+
+// One row per output image a GenerationJob produced — a single job may
+// produce multiple results (see docs/generation.md "Generation result
+// model"). Never stores image binaries: `storageKey`/`url` are references
+// into the existing StorageProvider abstraction (lib/storage/types.ts),
+// exactly like ShopifyProductMedia's originalUrl/previewUrl reference
+// Shopify's CDN rather than embedding bytes — see CLAUDE.md "Storage
+// rules".
+model GenerationResult {
+  id String @id @default(cuid())
+
+  // Tenant — denormalized alongside generationJobId (rather than requiring
+  // a join through GenerationJob for every shop-scoped query), matching
+  // the same pattern ShopifyProductMedia/ImageSelectionItem already use.
+  shop String
+
+  generationJobId String
+  generationJob   GenerationJob @relation(fields: [generationJobId], references: [id], onDelete: Cascade)
+
+  // Reference into StorageProvider — never a raw binary.
+  storageKey String
+  // A fetchable reference for this object at the time it was stored (e.g.
+  // a signed URL) — a reference string, like ShopifyProductMedia's URLs,
+  // never image bytes.
+  url        String?
+
+  width  Int?
+  height Int?
+  format String?
+
+  providerName     String?
+  providerResultId String?
+  // Free-form provider-reported detail (seed, model name, per-output
+  // timing, ...) — see docs/generation.md "Usage tracking foundation".
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, generationJobId])
 }

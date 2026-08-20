@@ -43,19 +43,31 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   intercept/wrap Admin API calls (rate-limit handling, logging, retries),
   this is the only place that needs to change.
 - **`services/ai/`** — no code outside this directory may import a
-  specific AI vendor's SDK. The `AIProvider` interface
-  (`services/ai/types.ts`) is what the rest of the app depends on, so
-  swapping or A/B-testing vendors later doesn't ripple through generation
-  logic, routes, or tests.
+  specific AI vendor's SDK. Three focused interfaces live here —
+  `AIProvider` (product analysis), `ImageGenerationProvider` (generative
+  image creation), `ImageProcessingProvider` (deterministic transforms
+  like background removal) — deliberately separate rather than one
+  do-everything interface, since each is a genuinely different capability
+  with a different input/output shape and may end up backed by different
+  vendors. Everything else depends on these, so swapping or A/B-testing a
+  vendor later doesn't ripple through generation logic, routes, or tests.
 - **`services/intelligence/`** (Phase 2) — Product Intelligence's own
   business logic: building `AIProvider.analyzeProduct` input from synced
   catalog data, validating a provider's output, persistence orchestration,
   the BullMQ job/queue wiring, staleness detection, and category-aware
   generation recommendations. Depends on `services/ai/`'s `AIProvider`
   interface, never a vendor SDK — see docs/product-intelligence.md.
+- **`services/generation/`** (Phase 3) — the image-generation foundation:
+  building a structured `GenerationPlan` from a product + its Product
+  Intelligence profile, the BullMQ job/queue wiring, and persisting
+  results through the storage abstraction. Depends on `services/ai/`'s
+  `ImageGenerationProvider` and `services/intelligence/`'s
+  `IdentityAnchors` shape, never a vendor SDK — see docs/generation.md.
 - **`lib/storage/`** — same reasoning as AI, for object storage
-  (S3/R2/Cloudinary/...). Nothing is wired up yet; `StorageProvider`
-  (`lib/storage/types.ts`) is the contract.
+  (S3/R2/Cloudinary/...). `StorageProvider` (`lib/storage/types.ts`) is
+  the contract. No real vendor is wired up yet;
+  `getConfiguredStorageProvider()` (`lib/storage/provider.server.ts`)
+  defaults to the in-memory implementation in the meantime.
 - **`lib/queue/`** — all BullMQ `Queue`/`Worker` construction and the
   shared Redis connection live here, so production settings (e.g.
   `maxRetriesPerRequest: null`, connection reuse) are set once, correctly,
@@ -106,5 +118,9 @@ See `docs/roadmap.md` for the phase plan. Phase 0 is infrastructure only —
 Phase 1 added Shopify catalog sync and product/image selection. Phase 2
 added Product Intelligence (`services/intelligence/`, see
 docs/product-intelligence.md) — structured per-product analysis and
-generation recommendations, with no vendor wired up. No actual AI image
-generation, publishing, or credits/billing exists yet.
+generation recommendations, with no vendor wired up. Phase 3 added the
+image-generation foundation (`services/generation/`, see
+docs/generation.md) — the request → job → provider → storage → result
+pipeline, proven end to end only via a deterministic test provider. No
+real AI vendor (image generation or image processing), no publishing back
+to Shopify, and no credits/billing exists yet.

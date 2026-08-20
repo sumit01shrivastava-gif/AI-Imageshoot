@@ -20,17 +20,22 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 2 — Product Intelligence Engine — complete.** Phase 0
-(foundation: Shopify app setup, auth, database foundation, provider
-abstractions, queue infrastructure, project structure) and Phase 1
-(Shopify product catalog sync, search/detail, image selection) are done.
-Phase 2 added the Product Intelligence layer: structured per-product
-analysis (category/material/color/style/use cases/model suitability/
-generation recommendations) derived from synced catalog data, behind the
-existing `AIProvider` abstraction — no vendor wired up. See
-docs/product-intelligence.md. **No AI image generation of any kind
-(background removal, enhancement, lifestyle, AI-model, publishing,
-credits/billing) is implemented yet.**
+**Phase 3 — Image Generation Foundation — complete.** Phase 0
+(foundation), Phase 1 (Shopify product catalog sync, search/detail, image
+selection), and Phase 2 (Product Intelligence — structured per-product
+analysis, no vendor wired up) are done. Phase 3 added the image-generation
+foundation: `GenerationJob`/`GenerationResult` models, a structured
+`GenerationPlan` bridging Product Intelligence into a generation request
+(explicit product-facts-vs-creative-direction split for identity
+preservation), the `ImageGenerationProvider`/`ImageProcessingProvider`
+abstractions (split out of the old `AIProvider` stub methods), the
+`"generation"` BullMQ queue (with automatic retry — deliberately
+different semantics from Phase 1/2's queues, see docs/generation.md), and
+a minimal "Generate Test Image"/"Regenerate" UI proven end to end only via
+a deterministic test provider. See docs/generation.md. **No real AI
+vendor (image generation or image processing) is installed, no image is
+ever actually generated outside the deterministic test provider, no
+publishing back to Shopify, and no credits/billing is implemented.**
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -102,7 +107,9 @@ services/
   intelligence/       Product Intelligence: analysis input/output, schema
                        validation, queue/job, staleness, recommendations
                        (services/intelligence/README.md)
-  generation/         Generation orchestration business logic (future)
+  generation/         Image generation foundation: generation plan, job/
+                      queue, provider input, storage persistence
+                      (services/generation/README.md)
   media/              Media library business logic (future)
   publishing/         Publish-to-Shopify business logic (future)
   usage/              Usage/credit tracking business logic (future)
@@ -326,6 +333,31 @@ Phase 2 (Product Intelligence engine) — complete:
       analysis
 - [x] docs/product-intelligence.md
 
-No AI image generation (background removal, enhancement, lifestyle,
-AI-model generation, publishing, credits/billing) is implemented yet. See
-docs/roadmap.md.
+Phase 3 (Image generation foundation) — complete:
+
+- [x] `GenerationJob`/`GenerationResult` Prisma models — generation
+      history preserved (never overwritten), multiple results per job,
+      tenant-isolated
+- [x] `services/ai/` split into three focused interfaces — `AIProvider`
+      (analysis), `ImageGenerationProvider` (generation),
+      `ImageProcessingProvider` (deterministic transforms, abstraction
+      only, nothing calls it yet) — no vendor SDK installed for any of
+      them
+- [x] `services/generation/` — structured `GenerationPlan` (explicit
+      product-facts-vs-creative-direction split for identity
+      preservation), provider input building, double-gated deterministic
+      test provider for tests only
+- [x] `"generation"` BullMQ queue reusing the shared `lib/queue/` factory
+      — per-request (not per-product) job ids so regeneration is always a
+      real job, plus automatic retry on transient provider failure
+- [x] `lib/storage/provider.server.ts` — storage provider resolver
+      (in-memory default; no vendor selected yet)
+- [x] Product detail page: Generate Test Image/Regenerate, status states,
+      result metadata, generation history — merchant-triggered only, no
+      bulk/batch generation
+- [x] docs/generation.md
+
+No real AI vendor (image generation or image processing) is installed —
+every generation in this codebase runs only through the deterministic
+test provider, never a live network call. No publishing back to Shopify,
+no credits/billing is implemented. See docs/roadmap.md.

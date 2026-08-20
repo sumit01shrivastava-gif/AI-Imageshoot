@@ -6,3 +6,4 @@ export type {
   UploadResult,
 } from "./types";
 export { MemoryStorageProvider } from "./memory-provider";
+export { getConfiguredStorageProvider, resetConfiguredStorageProviderForTests } from "./provider.server";
