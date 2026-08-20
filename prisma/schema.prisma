@@ -3,9 +3,12 @@
 // Phase 0 added the Shopify session table required by
 // @shopify/shopify-app-session-storage-prisma.
 //
-// Phase 1 adds the minimum catalog-sync + source-image-selection models:
+// Phase 1 added the minimum catalog-sync + source-image-selection models:
 // ShopifyProduct, ShopifyProductMedia, ShopSyncState, ImageSelection,
 // ImageSelectionItem. See docs/database.md for the reasoning behind each.
+//
+// Phase 2 adds the Product Intelligence model: ProductIntelligence. See
+// docs/product-intelligence.md.
 //
 // Remaining domain models (GenerationJob, GenerationResult, GenerationPreset,
 // BrandStyle, ModelPreset, MediaAsset, MediaVersion, UsageRecord,
@@ -114,6 +117,7 @@ model ShopifyProduct {
 
   media          ShopifyProductMedia[]
   selectionItems ImageSelectionItem[]
+  intelligence   ProductIntelligence?
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -228,4 +232,136 @@ model ImageSelectionItem {
 
   @@unique([selectionId, productMediaId])
   @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Product Intelligence
+// ---------------------------------------------------------------------------
+
+// Lifecycle of one product's intelligence profile. Deliberately does NOT
+// include a persisted "STALE" state — see docs/product-intelligence.md
+// "Staleness": staleness is derived at read time (comparing
+// `sourceShopifyUpdatedAt` below against the product's current
+// `shopifyUpdatedAt`), not a state a background process needs to write,
+// which would require new webhook plumbing this phase doesn't need.
+enum IntelligenceStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+// One row per product: the CURRENT structured Product Intelligence profile
+// (category, material, color, style, identity anchors, generation
+// recommendations, ...). Shopify + its original product images remain the
+// source of truth this is derived from — see docs/product-intelligence.md
+// "Identity preservation".
+//
+// One profile per product (not a history table): `analysisVersion` tracks
+// which analysis iteration produced the current row, and re-analysis
+// overwrites it in place. A full audit history is deliberately deferred —
+// not needed to prove the intelligence layer works (see CLAUDE.md
+// "Incremental development").
+model ProductIntelligence {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  productId String         @unique
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  status IntelligenceStatus @default(PENDING)
+  // Merchant-safe summary of the last failure, if any (see CLAUDE.md "Safe
+  // error handling" — no stack traces/internal detail here).
+  errorMessage String?
+
+  // --- Structured profile — all empty/null until status = READY.
+  // See docs/product-intelligence.md "Schema" and
+  // services/intelligence/schema.ts (the Zod schema this mirrors; a
+  // provider's output is validated against that schema before ever
+  // reaching these columns — see CLAUDE.md "Reject malformed provider
+  // output").
+  category    String?
+  subcategory String?
+  productType String?
+
+  material        String?
+  primaryColor    String?
+  secondaryColors String[] @default([])
+
+  pattern String?
+  texture String?
+  style   String?
+
+  useCases          String[] @default([])
+  targetAudience    String?
+  genderSuitability String?
+  seasonality       String[] @default([])
+  pricePositioning  String?
+
+  // Free-form, provider-specific detail that doesn't warrant its own
+  // columns (see CLAUDE.md "Do not create unnecessary normalization
+  // tables for simple AI attributes") — each validated as a JSON object
+  // shape by services/intelligence/schema.ts, just not column-by-column.
+  visualCharacteristics    Json?
+  productDimensions        Json?
+  packagingCharacteristics Json?
+  hardwareComponents       String[] @default([])
+
+  // --- Model (human-model imagery) suitability — see
+  // docs/product-intelligence.md "Model suitability". No image is
+  // generated from this in Phase 2; it's structured intelligence only.
+  modelSuitable              Boolean?
+  recommendedModelAttributes Json?
+  recommendedPoseTypes       String[] @default([])
+
+  // --- Generation recommendations — category-aware, see
+  // services/intelligence/category-recommendations.ts.
+  recommendedEnvironments      String[] @default([])
+  recommendedProps             String[] @default([])
+  recommendedPhotographyStyles String[] @default([])
+  recommendedAssetTypes        String[] @default([])
+
+  // Structured, identity-critical attributes a future generation stage
+  // must preserve (never invent/alter) — see docs/product-intelligence.md
+  // "Identity preservation". Kept as JSON (not columns) since its shape
+  // is validated by services/intelligence/schema.ts's IdentityAnchorsSchema
+  // and consumed as a whole object, not queried field-by-field.
+  identityAnchors Json?
+
+  // Per-source-image observations (one entry per analyzed
+  // ShopifyProductMedia) — see docs/product-intelligence.md "Image
+  // analysis". JSON rather than a related table: consumed as part of the
+  // whole profile, never queried independently (see CLAUDE.md "Do not
+  // create unnecessary normalization tables for simple AI attributes").
+  imageAnalyses Json?
+
+  // Which analysis iteration produced the current row — 0 until the first
+  // *successful* completion (see db/repositories/product-intelligence.
+  // repository.ts's `saveResult`, the only place this is bumped; PENDING/
+  // PROCESSING bookkeeping never touches it, deliberately, so it always
+  // reflects "how many completed analyses has this product had", not "how
+  // many times has some row-touching upsert run"). Confidence is the
+  // provider's own self-reported score.
+  analysisVersion Int     @default(0)
+  confidence      Float?
+  providerName    String?
+  // Raw, unvalidated provider output — kept for debugging only. Never
+  // returned to the client; see CLAUDE.md "Safe error handling" and
+  // app/routes/app.products.$id.tsx's loader.
+  rawAnalysis     Json?
+
+  // Staleness watermark: the product's `shopifyUpdatedAt` at analysis
+  // time. Staleness is `product.shopifyUpdatedAt > sourceShopifyUpdatedAt`
+  // — see docs/product-intelligence.md "Staleness" for why this (Shopify's
+  // own timestamp), not our local sync bookkeeping (which changes on every
+  // resync regardless of whether anything relevant actually changed).
+  sourceShopifyUpdatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop, status])
 }

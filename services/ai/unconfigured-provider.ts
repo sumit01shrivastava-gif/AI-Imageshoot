@@ -2,9 +2,10 @@
  * Placeholder AIProvider that makes zero network calls.
  *
  * Used as the default provider until a real one is selected and configured
- * (see docs/ai-pipeline.md). Also useful directly in tests: it satisfies the
- * AIProvider interface so calling code can be type-checked and unit tested
- * against the abstraction without ever reaching a real AI API.
+ * (see docs/ai-pipeline.md, docs/product-intelligence.md). Also useful
+ * directly in tests: it satisfies the AIProvider interface so calling code
+ * can be type-checked and unit tested against the abstraction without ever
+ * reaching a real AI API.
  */
 import type {
   AIProvider,
@@ -15,7 +16,7 @@ import type {
   GenerateLifestyleResult,
   GenerateModelImageInput,
   GenerateModelImageResult,
-  ProductAnalysis,
+  ProductAnalysisRawOutput,
   RemoveBackgroundInput,
   RemoveBackgroundResult,
 } from "./types";
@@ -24,7 +25,7 @@ export class UnconfiguredAIProviderError extends Error {
   constructor(capability: string) {
     super(
       `AI provider is not configured — cannot call "${capability}". ` +
-        `This is expected in Phase 0: no AI provider has been selected yet.`,
+        `No AI vendor has been selected yet.`,
     );
     this.name = "UnconfiguredAIProviderError";
   }
@@ -33,23 +34,33 @@ export class UnconfiguredAIProviderError extends Error {
 export class UnconfiguredAIProvider implements AIProvider {
   readonly name = "unconfigured";
 
-  async analyzeProduct(_input: AnalyzeProductInput): Promise<ProductAnalysis> {
+  // Every method below intentionally ignores its input — there's nothing
+  // to call. Parameters are still named (not `_input`) and explicitly
+  // `void`-ed rather than dropped, so each signature stays self-documenting
+  // and satisfies `AIProvider` without an unused-variable lint exception.
+
+  async analyzeProduct(input: AnalyzeProductInput): Promise<ProductAnalysisRawOutput> {
+    void input;
     throw new UnconfiguredAIProviderError("analyzeProduct");
   }
 
-  async removeBackground(_input: RemoveBackgroundInput): Promise<RemoveBackgroundResult> {
+  async removeBackground(input: RemoveBackgroundInput): Promise<RemoveBackgroundResult> {
+    void input;
     throw new UnconfiguredAIProviderError("removeBackground");
   }
 
-  async enhanceImage(_input: EnhanceImageInput): Promise<EnhanceImageResult> {
+  async enhanceImage(input: EnhanceImageInput): Promise<EnhanceImageResult> {
+    void input;
     throw new UnconfiguredAIProviderError("enhanceImage");
   }
 
-  async generateLifestyle(_input: GenerateLifestyleInput): Promise<GenerateLifestyleResult> {
+  async generateLifestyle(input: GenerateLifestyleInput): Promise<GenerateLifestyleResult> {
+    void input;
     throw new UnconfiguredAIProviderError("generateLifestyle");
   }
 
-  async generateModelImage(_input: GenerateModelImageInput): Promise<GenerateModelImageResult> {
+  async generateModelImage(input: GenerateModelImageInput): Promise<GenerateModelImageResult> {
+    void input;
     throw new UnconfiguredAIProviderError("generateModelImage");
   }
 }

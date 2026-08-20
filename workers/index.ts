@@ -14,6 +14,7 @@ import { closeRedisConnection, createWorker } from "../lib/queue";
 import type { QueueName } from "../lib/queue";
 import { logger } from "../lib/logging/logger.server";
 import { processCatalogSyncJob } from "../services/products/sync-job.server";
+import { processProductIntelligenceJob } from "../services/intelligence/job.server";
 
 interface WorkerRegistration {
   queue: QueueName;
@@ -22,6 +23,7 @@ interface WorkerRegistration {
 
 const WORKER_REGISTRY: WorkerRegistration[] = [
   { queue: "catalog-sync", processor: processCatalogSyncJob as Processor },
+  { queue: "product-intelligence", processor: processProductIntelligenceJob as Processor },
 ];
 
 async function main(): Promise<void> {

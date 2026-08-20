@@ -5,12 +5,20 @@
  * reference. Each gets real producers/processors when the phase that needs
  * it lands:
  *
- *   - "catalog-sync" → Shopify product/media catalog sync (Phase 1) — see
- *     services/products/sync.server.ts and workers/index.ts
- *   - "generation"   → AI image generation jobs (future)
- *   - "enhancement"  → background removal / cleanup / upscale jobs (future)
- *   - "publishing"   → publishing approved assets back to Shopify (future)
+ *   - "catalog-sync"          → Shopify product/media catalog sync
+ *     (Phase 1) — see services/products/sync.server.ts and workers/index.ts
+ *   - "product-intelligence"  → Product Intelligence analysis (Phase 2) —
+ *     see services/intelligence/job.server.ts and workers/index.ts
+ *   - "generation"            → AI image generation jobs (future)
+ *   - "enhancement"           → background removal / cleanup / upscale jobs (future)
+ *   - "publishing"            → publishing approved assets back to Shopify (future)
  */
-export const QUEUE_NAMES = ["catalog-sync", "generation", "enhancement", "publishing"] as const;
+export const QUEUE_NAMES = [
+  "catalog-sync",
+  "product-intelligence",
+  "generation",
+  "enhancement",
+  "publishing",
+] as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[number];

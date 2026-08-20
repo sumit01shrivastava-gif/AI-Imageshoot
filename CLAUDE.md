@@ -20,10 +20,17 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 0 — Foundation.** Only technical scaffolding exists: Shopify app
-setup, auth, database foundation, provider abstractions (AI, storage),
-queue infrastructure, and project structure. **No product feature listed
-above is implemented yet.**
+**Phase 2 — Product Intelligence Engine — complete.** Phase 0
+(foundation: Shopify app setup, auth, database foundation, provider
+abstractions, queue infrastructure, project structure) and Phase 1
+(Shopify product catalog sync, search/detail, image selection) are done.
+Phase 2 added the Product Intelligence layer: structured per-product
+analysis (category/material/color/style/use cases/model suitability/
+generation recommendations) derived from synced catalog data, behind the
+existing `AIProvider` abstraction — no vendor wired up. See
+docs/product-intelligence.md. **No AI image generation of any kind
+(background removal, enhancement, lifestyle, AI-model, publishing,
+credits/billing) is implemented yet.**
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -92,6 +99,9 @@ services/
   shopify/            ALL Shopify SDK usage (auth, admin client, webhooks)
   ai/                 AI provider interface + capability types (no vendor code yet)
   products/           Product import/selection business logic (future)
+  intelligence/       Product Intelligence: analysis input/output, schema
+                       validation, queue/job, staleness, recommendations
+                       (services/intelligence/README.md)
   generation/         Generation orchestration business logic (future)
   media/              Media library business logic (future)
   publishing/         Publish-to-Shopify business logic (future)
@@ -274,7 +284,7 @@ correct.
 
 ## Current implementation status
 
-Phase 0 (foundation) — in progress:
+Phase 0 (foundation) — complete:
 
 - [x] Shopify app scaffold (React Router 7, TypeScript, Polaris, App
       Bridge, `@shopify/shopify-app-react-router`)
@@ -287,8 +297,35 @@ Phase 0 (foundation) — in progress:
 - [x] Security foundation (env validation, tenant isolation guard, admin
       auth wrapper, redacting logger)
 - [x] This documentation set
-- [ ] Dependencies installed, `typecheck`/`lint`/`test`/`build` verified
-      green, foundation committed — tracked as the remainder of Phase 0
+- [x] Dependencies installed, `typecheck`/`lint`/`test`/`build` verified
+      green, foundation committed
 
-No product feature (catalog import, image selection, AI generation,
-publishing, credits, billing, ...) is implemented. See docs/roadmap.md.
+Phase 1 (Shopify product catalog) — complete:
+
+- [x] Shopify product catalog sync (`services/products/`, `read_products`
+      scope only), search/detail routes, image selection UI
+- [x] Catalog sync queue (`lib/queue`) with hardened job-id/dedup
+      semantics
+
+Phase 2 (Product Intelligence engine) — complete:
+
+- [x] `ProductIntelligence` Prisma model — one profile per product,
+      versioned, tenant-isolated, derived staleness (no persisted STALE
+      state)
+- [x] `services/intelligence/` — analysis input building, Zod-validated
+      output schema (`ProductIntelligenceSchema`, mandatory
+      `identityAnchors`), category-aware recommendation table, staleness
+      detection
+- [x] `AIProvider.analyzeProduct` extended on the existing abstraction —
+      no vendor SDK installed; double-gated deterministic test provider
+      for tests only
+- [x] `"product-intelligence"` BullMQ queue reusing the shared
+      `lib/queue/` factory and hardened job-id/dedup semantics
+- [x] Product detail page: Analyze/Re-analyze Product, status states,
+      structured profile display — merchant-triggered only, no bulk/auto
+      analysis
+- [x] docs/product-intelligence.md
+
+No AI image generation (background removal, enhancement, lifestyle,
+AI-model generation, publishing, credits/billing) is implemented yet. See
+docs/roadmap.md.

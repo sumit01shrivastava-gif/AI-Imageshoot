@@ -135,6 +135,10 @@ export interface ProductDetail {
   tags: string[];
   status: ProductStatus;
   syncedAt: Date;
+  // Shopify's own timestamp — used by services/intelligence/stale.ts as the
+  // Product Intelligence staleness watermark (see that module's doc
+  // comment for why Shopify's timestamp, not our local sync bookkeeping).
+  shopifyUpdatedAt: Date;
   media: Array<{
     id: string;
     originalUrl: string;
@@ -168,6 +172,7 @@ export async function findProductForShop(
       tags: true,
       status: true,
       syncedAt: true,
+      shopifyUpdatedAt: true,
       media: {
         orderBy: { position: "asc" },
         select: {

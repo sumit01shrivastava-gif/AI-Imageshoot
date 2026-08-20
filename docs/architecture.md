@@ -47,6 +47,12 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   (`services/ai/types.ts`) is what the rest of the app depends on, so
   swapping or A/B-testing vendors later doesn't ripple through generation
   logic, routes, or tests.
+- **`services/intelligence/`** (Phase 2) — Product Intelligence's own
+  business logic: building `AIProvider.analyzeProduct` input from synced
+  catalog data, validating a provider's output, persistence orchestration,
+  the BullMQ job/queue wiring, staleness detection, and category-aware
+  generation recommendations. Depends on `services/ai/`'s `AIProvider`
+  interface, never a vendor SDK — see docs/product-intelligence.md.
 - **`lib/storage/`** — same reasoning as AI, for object storage
   (S3/R2/Cloudinary/...). Nothing is wired up yet; `StorageProvider`
   (`lib/storage/types.ts`) is the contract.
@@ -97,5 +103,8 @@ construction itself.
 ## What's deliberately not built yet
 
 See `docs/roadmap.md` for the phase plan. Phase 0 is infrastructure only —
-no product feature (catalog import, image selection, AI generation,
-publishing, credits/billing) exists yet.
+Phase 1 added Shopify catalog sync and product/image selection. Phase 2
+added Product Intelligence (`services/intelligence/`, see
+docs/product-intelligence.md) — structured per-product analysis and
+generation recommendations, with no vendor wired up. No actual AI image
+generation, publishing, or credits/billing exists yet.

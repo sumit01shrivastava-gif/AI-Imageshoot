@@ -1,6 +1,7 @@
 export type {
   AIProvider,
   AnalyzeProductInput,
+  BrandStyleContext,
   EnhanceImageInput,
   EnhanceImageResult,
   GenerateLifestyleInput,
@@ -8,7 +9,8 @@ export type {
   GenerateModelImageInput,
   GenerateModelImageResult,
   ImageRef,
-  ProductAnalysis,
+  ProductAnalysisRawOutput,
+  ProductImageReference,
   RemoveBackgroundInput,
   RemoveBackgroundResult,
 } from "./types";
