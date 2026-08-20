@@ -13,6 +13,11 @@
 // Phase 3 adds the image-generation foundation: GenerationJob,
 // GenerationResult. See docs/generation.md.
 //
+// Phase 4 adds production image processing (the Basic plan foundation):
+// ProcessingJob, ProcessingResult, ProcessingBatch. See
+// docs/image-processing.md — including why this is a dedicated model
+// family rather than reusing GenerationJob/GenerationResult.
+//
 // Remaining domain models (GenerationPreset, BrandStyle, ModelPreset,
 // MediaAsset, MediaVersion, UsageRecord, CreditBalance, CreditTransaction,
 // Publication, AuditLog, ...) are intentionally NOT defined yet — they
@@ -121,6 +126,7 @@ model ShopifyProduct {
   selectionItems ImageSelectionItem[]
   intelligence   ProductIntelligence?
   generationJobs GenerationJob[]
+  processingJobs ProcessingJob[]
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -174,6 +180,7 @@ model ShopifyProductMedia {
   updatedAt DateTime @updatedAt
 
   selectionItems ImageSelectionItem[]
+  processingJobs ProcessingJob[]
 
   @@unique([shop, shopifyMediaId])
   @@index([shop, productId, position])
@@ -517,4 +524,216 @@ model GenerationResult {
   createdAt DateTime @default(now())
 
   @@index([shop, generationJobId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Production image processing (Basic plan foundation)
+// ---------------------------------------------------------------------------
+
+// A dedicated model family, deliberately NOT a reuse of
+// GenerationJob/GenerationResult — see docs/image-processing.md
+// "Processing job model" for the full reasoning. In short: a processing
+// job is a DETERMINISTIC transform of one existing image (background
+// removal, sharpening, an aspect-ratio crop — no prompt, no creative
+// plan, no multi-image input), while a GenerationJob's `plan` is a rich,
+// creative `GenerationPlan` (prompt, environment, brand style, ...) that
+// doesn't apply here. Forcing both into one table/JSON-blob shape would
+// make `plan`'s meaning ambiguous and `GenerationType` would have to
+// awkwardly represent two different kinds of taxonomy (creative asset
+// category vs. deterministic operation) at once. The *pattern* (one row
+// per request, never overwritten, tenant-isolated, status lifecycle,
+// results relation) is deliberately copied from GenerationJob/
+// GenerationResult, proven there — this is architectural consistency,
+// just not literal table reuse.
+
+// The deterministic/transformative operations `ImageProcessingProvider`
+// (services/ai/types.ts) supports. Establishing all six now (per the
+// Phase 4 instructions) does not mean all six are implemented end to end
+// — see docs/image-processing.md "Provider selection" for which of these
+// `ProductionImageProcessingProvider` actually performs
+// (REMOVE_BACKGROUND/ENHANCE/RESIZE) versus which remain interface-only
+// (UPSCALE/GENERATE_SHADOW/CROP).
+enum ImageOperation {
+  REMOVE_BACKGROUND
+  ENHANCE
+  UPSCALE
+  GENERATE_SHADOW
+  RESIZE
+  CROP
+}
+
+// Same five-terminal-plus-in-flight shape as GenerationStatus, kept as
+// its OWN enum rather than reusing that one — this schema already has
+// one status enum per domain model (ProductStatus, SyncStatus,
+// IntelligenceStatus, GenerationStatus); ProcessingStatus follows that
+// established precedent rather than being the first exception to it.
+enum ProcessingStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// A merchant's review decision on one ProcessingResult — see
+// docs/image-processing.md "Result review UI". Approving/rejecting never
+// deletes anything (see "Versioning" below); Regenerate is simply a new
+// ProcessingJob, not a state on this enum.
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// One row per processing REQUEST for one source image — never
+// overwritten, so a product's processing history (Process #1, #2, ...)
+// is preserved exactly like GenerationJob's — see docs/image-processing.md
+// "Versioning". Each job always starts from the ORIGINAL ShopifyProductMedia,
+// never chained from a prior ProcessingResult (see docs/image-processing.md
+// "Image cleanup" — "the processing system should treat the source image
+// as authoritative"): simpler, and matches "the original must always
+// remain available" without needing to reason about which version in a
+// chain a later job actually started from.
+model ProcessingJob {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Exactly one source image per job (unlike GenerationJob's
+  // sourceMediaIds[], which can span several images for one creative
+  // asset) — a processing operation is inherently per-image.
+  sourceMediaId String
+  sourceMedia   ShopifyProductMedia @relation(fields: [sourceMediaId], references: [id], onDelete: Cascade)
+
+  operation ImageOperation
+  status    ProcessingStatus @default(PENDING)
+
+  // Operation-specific, validated options (e.g. `{ aspectRatio: "4:5" }`
+  // for RESIZE) — see services/processing/schema.ts's
+  // ProcessingOptionsSchema. Null for operations that take none (e.g.
+  // REMOVE_BACKGROUND).
+  options Json?
+
+  // Snapshot of the product's Product Intelligence identity anchors at
+  // request time, when available — see docs/image-processing.md
+  // "Identity preservation". Unlike GenerationJob, NOT required: a
+  // deterministic transform (crop/sharpen/background removal) doesn't
+  // need creative grounding to stay identity-safe the way AI generation
+  // does, so processing is never blocked on the product having been
+  // analyzed. Null simply means "not analyzed yet" or "Product
+  // Intelligence doesn't apply here".
+  identityAnchors Json?
+
+  // Merchant-safe summary of the last failure, if any (see CLAUDE.md "Safe
+  // error handling" — no stack traces/internal detail here).
+  errorMessage String?
+  // How many attempts BullMQ has made at this job — mirrors
+  // GenerationJob.retryCount; see services/processing/job.server.ts.
+  retryCount Int @default(0)
+
+  providerName  String?
+  providerJobId String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  // Wall-clock duration of the last processing attempt, in milliseconds —
+  // usage-accounting foundation only; no billing is computed from this.
+  durationMs Int?
+
+  // Which batch this job belongs to, if it was created as part of one
+  // (see ProcessingBatch below). Null for a single-image request from
+  // the product detail page.
+  batchId String?
+  batch   ProcessingBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results ProcessingResult[]
+
+  @@index([shop, productId])
+  @@index([shop, status])
+  @@index([shop, createdAt])
+  @@index([batchId])
+}
+
+// One row per output image a ProcessingJob produced. Almost always
+// exactly one (a deterministic transform has one natural output, unlike
+// generation's "may produce several creative variations"), but modeled
+// as a relation, not a 1:1, for the same reason GenerationResult is: a
+// result is independently identifiable, queryable, and reviewable
+// without special-casing "the" result on the job row itself.
+model ProcessingResult {
+  id String @id @default(cuid())
+
+  // Tenant — denormalized alongside processingJobId, matching
+  // GenerationResult/ShopifyProductMedia's established pattern.
+  shop String
+
+  processingJobId String
+  processingJob   ProcessingJob @relation(fields: [processingJobId], references: [id], onDelete: Cascade)
+
+  // Reference into StorageProvider — never a raw binary. See CLAUDE.md
+  // "Storage rules".
+  storageKey String
+  url        String?
+
+  width  Int?
+  height Int?
+  format String?
+
+  providerName     String?
+  providerResultId String?
+  metadata         Json?
+
+  // The merchant's review decision for THIS result — see
+  // docs/image-processing.md "Result review UI". Approving/rejecting is
+  // an update to this row (there is nothing to preserve a "history of
+  // review decisions" for); the RESULT itself is never deleted or
+  // overwritten regardless of the decision — "Regenerate" always creates
+  // a new ProcessingJob/ProcessingResult, never mutates this one's
+  // storageKey.
+  reviewStatus ReviewStatus @default(PENDING)
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, processingJobId])
+}
+
+// Groups the independent ProcessingJobs created by one "select products →
+// choose operation → start processing" batch action (see
+// docs/image-processing.md "Batch processing"). Progress (total/queued/
+// processing/succeeded/failed) is deliberately NOT persisted as counters
+// on this row — it's computed at read time via a groupBy over
+// ProcessingJob.status scoped to this batch (see
+// db/repositories/processing-batch.repository.ts), the same
+// derived-not-stored approach this schema already uses for Product
+// Intelligence's staleness (see ProductIntelligence's model comment) —
+// avoids a second source of truth that could drift from the jobs
+// themselves.
+model ProcessingBatch {
+  id String @id @default(cuid())
+
+  shop String
+
+  operation ImageOperation
+
+  // The ImageSelection this batch was started from, if any — traceability
+  // only; the batch's own jobs are the source of truth once created (see
+  // services/processing/batch.server.ts).
+  sourceSelectionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  jobs ProcessingJob[]
+
+  @@index([shop, createdAt])
 }

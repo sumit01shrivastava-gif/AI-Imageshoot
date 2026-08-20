@@ -20,22 +20,33 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 3 — Image Generation Foundation — complete.** Phase 0
-(foundation), Phase 1 (Shopify product catalog sync, search/detail, image
-selection), and Phase 2 (Product Intelligence — structured per-product
-analysis, no vendor wired up) are done. Phase 3 added the image-generation
-foundation: `GenerationJob`/`GenerationResult` models, a structured
-`GenerationPlan` bridging Product Intelligence into a generation request
-(explicit product-facts-vs-creative-direction split for identity
-preservation), the `ImageGenerationProvider`/`ImageProcessingProvider`
-abstractions (split out of the old `AIProvider` stub methods), the
-`"generation"` BullMQ queue (with automatic retry — deliberately
-different semantics from Phase 1/2's queues, see docs/generation.md), and
-a minimal "Generate Test Image"/"Regenerate" UI proven end to end only via
-a deterministic test provider. See docs/generation.md. **No real AI
-vendor (image generation or image processing) is installed, no image is
-ever actually generated outside the deterministic test provider, no
-publishing back to Shopify, and no credits/billing is implemented.**
+**Phase 4 — Production Image Processing (Basic Plan Foundation) —
+complete.** Phase 0 (foundation), Phase 1 (Shopify product catalog sync,
+search/detail, image selection), Phase 2 (Product Intelligence, no vendor
+wired up), and Phase 3 (image-generation foundation — `GenerationJob`/
+`GenerationResult`, `ImageGenerationProvider`/`ImageProcessingProvider`
+abstractions, the `"generation"` queue, proven only via a deterministic
+test provider) are done. Phase 4 is the **first phase with a real,
+working AI vendor call**: `ProductionImageProcessingProvider`
+(`services/ai/production-image-processing-provider.server.ts`) calls
+remove.bg for background removal; enhancement and resizing run locally
+via `sharp` (no vendor needed for deterministic transforms). It adds
+`ProcessingJob`/`ProcessingResult`/`ProcessingBatch` models (a dedicated
+family, not a reuse of `GenerationJob`/`GenerationResult` — see
+docs/image-processing.md for why), the `"enhancement"` BullMQ queue
+(single-image and batch, with automatic retry), batch processing built
+on Phase 1's existing `ImageSelection`, a review lifecycle (Approve/
+Reject/Regenerate — never overwrites a prior result), replaces
+`MemoryStorageProvider` with a genuinely persistent
+`LocalFilesystemStorageProvider` as the storage default, and a signed,
+tenant-authorized `/media/*` route for serving processed images to the
+browser (which can't carry Shopify's session-token auth on a plain
+`<img>` load). See docs/image-processing.md. **No real AI *generation*
+vendor is installed (only the one processing vendor, remove.bg, for
+background removal); no lifestyle/AI-model/campaign imagery; no
+publishing back to Shopify; no credits/billing/subscriptions; and
+`LocalFilesystemStorageProvider` is not yet a horizontally-scalable cloud
+storage vendor.**
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -102,7 +113,11 @@ app/                  React Router app: routes, root, entry, thin re-exports
 
 services/
   shopify/            ALL Shopify SDK usage (auth, admin client, webhooks)
-  ai/                 AI provider interface + capability types (no vendor code yet)
+  ai/                 AIProvider/ImageGenerationProvider/ImageProcessingProvider
+                       interfaces; ProductionImageProcessingProvider (Phase 4 —
+                       remove.bg for background removal, local sharp for
+                       enhance/resize) is the only real vendor-backed provider
+                       implemented so far. Unconfigured* fallbacks for the rest.
   products/           Product import/selection business logic (future)
   intelligence/       Product Intelligence: analysis input/output, schema
                        validation, queue/job, staleness, recommendations
@@ -110,6 +125,9 @@ services/
   generation/         Image generation foundation: generation plan, job/
                       queue, provider input, storage persistence
                       (services/generation/README.md)
+  processing/         Production image processing (Basic plan): operation
+                       taxonomy, options schema, job/queue (single-image +
+                       batch), review lifecycle (services/processing/README.md)
   media/              Media library business logic (future)
   publishing/         Publish-to-Shopify business logic (future)
   usage/              Usage/credit tracking business logic (future)
@@ -123,7 +141,9 @@ workers/               BullMQ worker process entry point (separate from the web 
 lib/
   auth/               Provider-agnostic AuthContext type + tenant isolation guard
   queue/               Redis connection + BullMQ queue/worker factories
-  storage/              StorageProvider interface + in-memory test implementation
+  storage/              StorageProvider interface; LocalFilesystemStorageProvider
+                        (Phase 4 default — persistent, not yet a cloud vendor) +
+                        in-memory test implementation
   validation/           Environment schema (Zod) — the only place process.env is read
   logging/               Structured logger with secret redaction
 
@@ -357,7 +377,45 @@ Phase 3 (Image generation foundation) — complete:
       bulk/batch generation
 - [x] docs/generation.md
 
-No real AI vendor (image generation or image processing) is installed —
-every generation in this codebase runs only through the deterministic
-test provider, never a live network call. No publishing back to Shopify,
-no credits/billing is implemented. See docs/roadmap.md.
+No real AI *generation* vendor is installed — every generation in this
+codebase runs only through the deterministic test provider, never a live
+network call. (Phase 4 below adds one real *processing* vendor call —
+these remain separate abstractions; see docs/generation.md and
+docs/image-processing.md.)
+
+Phase 4 (Production image processing — Basic plan foundation) — complete:
+
+- [x] `ProcessingJob`/`ProcessingResult`/`ProcessingBatch` Prisma models —
+      a dedicated family (not a `GenerationJob`/`GenerationResult` reuse
+      — see docs/image-processing.md for why), processing history
+      preserved (never overwritten), tenant-isolated, batch progress
+      computed at read time (never a persisted counter)
+- [x] `ProductionImageProcessingProvider`
+      (`services/ai/production-image-processing-provider.server.ts`) —
+      the first real, working AI vendor call anywhere in this codebase:
+      remove.bg for `REMOVE_BACKGROUND`; `ENHANCE`/`RESIZE` run locally
+      via `sharp` (no vendor needed); `UPSCALE`/`GENERATE_SHADOW`/`CROP`
+      remain interface-only
+- [x] `services/processing/` — options schema, provider input building,
+      double-gated deterministic test provider for tests only, batch
+      entry point built on Phase 1's `ImageSelection`
+- [x] `"enhancement"` BullMQ queue (single-image + batch), per-request
+      job ids, automatic retry on transient provider failure
+- [x] `lib/storage/local-filesystem-provider.server.ts` — replaces
+      `MemoryStorageProvider` as the default: genuinely persistent,
+      shared across the web/worker process boundary on one host, not yet
+      a horizontally-scalable cloud vendor
+- [x] `app/routes/media.$.tsx` — signed, tenant-authorized media serving
+      (HMAC-signed `/media/*`, deliberately outside `app.tsx`'s
+      session-auth layout, since a plain `<img>` load can't carry it)
+- [x] Review lifecycle — Approve/Reject/Regenerate, never overwrites a
+      prior result
+- [x] Product detail page "Image Processing" section + a new batch
+      progress/review page (`app/routes/app.processing.$batchId.tsx`),
+      reached by extending Phase 1's existing selection flow — no new
+      selection UI built
+- [x] docs/image-processing.md
+
+No real AI *generation* vendor, no lifestyle/AI-model/campaign imagery,
+no publishing back to Shopify, no credits/billing/subscriptions is
+implemented. See docs/roadmap.md.

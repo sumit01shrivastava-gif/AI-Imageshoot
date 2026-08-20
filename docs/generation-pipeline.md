@@ -29,10 +29,13 @@ no picker yet) in the UI
 
 `removeBackground`/`enhanceImage` are no longer `AIProvider` methods —
 Phase 3 split them out into a separate `ImageProcessingProvider`
-interface (established as an abstraction only, nothing calls it yet) —
-see docs/ai-pipeline.md and docs/generation.md "Processing abstraction".
-`"enhancement"` (background removal/cleanup/upscale as their own queue)
-remains unregistered.
+interface (established as an abstraction only that phase). **Phase 4
+implemented it** — `removeBackground` (a real vendor, remove.bg),
+`enhance`/`resize` (local, via `sharp`) — and registered the
+`"enhancement"` queue. This is a *different* pipeline from the one
+diagrammed above (deterministic transforms of an *existing* image, not
+creative generation) — see docs/image-processing.md for its own full
+data flow, not a variant of this one.
 
 ## Explicitly not decided/built yet
 
@@ -47,9 +50,12 @@ remains unregistered.
   the structured metadata a future phase would need — provider, duration,
   output count — but computes no cost)
 - A source-image picker for generation, a prompt editor, a model/pose
-  selector, batch/campaign generation
-- Real background-removal/enhancement/upscale infrastructure — the
-  `ImageProcessingProvider` interface exists; nothing implements it
+  selector, campaign generation (batch *processing* — a different
+  pipeline — exists; see docs/image-processing.md)
+- Real *upscale*/*shadow-generation*/*crop* infrastructure — the
+  `ImageProcessingProvider` interface has these three methods, but only
+  `removeBackground`/`enhance`/`resize` are implemented (Phase 4); see
+  docs/image-processing.md "Supported operations"
 
 Do not implement any of the above ahead of its phase — see CLAUDE.md
 "Incremental development".

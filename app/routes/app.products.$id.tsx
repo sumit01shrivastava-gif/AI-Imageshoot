@@ -25,6 +25,20 @@ import {
   InvalidGenerationRequestError,
 } from "../../services/generation/request-generation.server";
 import type { GenerationResultRow } from "../../db/repositories/generation-job.repository";
+import {
+  requestProcessing,
+  createAndEnqueueProcessingJob,
+  reviewProcessingResult,
+  getProcessing,
+  listProcessingHistory,
+  ProductNotFoundError as ProcessingProductNotFoundError,
+  SourceImageNotFoundError,
+  InvalidProcessingRequestError,
+  ProcessingResultNotFoundError,
+} from "../../services/processing/request-processing.server";
+import { parseProcessingOptions } from "../../services/processing/schema";
+import { IMPLEMENTED_OPERATIONS, type ImageOperationValue } from "../../services/processing/types";
+import type { ProcessingJobRow, ProcessingResultRow } from "../../db/repositories/processing-job.repository";
 import { useSelection } from "../components/selection-context";
 import { SelectionBar } from "../components/selection-bar";
 
@@ -83,7 +97,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // repository's select already includes.
   const generationHistory = await listGenerationHistory(context, product.id);
 
-  return { product, variants, variantsError, intelligence, intelligenceState, generationHistory };
+  // Most-recent-first — see docs/image-processing.md "Versioning". Same
+  // reasoning as generationHistory above: every request is its own
+  // preserved row, never overwritten.
+  const processingHistory = await listProcessingHistory(context, product.id);
+
+  return {
+    product,
+    variants,
+    variantsError,
+    intelligence,
+    intelligenceState,
+    generationHistory,
+    processingHistory,
+  };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -148,6 +175,85 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "process") {
+    const sourceMediaId = formData.get("sourceMediaId");
+    const operation = formData.get("operation");
+    if (typeof sourceMediaId !== "string" || typeof operation !== "string") {
+      return { ok: false as const, error: "Couldn't start processing right now. Please try again." };
+    }
+    try {
+      await requestProcessing(context, { productId: params.id!, sourceMediaId, operation });
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof ProcessingProductNotFoundError) {
+        // Same "indistinguishable from not-found" handling as the loader —
+        // see its comment above.
+        logger.warn("products.detail.process_tenant_mismatch_or_missing", {
+          shop: context.shop,
+          requestedId: params.id,
+        });
+        throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof SourceImageNotFoundError || error instanceof InvalidProcessingRequestError) {
+        return { ok: false as const, error: error.message };
+      }
+      logger.error("products.detail.process_request_failed", {
+        shop: context.shop,
+        productId: params.id,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return { ok: false as const, error: "Couldn't start processing right now. Please try again." };
+    }
+  }
+
+  if (intent === "review-processing-result") {
+    const resultId = formData.get("resultId");
+    const decision = formData.get("decision");
+    if (typeof resultId !== "string" || (decision !== "APPROVED" && decision !== "REJECTED")) {
+      return { ok: false as const, error: "Couldn't complete that action right now. Please try again." };
+    }
+    try {
+      await reviewProcessingResult(context, resultId, decision);
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof ProcessingResultNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: "Couldn't complete that action right now. Please try again." };
+    }
+  }
+
+  if (intent === "regenerate-processing") {
+    const jobId = formData.get("jobId");
+    if (typeof jobId !== "string") {
+      return { ok: false as const, error: "Couldn't start processing right now. Please try again." };
+    }
+    try {
+      // Looked up server-side (never trusting a client-supplied
+      // product/media/operation) — mirrors
+      // app/routes/app.processing.$batchId.tsx's "regenerate" action: the
+      // new request always mirrors the EXACT product/source image/
+      // operation/options the original job used, and carries the same
+      // batchId forward if the original was part of one.
+      const original = await getProcessing(context, jobId);
+      if (!original) throw NOT_FOUND_RESPONSE();
+
+      await createAndEnqueueProcessingJob(context, {
+        productId: original.productId,
+        sourceMediaId: original.sourceMediaId,
+        operation: original.operation,
+        options: parseProcessingOptions(original.options),
+        batchId: original.batchId ?? undefined,
+      });
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof ProcessingProductNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: "Couldn't start processing right now. Please try again." };
+    }
+  }
+
   return { ok: false as const, error: "Unknown action." };
 };
 
@@ -189,13 +295,37 @@ const GENERATION_STATUS_TONE: Record<string, "info" | "success" | "warning" | "c
   CANCELLED: "warning",
 };
 
+// Same shape/values as GENERATION_STATUS_LABEL/_TONE — ProcessingStatus is
+// its own Prisma enum (see prisma/schema.prisma's model comment) but
+// happens to share the same five-terminal-plus-in-flight vocabulary.
+const PROCESSING_STATUS_LABEL = GENERATION_STATUS_LABEL;
+const PROCESSING_STATUS_TONE = GENERATION_STATUS_TONE;
+
+const OPERATION_LABEL: Record<ImageOperationValue, string> = {
+  REMOVE_BACKGROUND: "Remove background",
+  ENHANCE: "Enhance",
+  UPSCALE: "Upscale",
+  GENERATE_SHADOW: "Add shadow",
+  RESIZE: "Resize",
+  CROP: "Crop",
+};
+
 export default function ProductDetail() {
-  const { product, variants, variantsError, intelligence, intelligenceState, generationHistory } =
-    useLoaderData<typeof loader>();
+  const {
+    product,
+    variants,
+    variantsError,
+    intelligence,
+    intelligenceState,
+    generationHistory,
+    processingHistory,
+  } = useLoaderData<typeof loader>();
   const { isImageSelected, toggleImage, setProductImages, productSelectionState, selectedCountForProduct } =
     useSelection();
   const analyzeFetcher = useFetcher<typeof action>();
   const generateFetcher = useFetcher<typeof action>();
+  const processFetcher = useFetcher<typeof action>();
+  const processingReviewFetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
   const shopify = useAppBridge();
 
@@ -316,6 +446,71 @@ export default function ProductDetail() {
   const requestGenerationClick = () => {
     setAwaitingGeneration(true);
     generateFetcher.submit({ intent: "generate" }, { method: "POST" });
+  };
+
+  // --- Image Processing (Phase 4) ----------------------------------------
+  // Same "each action creates a brand-new, independently-preserved row"
+  // shape as generation above — `processingHistory[0]` (most-recent-first)
+  // is unambiguously whichever per-image action was just started,
+  // regardless of which of the product's images it targeted. Only
+  // POLL — never for an already-terminal job (see the Phase 4
+  // instructions) — while a just-started request hasn't landed yet.
+  const latestProcessing = processingHistory[0] ?? null;
+  const processingStatus = latestProcessing?.status;
+  const isTerminalProcessingStatus =
+    processingStatus === "SUCCEEDED" || processingStatus === "FAILED" || processingStatus === "CANCELLED";
+
+  const [awaitingProcessing, setAwaitingProcessing] = useState(false);
+  const isProcessing = awaitingProcessing || (processingStatus !== undefined && !isTerminalProcessingStatus);
+
+  const [prevProcessingStatus, setPrevProcessingStatus] = useState(processingStatus);
+  if (processingStatus !== prevProcessingStatus) {
+    setPrevProcessingStatus(processingStatus);
+    if (isTerminalProcessingStatus) {
+      setAwaitingProcessing(false);
+    }
+  }
+
+  const [prevProcessFetcherData, setPrevProcessFetcherData] = useState(processFetcher.data);
+  if (processFetcher.data !== prevProcessFetcherData) {
+    setPrevProcessFetcherData(processFetcher.data);
+    if (processFetcher.data && !processFetcher.data.ok) {
+      setAwaitingProcessing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!awaitingProcessing || isTerminalProcessingStatus) return;
+    const id = setInterval(() => revalidator.revalidate(), 3000);
+    return () => clearInterval(id);
+  }, [awaitingProcessing, isTerminalProcessingStatus, revalidator]);
+
+  useEffect(() => {
+    if (processFetcher.data?.ok) {
+      shopify.toast.show("Processing started");
+    } else if (processFetcher.data && !processFetcher.data.ok) {
+      shopify.toast.show(processFetcher.data.error, { isError: true });
+    }
+  }, [processFetcher.data, shopify]);
+
+  useEffect(() => {
+    if (processingReviewFetcher.data && !processingReviewFetcher.data.ok) {
+      shopify.toast.show(processingReviewFetcher.data.error, { isError: true });
+    }
+  }, [processingReviewFetcher.data, shopify]);
+
+  const requestProcessingAction = (sourceMediaId: string, operation: ImageOperationValue) => {
+    setAwaitingProcessing(true);
+    processFetcher.submit({ intent: "process", sourceMediaId, operation }, { method: "POST" });
+  };
+
+  const regenerateProcessing = (jobId: string) => {
+    setAwaitingProcessing(true);
+    processFetcher.submit({ intent: "regenerate-processing", jobId }, { method: "POST" });
+  };
+
+  const reviewProcessing = (resultId: string, decision: "APPROVED" | "REJECTED") => {
+    processingReviewFetcher.submit({ intent: "review-processing-result", resultId, decision }, { method: "POST" });
   };
 
   return (
@@ -537,6 +732,100 @@ export default function ProductDetail() {
         </s-stack>
       </s-section>
 
+      <s-section heading="Image Processing">
+        <s-stack direction="block" gap="large">
+          {product.media.length === 0 ? (
+            <s-paragraph color="subdued">No images to process — this product has no Shopify images.</s-paragraph>
+          ) : (
+            <s-stack direction="block" gap="base">
+              <s-text color="subdued">
+                Source images — background removal, enhancement, and resizing never modify the
+                original Shopify image; each run creates a new, separately reviewable result.
+              </s-text>
+              <s-grid gridTemplateColumns="repeat(auto-fill, minmax(160px, 1fr))" gap="base">
+                {product.media.map((media) => (
+                  <s-box key={media.id} padding="small-200" borderWidth="base" borderRadius="base" borderColor="subdued">
+                    <s-stack direction="block" gap="small-200">
+                      <s-image src={media.previewUrl ?? media.originalUrl} alt={media.altText ?? product.title} />
+                      <s-text color="subdued">Original</s-text>
+                      <s-stack direction="block" gap="small-100">
+                        {IMPLEMENTED_OPERATIONS.map((operation) => (
+                          <s-button
+                            key={operation}
+                            variant="tertiary"
+                            disabled={isProcessing}
+                            onClick={() => requestProcessingAction(media.id, operation)}
+                          >
+                            {OPERATION_LABEL[operation]}
+                          </s-button>
+                        ))}
+                      </s-stack>
+                    </s-stack>
+                  </s-box>
+                ))}
+              </s-grid>
+            </s-stack>
+          )}
+
+          {isProcessing && (
+            <s-stack direction="inline" gap="base" alignItems="center">
+              <s-badge tone="info">
+                {latestProcessing ? PROCESSING_STATUS_LABEL[latestProcessing.status] : "Queued"}
+              </s-badge>
+              <s-text color="subdued">Processing your most recent request…</s-text>
+            </s-stack>
+          )}
+
+          {processingStatus === "FAILED" && !isProcessing && (
+            <s-banner tone="critical">
+              <s-paragraph>{latestProcessing?.errorMessage ?? "Processing failed."}</s-paragraph>
+            </s-banner>
+          )}
+
+          {latestProcessing && processingStatus === "SUCCEEDED" && (
+            <s-stack direction="block" gap="base">
+              <s-heading>Latest result</s-heading>
+              <ProcessingResultDetail
+                job={latestProcessing}
+                onReview={reviewProcessing}
+                onRegenerate={() => regenerateProcessing(latestProcessing.id)}
+                isRegenerating={isProcessing}
+              />
+            </s-stack>
+          )}
+
+          {processingHistory.length > 0 && (
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Processing history</s-text>
+              <s-stack direction="block" gap="small-200">
+                {processingHistory.map((job, index) => {
+                  const result = job.results[job.results.length - 1];
+                  return (
+                    <s-paragraph key={job.id}>
+                      Process #{processingHistory.length - index} — {OPERATION_LABEL[job.operation]}{" "}
+                      <s-badge tone={PROCESSING_STATUS_TONE[job.status]}>
+                        {PROCESSING_STATUS_LABEL[job.status]}
+                      </s-badge>{" "}
+                      {result && (
+                        <>
+                          {result.width && result.height ? `${result.width}×${result.height} · ` : ""}
+                          {result.reviewStatus === "APPROVED"
+                            ? "Approved"
+                            : result.reviewStatus === "REJECTED"
+                              ? "Rejected"
+                              : "Not reviewed"}{" "}
+                        </>
+                      )}
+                      <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
+                    </s-paragraph>
+                  );
+                })}
+              </s-stack>
+            </s-stack>
+          )}
+        </s-stack>
+      </s-section>
+
       <s-section slot="aside" heading="Details">
         <s-stack direction="block" gap="base">
           <s-paragraph>
@@ -606,25 +895,104 @@ function IntelligenceField({ label, value }: { label: string; value: string | nu
 }
 
 /**
- * Renders a generation result's METADATA, not the image itself — the
- * deterministic test provider (this phase's only wired-up provider)
- * produces a placeholder 1x1 pixel, and `result.url` is a reference into
- * `MemoryStorageProvider` (a fake, non-fetchable `memory://` URL — see
- * lib/storage/provider.server.ts's doc comment), not a real photo. Once a
- * real storage vendor + AI provider are selected, this becomes an actual
- * `<s-image>`; showing the structured metadata now still proves results
- * persisted correctly. See docs/generation.md "Storage".
+ * `result.url` is a signed `/media/<key>?expires=...&sig=...` reference
+ * (lib/storage/local-filesystem-provider.server.ts, served by
+ * app/routes/media.$.tsx) as of Phase 4's storage change — a real,
+ * fetchable image, not a filesystem path. The deterministic test provider
+ * (this phase's only wired-up `ImageGenerationProvider`) still produces a
+ * placeholder 1x1 pixel, so what renders here in tests/dev is that
+ * placeholder — but the plumbing (storage → signed URL → `<s-image>`) is
+ * the real, production path. See docs/generation.md "Storage" and
+ * docs/image-processing.md "Signed media URL architecture".
  */
 function GenerationResultCard({ result, index }: { result: GenerationResultRow; index: number }) {
   return (
     <s-box padding="small-200" borderWidth="base" borderRadius="base" borderColor="subdued">
       <s-stack direction="block" gap="small-200">
         <s-text type="strong">Result {index + 1}</s-text>
+        {result.url && <s-image src={result.url} alt={`Generated result ${index + 1}`} />}
         <s-text color="subdued">
           {result.format ?? "—"}
           {result.width && result.height ? ` · ${result.width}×${result.height}` : ""}
         </s-text>
         <s-text color="subdued">{result.providerName ?? "—"}</s-text>
+      </s-stack>
+    </s-box>
+  );
+}
+
+/**
+ * The detailed "latest result" card for Image Processing — original
+ * (Shopify's own CDN URL, never modified) vs. processed (a signed
+ * `/media/<key>` reference — see GenerationResultCard's doc comment
+ * above for why this is a real, fetchable URL, not a filesystem path),
+ * operation, dimensions, status, created time, and Approve/Reject/
+ * Regenerate. See docs/image-processing.md "Result review UI".
+ */
+function ProcessingResultDetail({
+  job,
+  onReview,
+  onRegenerate,
+  isRegenerating,
+}: {
+  job: ProcessingJobRow;
+  onReview: (resultId: string, decision: "APPROVED" | "REJECTED") => void;
+  onRegenerate: () => void;
+  isRegenerating: boolean;
+}) {
+  const result: ProcessingResultRow | undefined = job.results[job.results.length - 1];
+  if (!result) return null;
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued">
+      <s-stack direction="block" gap="base">
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-text type="strong">{OPERATION_LABEL[job.operation]}</s-text>
+          <s-badge tone={PROCESSING_STATUS_TONE[job.status]}>{PROCESSING_STATUS_LABEL[job.status]}</s-badge>
+          <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
+        </s-stack>
+
+        <s-grid gridTemplateColumns="repeat(2, minmax(160px, 1fr))" gap="base">
+          <s-stack direction="block" gap="small-200">
+            <s-text color="subdued">Original</s-text>
+            <s-image src={job.sourceMedia.originalUrl} alt={job.sourceMedia.altText ?? "Original image"} />
+          </s-stack>
+          <s-stack direction="block" gap="small-200">
+            <s-text color="subdued">Processed</s-text>
+            {result.url ? (
+              <s-image src={result.url} alt={`Processed — ${OPERATION_LABEL[job.operation]}`} />
+            ) : (
+              <s-paragraph color="subdued">Not available.</s-paragraph>
+            )}
+          </s-stack>
+        </s-grid>
+
+        <s-text color="subdued">
+          {result.format ?? "—"}
+          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""} ·{" "}
+          {result.reviewStatus === "APPROVED" ? "Approved" : result.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
+        </s-text>
+
+        <s-stack direction="inline" gap="base">
+          <s-button
+            variant="tertiary"
+            disabled={result.reviewStatus === "APPROVED"}
+            onClick={() => onReview(result.id, "APPROVED")}
+          >
+            Approve
+          </s-button>
+          <s-button
+            variant="tertiary"
+            tone="critical"
+            disabled={result.reviewStatus === "REJECTED"}
+            onClick={() => onReview(result.id, "REJECTED")}
+          >
+            Reject
+          </s-button>
+          <s-button variant="tertiary" onClick={onRegenerate} {...(isRegenerating ? { loading: true } : {})}>
+            Regenerate
+          </s-button>
+        </s-stack>
       </s-stack>
     </s-box>
   );

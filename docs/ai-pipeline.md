@@ -1,25 +1,32 @@
 # AI pipeline
 
-## Current state (Phase 3)
+## Current state (Phase 4)
 
 `services/ai/types.ts` defines three separate, focused provider
-interfaces — no vendor is selected, no vendor SDK is installed, and no
-network call to any AI provider exists anywhere in this codebase.
-`services/ai/unconfigured-provider.ts` provides an `Unconfigured*`
-implementation of each, which satisfies its interface and throws
-`UnconfiguredAIProviderError` on every call — the default everywhere
-outside of tests, since no real vendor exists yet.
+interfaces. `services/ai/unconfigured-provider.ts` provides an
+`Unconfigured*` implementation of each, which satisfies its interface and
+throws `UnconfiguredAIProviderError` on every call — still the default
+for `AIProvider` and `ImageGenerationProvider` (no real vendor for
+either), and for the three `ImageProcessingProvider` methods Phase 4
+didn't implement.
 
 - **`AIProvider`** — product analysis (`analyzeProduct`). Called by Phase
-  2 (Product Intelligence) — see docs/product-intelligence.md.
+  2 (Product Intelligence) — see docs/product-intelligence.md. No real
+  vendor.
 - **`ImageGenerationProvider`** — generative image creation
   (`generateImage`). Called by Phase 3 (image generation foundation) —
-  see docs/generation.md.
+  see docs/generation.md. No real vendor.
 - **`ImageProcessingProvider`** — deterministic/transformative operations
   on an existing image (`removeBackground`, `enhance`, `upscale`,
-  `generateShadow`, `crop`, `resize`). Established this phase as an
-  interface + `Unconfigured` implementation only — nothing calls it yet;
-  see docs/generation.md "Processing abstraction".
+  `generateShadow`, `crop`, `resize`). Established as an interface in
+  Phase 3 (abstraction only); Phase 4 gave it a real implementation,
+  `ProductionImageProcessingProvider`
+  (`services/ai/production-image-processing-provider.server.ts`) — **the
+  first real, working AI vendor call anywhere in this codebase**:
+  `removeBackground` calls remove.bg; `enhance`/`resize` run locally via
+  `sharp` (no vendor needed — see docs/image-processing.md "Provider
+  selection" for why); `upscale`/`generateShadow`/`crop` still throw
+  `UnconfiguredAIProviderError`. See docs/image-processing.md.
 
 These are three interfaces, not one do-everything `AIProvider`, because
 each is a genuinely different capability with a different input/output
@@ -28,11 +35,13 @@ for why an earlier, single-interface draft (with `removeBackground`/
 `enhanceImage`/`generateLifestyle`/`generateModelImage` all on one
 `AIProvider`) was replaced.
 
-Each of Phase 2 and Phase 3 is the first caller of its own interface, and
-each exercises the whole interface-first design (business logic depending
-on the interface, not a vendor) in tests via a deterministic, network-free
+Phase 2/3/4 are each the first caller of their own interface, and each
+exercises the whole interface-first design (business logic depending on
+the interface, not a vendor) in tests via a deterministic, network-free
 test provider owned by that domain (`services/intelligence/`,
-`services/generation/`). Neither selects or installs a real vendor.
+`services/generation/`, `services/processing/`) — real vendor code is
+never reachable from a test, even for `ImageProcessingProvider`, which
+does have one now.
 
 ## The interfaces
 
@@ -58,13 +67,14 @@ interface ImageProcessingProvider {
 }
 ```
 
-`analyzeProduct` and `generateImage` are the two capabilities actually
-called (by Phase 2 and Phase 3 respectively) — see
-docs/product-intelligence.md and docs/generation.md for their input
-shapes and why each output type is deliberately loose/untyped where a
-real vendor's response can't be trusted structurally (validated
-separately by a Zod schema, never trusted as-is). `ImageProcessingProvider`
-remains entirely unimplemented and uncalled.
+`analyzeProduct`, `generateImage`, and three of `ImageProcessingProvider`'s
+six methods (`removeBackground`/`enhance`/`resize`) are the capabilities
+actually called (by Phase 2, Phase 3, and Phase 4 respectively) — see
+docs/product-intelligence.md, docs/generation.md, and
+docs/image-processing.md for their input shapes and why each output type
+is deliberately loose/untyped where a real vendor's response can't be
+trusted structurally (validated separately, never trusted as-is).
+`upscale`/`generateShadow`/`crop` remain unimplemented.
 
 Each capability is a separate method (rather than one generic
 "generate(prompt)" call) because each has a distinct, typed input/output
@@ -75,30 +85,36 @@ temporary, provider-owned artifact, never assumed to live anywhere in
 particular; the caller persists it through `lib/storage/`'s
 `StorageProvider` abstraction (see docs/generation.md "Storage").
 
-## Rules for the eventual real provider(s)
+## Rules for a real provider
 
 - Lives in `services/ai/`, implements one of the interfaces above. No
-  other module may import the vendor's SDK directly.
+  other module may import the vendor's SDK directly —
+  `ProductionImageProcessingProvider` is the existing example: it's the
+  only file that calls `fetch()` against remove.bg or imports `sharp`.
 - Reads credentials only via `lib/validation/env.server.ts`
-  (`AI_PROVIDER`, `AI_PROVIDER_API_KEY`, `AI_PROVIDER_BASE_URL`) — never
-  hardcoded, never logged (these keys are in `SECRET_ENV_KEYS`).
+  (`AI_PROVIDER`/`AI_PROVIDER_API_KEY`/`AI_PROVIDER_BASE_URL` for
+  analysis/generation; `IMAGE_PROCESSING_PROVIDER`/`REMOVE_BG_API_KEY`
+  for processing) — never hardcoded, never logged (all in
+  `SECRET_ENV_KEYS` where applicable).
 - Never called from an automated test with real credentials or a real
-  network request.
+  network request — see each domain's own double-gated deterministic
+  test provider.
 
 ## Not yet designed (future phases)
 
-- Which vendor(s) to integrate, for generation or for processing
-- An `ImageProcessingProvider` implementation (real or test) and its
-  resolver/queue/route wiring — none exist yet, only the interface
+- Which vendor(s) to integrate for image *generation* (still entirely
+  unimplemented) or for `upscale`/`generateShadow`/`crop`
 - Prompt/config construction beyond `PRODUCT_CLEANUP` (see
   docs/generation.md "Generation types" for which of the nine taxonomy
   values have dedicated plan-building logic today)
-- Batch generation, additional aspect ratios, generation presets
+- Batch generation (batch *processing* exists — see
+  docs/image-processing.md), additional aspect ratios beyond the three
+  processing presets, generation/processing presets
 - Cost/usage accounting per call (ties into the future `UsageRecord`
-  model — see docs/database.md); Phase 3 records the structured metadata
-  (provider, duration, output count, ...) a future phase would need, but
-  computes no cost itself
-- Validating a generated result against its identity anchors — Phase 3
-  propagates `identityAnchors` all the way to the provider input
-  specifically so a future phase can do this; nothing inspects generated
-  output content yet
+  model — see docs/database.md); Phase 3/4 record the structured
+  metadata (provider, duration, output count, ...) a future phase would
+  need, but compute no cost themselves
+- Validating a generated/processed result against its identity anchors —
+  both `identityAnchors` propagate all the way to the provider input
+  specifically so a future phase can do this; nothing inspects output
+  content against them yet

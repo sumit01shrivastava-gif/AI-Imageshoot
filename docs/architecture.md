@@ -63,11 +63,28 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   results through the storage abstraction. Depends on `services/ai/`'s
   `ImageGenerationProvider` and `services/intelligence/`'s
   `IdentityAnchors` shape, never a vendor SDK — see docs/generation.md.
+- **`services/processing/`** (Phase 4) — production image processing
+  (background removal/enhance/resize): building provider input from a
+  source image + validated options, the `"enhancement"` BullMQ job/queue
+  wiring (batch and single-image), and persisting results through the
+  storage abstraction. Depends on `services/ai/`'s
+  `ImageProcessingProvider` (its production implementation is the first
+  real vendor call anywhere in this codebase — remove.bg, for background
+  removal only) and reuses Phase 1's `ImageSelection` for batch requests
+  — see docs/image-processing.md.
 - **`lib/storage/`** — same reasoning as AI, for object storage
   (S3/R2/Cloudinary/...). `StorageProvider` (`lib/storage/types.ts`) is
-  the contract. No real vendor is wired up yet;
+  the contract. No real cloud vendor is wired up yet;
   `getConfiguredStorageProvider()` (`lib/storage/provider.server.ts`)
-  defaults to the in-memory implementation in the meantime.
+  defaults to `LocalFilesystemStorageProvider` (Phase 4) — genuinely
+  persistent and shared across the web/worker process boundary on one
+  host, but not horizontally-scale-ready; see docs/image-processing.md
+  "Local filesystem storage vs. production storage considerations".
+  Serving a processed image to the browser (which can't carry Shopify's
+  session-token auth on a plain `<img>` load) goes through a dedicated,
+  HMAC-signed `/media/*` route (`app/routes/media.$.tsx`, deliberately
+  outside `app.tsx`'s auth-requiring layout) — see docs/image-processing.md
+  "Signed media URL architecture".
 - **`lib/queue/`** — all BullMQ `Queue`/`Worker` construction and the
   shared Redis connection live here, so production settings (e.g.
   `maxRetriesPerRequest: null`, connection reuse) are set once, correctly,
@@ -121,6 +138,14 @@ docs/product-intelligence.md) — structured per-product analysis and
 generation recommendations, with no vendor wired up. Phase 3 added the
 image-generation foundation (`services/generation/`, see
 docs/generation.md) — the request → job → provider → storage → result
-pipeline, proven end to end only via a deterministic test provider. No
-real AI vendor (image generation or image processing), no publishing back
-to Shopify, and no credits/billing exists yet.
+pipeline, proven end to end only via a deterministic test provider, no
+real AI vendor installed. Phase 4 added production image processing
+(`services/processing/`, see docs/image-processing.md) — the Basic
+plan's background removal/enhance/resize, batch processing (reusing
+Phase 1's `ImageSelection`), review (Approve/Reject/Regenerate), and
+`ProcessingBatch`/`ProcessingJob`/`ProcessingResult` — the first phase
+with a real, working vendor call (remove.bg, background removal only)
+and real persistent storage (`LocalFilesystemStorageProvider`, not yet a
+cloud vendor). Still no lifestyle/AI-model image generation, no
+publishing back to Shopify, and no credits/billing/subscriptions
+anywhere in this codebase.

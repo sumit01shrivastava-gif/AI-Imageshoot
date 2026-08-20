@@ -39,13 +39,30 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
 
   // --- Object storage -----------------------------------------------------
-  // Optional at this phase: no storage provider is wired up yet (Step 5 is
-  // an abstraction only). Left undefined until a provider is selected.
+  // A real cloud vendor (S3/R2/GCS/...) is still not wired up — these
+  // remain declared-but-unread hooks for that future phase (see
+  // lib/storage/provider.server.ts). Phase 4 instead persists through
+  // `LocalFilesystemStorageProvider`, configured by STORAGE_LOCAL_ROOT
+  // below — genuinely persistent (survives a process restart, shared
+  // across the web/worker process boundary on one host), just not yet
+  // cloud-backed. See docs/image-processing.md "Storage".
   OBJECT_STORAGE_PROVIDER: z.string().optional(),
   OBJECT_STORAGE_BUCKET: z.string().optional(),
   OBJECT_STORAGE_ENDPOINT: z.string().optional(),
   OBJECT_STORAGE_ACCESS_KEY: z.string().optional(),
   OBJECT_STORAGE_SECRET_KEY: z.string().optional(),
+  // Directory `LocalFilesystemStorageProvider` reads/writes under. Defaults
+  // to a project-local, gitignored directory so `npm run dev`/tests work
+  // with zero configuration.
+  STORAGE_LOCAL_ROOT: z.string().min(1).default(".data/storage"),
+  // HMAC secret for the time-limited signed URLs `app/routes/app.media.$.tsx`
+  // verifies (see lib/storage/local-filesystem-provider.server.ts's
+  // `getSignedUrl` and docs/image-processing.md "Storage" — plain `<img>`
+  // tags can't carry Shopify's session-token bearer auth, so signed URLs
+  // are their own, independent proof of authorization instead). Falls back
+  // to (a domain-separated derivation of) SHOPIFY_API_SECRET when unset, so
+  // dev/test need no extra configuration; production should set its own.
+  MEDIA_SIGNING_SECRET: z.string().optional(),
 
   // --- AI provider ---------------------------------------------------------
   // Optional at this phase: no AI provider is wired up yet (Step 4 is an
@@ -53,6 +70,15 @@ const envSchema = z.object({
   AI_PROVIDER: z.string().optional(),
   AI_PROVIDER_API_KEY: z.string().optional(),
   AI_PROVIDER_BASE_URL: z.string().optional(),
+
+  // --- Image processing provider (Phase 4) --------------------------------
+  // Optional: falls back to UnconfiguredImageProcessingProvider (throws on
+  // every call) when unset — see services/processing/provider.server.ts.
+  // "remove-bg" is the only real vendor wired up (background removal only;
+  // enhance/resize run locally, no vendor needed — see docs/image-processing.md
+  // "Provider selection"). Never holds a real key in .env.example.
+  IMAGE_PROCESSING_PROVIDER: z.string().optional(),
+  REMOVE_BG_API_KEY: z.string().optional(),
 
   PORT: z.coerce.number().int().positive().optional(),
 
@@ -72,7 +98,9 @@ export const SECRET_ENV_KEYS = [
   "REDIS_URL",
   "OBJECT_STORAGE_ACCESS_KEY",
   "OBJECT_STORAGE_SECRET_KEY",
+  "MEDIA_SIGNING_SECRET",
   "AI_PROVIDER_API_KEY",
+  "REMOVE_BG_API_KEY",
 ] as const satisfies readonly (keyof Env)[];
 
 let cachedEnv: Env | undefined;

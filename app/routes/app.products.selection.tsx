@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useNavigate } from "react-router";
+import { useFetcher, useNavigate, redirect } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
@@ -9,9 +9,21 @@ import {
   createImageSelection,
   InvalidSelectionError,
 } from "../../services/products/selection.server";
+import { startBatchProcessing, InvalidBatchRequestError, SelectionNotFoundError } from "../../services/processing/batch.server";
+import { IMPLEMENTED_OPERATIONS, type ImageOperationValue } from "../../services/processing/types";
 import { useSelection } from "../components/selection-context";
 
 const GENERIC_CONFIRM_ERROR = "Couldn't save your selection. Please try again.";
+const GENERIC_START_ERROR = "Couldn't start processing right now. Please try again.";
+
+const OPERATION_LABEL: Record<ImageOperationValue, string> = {
+  REMOVE_BACKGROUND: "Remove background",
+  ENHANCE: "Enhance (sharpen + lighting)",
+  UPSCALE: "Upscale",
+  GENERATE_SHADOW: "Add shadow",
+  RESIZE: "Resize (aspect ratio)",
+  CROP: "Crop",
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Auth guard only — the review content itself comes from client-side
@@ -24,6 +36,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { context } = await requireAdminContext(request);
   const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "start-processing") {
+    const selectionId = formData.get("selectionId");
+    const operation = formData.get("operation");
+    if (typeof selectionId !== "string" || typeof operation !== "string") {
+      return { ok: false as const, error: GENERIC_START_ERROR };
+    }
+    try {
+      const { batchId } = await startBatchProcessing(context, { selectionId, operation });
+      return redirect(`/app/processing/${batchId}`);
+    } catch (error) {
+      const message =
+        error instanceof InvalidBatchRequestError || error instanceof SelectionNotFoundError
+          ? error.message
+          : GENERIC_START_ERROR;
+      return { ok: false as const, error: message };
+    }
+  }
+
+  // Default / "confirm": persist the client-side selection as an
+  // ImageSelection — see services/products/selection.server.ts.
   const raw = formData.get("entries");
 
   let entries: Array<{ productId: string; productMediaId: string }> = [];
@@ -57,10 +91,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function ProductsSelection() {
   const { summary, productCount, imageCount, entries, toggleImage, clearAll } = useSelection();
   const fetcher = useFetcher<typeof action>();
+  const startFetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const navigate = useNavigate();
   const isSaving = fetcher.state !== "idle";
+  const isStarting = startFetcher.state !== "idle";
   const confirmed = fetcher.data?.ok === true;
+  const [operation, setOperation] = useState<ImageOperationValue>("REMOVE_BACKGROUND");
 
   useEffect(() => {
     if (fetcher.data && !fetcher.data.ok) {
@@ -68,32 +105,68 @@ export default function ProductsSelection() {
     }
   }, [fetcher.data, shopify]);
 
+  useEffect(() => {
+    if (startFetcher.data && !startFetcher.data.ok) {
+      shopify.toast.show(startFetcher.data.error, { isError: true });
+    }
+  }, [startFetcher.data, shopify]);
+
   const handleContinue = () => {
     fetcher.submit({ entries: JSON.stringify(entries) }, { method: "POST" });
   };
 
+  const handleStartProcessing = (selectionId: string) => {
+    startFetcher.submit({ intent: "start-processing", selectionId, operation }, { method: "POST" });
+  };
+
   if (confirmed && fetcher.data?.ok) {
+    const selectionId = fetcher.data.selectionId;
     return (
       <s-page heading="Selection saved">
         <s-section>
-          <s-stack direction="block" gap="base">
-            <s-banner heading="Ready for the next phase" tone="success">
+          <s-stack direction="block" gap="large">
+            <s-banner heading="Ready to process" tone="success">
               <s-paragraph>
                 {productCount} {productCount === 1 ? "product" : "products"} and {imageCount} source{" "}
-                {imageCount === 1 ? "image" : "images"} were saved (selection ID{" "}
-                {fetcher.data.selectionId}). No AI processing has started — this selection is ready
-                for the next phase to pick up.
+                {imageCount === 1 ? "image" : "images"} were saved (selection ID {selectionId}).
               </s-paragraph>
             </s-banner>
-            <s-button
-              variant="primary"
-              onClick={() => {
-                clearAll();
-                navigate("/app/products");
-              }}
-            >
-              Back to Products
-            </s-button>
+
+            <s-stack direction="block" gap="base">
+              <s-heading>Process these images</s-heading>
+              <s-select
+                label="Operation"
+                labelAccessibilityVisibility="visible"
+                value={operation}
+                onChange={(event: Event) =>
+                  setOperation((event.currentTarget as HTMLSelectElement).value as ImageOperationValue)
+                }
+              >
+                {IMPLEMENTED_OPERATIONS.map((value) => (
+                  <s-option key={value} value={value}>
+                    {OPERATION_LABEL[value]}
+                  </s-option>
+                ))}
+              </s-select>
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  onClick={() => handleStartProcessing(selectionId)}
+                  {...(isStarting ? { loading: true } : {})}
+                >
+                  Start processing
+                </s-button>
+                <s-button
+                  variant="tertiary"
+                  onClick={() => {
+                    clearAll();
+                    navigate("/app/products");
+                  }}
+                >
+                  Back to Products
+                </s-button>
+              </s-stack>
+            </s-stack>
           </s-stack>
         </s-section>
       </s-page>

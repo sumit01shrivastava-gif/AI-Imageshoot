@@ -189,14 +189,20 @@ export async function getGenerationJob(context: AuthContext, id: string): Promis
 /** All generation jobs for one product, most recent first — the
  * "Generation #1, #2, #3, ..." history (docs/generation.md "Generation
  * history"). Scoped directly by `[shop, productId]`, so this doesn't need
- * a separate ownership check the way an id-keyed lookup does. */
+ * a separate ownership check the way an id-keyed lookup does. `id` (cuid
+ * — monotonically increasing by creation time) is a secondary sort key
+ * because `createdAt` alone has only millisecond resolution: two jobs
+ * created in rapid succession (e.g. Generate then immediately Regenerate)
+ * can otherwise tie and sort in an arbitrary order — see
+ * db/repositories/processing-job.repository.ts's `listProcessingJobsForProduct`,
+ * which documents/fixes the identical issue. */
 export async function listGenerationJobsForProduct(
   context: AuthContext,
   productId: string,
 ): Promise<GenerationJobRow[]> {
   return prisma.generationJob.findMany({
     where: { shop: context.shop, productId },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: JOB_SELECT,
   });
 }

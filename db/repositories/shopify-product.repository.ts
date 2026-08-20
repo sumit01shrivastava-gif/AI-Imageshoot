@@ -193,6 +193,35 @@ export async function findProductForShop(
   return product;
 }
 
+export interface MediaReference {
+  id: string;
+  originalUrl: string;
+  altText: string | null;
+  position: number;
+}
+
+/**
+ * Loads one media row scoped to `[shop, productId, mediaId]` — used by
+ * services/processing/job.server.ts's worker, which has a server-derived
+ * `shop`/`productId` rather than a request-scoped `AuthContext`, so this
+ * takes `shop` directly (like db/repositories/generation-job.repository.ts's
+ * `markProcessing` etc.) instead of doing an `AuthContext`-based ownership
+ * check. Returns `null` if the media (or its product) no longer belongs
+ * to this shop/product — e.g. deleted by a catalog re-sync between a
+ * processing request and the job actually running.
+ */
+export async function findMediaForProduct(
+  shop: string,
+  productId: string,
+  mediaId: string,
+): Promise<MediaReference | null> {
+  const media = await prisma.shopifyProductMedia.findFirst({
+    where: { id: mediaId, productId, shop },
+    select: { id: true, originalUrl: true, altText: true, position: true },
+  });
+  return media;
+}
+
 /**
  * Safe-upsert for one synced product + its media, keyed by
  * `[shop, shopifyProductId]` (product) and `[shop, shopifyMediaId]` (each

@@ -18,6 +18,9 @@ node_modules
 .react-router/
 /extensions/*/dist
 
+# Local persistent storage (lib/storage/local-filesystem-provider.server.ts)
+/.data/
+
 # Local databases
 /prisma/dev.sqlite
 /prisma/dev.sqlite-journal

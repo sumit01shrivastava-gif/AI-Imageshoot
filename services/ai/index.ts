@@ -22,3 +22,4 @@ export {
   UnconfiguredImageGenerationProvider,
   UnconfiguredImageProcessingProvider,
 } from "./unconfigured-provider";
+export { ProductionImageProcessingProvider } from "./production-image-processing-provider.server";
