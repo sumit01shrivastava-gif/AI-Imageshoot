@@ -282,3 +282,37 @@ describe("MODEL_SHOOT batch generation", () => {
     expect(plan.aspectRatio).toBe("16:9");
   });
 });
+
+describe("BANNER/CTA batch generation", () => {
+  it("creates a BANNER batch — no modelSuitable gate, unlike MODEL_SHOOT", async () => {
+    const [p1, p2] = await Promise.all([
+      seedProduct("gid://shopify/Product/60", { modelSuitable: false }),
+      seedProduct("gid://shopify/Product/61", { modelSuitable: false }),
+    ]);
+    const selectionId = await createImageSelection(CONTEXT, [
+      { productId: p1.id, productMediaId: p1.media[0].id },
+      { productId: p2.id, productMediaId: p2.media[0].id },
+    ]);
+
+    const { batchId, jobCount } = await startBatchGeneration(CONTEXT, { selectionId, generationType: "BANNER" });
+    expect(jobCount).toBe(2); // neither product was skipped
+
+    const summary = await waitForTerminal(batchId, 2, 15000);
+    expect(summary!.progress.succeeded).toBe(2);
+    expect(summary!.jobs.every((job) => job.type === "BANNER")).toBe(true);
+    // BANNER's own wide default aspect ratio, unset by this batch call.
+    const plan = summary!.jobs[0].plan as { aspectRatio: string };
+    expect(plan.aspectRatio).toBe("21:9");
+  });
+
+  it("creates a CTA batch with an explicit aspect ratio", async () => {
+    const p1 = await seedProduct("gid://shopify/Product/62");
+    const selectionId = await createImageSelection(CONTEXT, [{ productId: p1.id, productMediaId: p1.media[0].id }]);
+
+    const { batchId } = await startBatchGeneration(CONTEXT, { selectionId, generationType: "CTA", aspectRatio: "4:5" });
+    const summary = await waitForTerminal(batchId, 1, 15000);
+    expect(summary!.jobs[0].type).toBe("CTA");
+    const plan = summary!.jobs[0].plan as { aspectRatio: string };
+    expect(plan.aspectRatio).toBe("4:5");
+  });
+});

@@ -36,6 +36,20 @@ const OPERATION_LABEL: Record<ImageOperationValue, string> = {
   CROP: "Crop",
 };
 
+// The generationTypes batch generation drives — see
+// docs/lifestyle-generation.md. CATEGORY_BANNER/CAMPAIGN (not
+// product-scoped) are explicitly out of scope — see that doc's "Deferred"
+// section.
+const GENERATION_BATCH_TYPES = ["LIFESTYLE", "MODEL_SHOOT", "BANNER", "CTA"] as const;
+type GenerationBatchType = (typeof GENERATION_BATCH_TYPES)[number];
+
+const GENERATION_MODE_LABEL: Record<GenerationBatchType, string> = {
+  LIFESTYLE: "Generate lifestyle imagery",
+  MODEL_SHOOT: "Generate model imagery",
+  BANNER: "Generate promotional banners",
+  CTA: "Generate call-to-action images",
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Auth guard only — the review content itself comes from client-side
   // selection state (see app/components/selection-context.tsx); there's
@@ -75,7 +89,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const selectionId = formData.get("selectionId");
     const generationType = formData.get("generationType");
     const presetId = formData.get("presetId");
-    if (typeof selectionId !== "string" || (generationType !== "LIFESTYLE" && generationType !== "MODEL_SHOOT")) {
+    if (
+      typeof selectionId !== "string" ||
+      typeof generationType !== "string" ||
+      !(GENERATION_BATCH_TYPES as readonly string[]).includes(generationType)
+    ) {
       return { ok: false as const, error: GENERIC_START_GENERATION_ERROR };
     }
     try {
@@ -136,7 +154,7 @@ export default function ProductsSelection() {
   const isSaving = fetcher.state !== "idle";
   const isStarting = startFetcher.state !== "idle";
   const confirmed = fetcher.data?.ok === true;
-  const [mode, setMode] = useState<"process" | "LIFESTYLE" | "MODEL_SHOOT">("process");
+  const [mode, setMode] = useState<"process" | GenerationBatchType>("process");
   const [operation, setOperation] = useState<ImageOperationValue>("REMOVE_BACKGROUND");
   const [presetId, setPresetId] = useState("");
 
@@ -160,7 +178,7 @@ export default function ProductsSelection() {
     startFetcher.submit({ intent: "start-processing", selectionId, operation }, { method: "POST" });
   };
 
-  const handleStartGenerationBatch = (selectionId: string, generationType: "LIFESTYLE" | "MODEL_SHOOT") => {
+  const handleStartGenerationBatch = (selectionId: string, generationType: GenerationBatchType) => {
     startFetcher.submit({ intent: "start-generation-batch", selectionId, generationType, presetId }, { method: "POST" });
   };
 
@@ -184,12 +202,15 @@ export default function ProductsSelection() {
                 labelAccessibilityVisibility="visible"
                 value={mode}
                 onChange={(event: Event) =>
-                  setMode((event.currentTarget as HTMLSelectElement).value as "process" | "LIFESTYLE" | "MODEL_SHOOT")
+                  setMode((event.currentTarget as HTMLSelectElement).value as "process" | GenerationBatchType)
                 }
               >
                 <s-option value="process">Process images (background removal, enhance, resize…)</s-option>
-                <s-option value="LIFESTYLE">Generate lifestyle imagery</s-option>
-                <s-option value="MODEL_SHOOT">Generate model imagery</s-option>
+                {GENERATION_BATCH_TYPES.map((type) => (
+                  <s-option key={type} value={type}>
+                    {GENERATION_MODE_LABEL[type]}
+                  </s-option>
+                ))}
               </s-select>
 
               {mode === "process" ? (

@@ -1,6 +1,6 @@
 # Generation pipeline
 
-## Current state (Phase 3; extended Phases 5–6)
+## Current state (Phase 3; extended Phases 5–7)
 
 The foundation described below is now implemented — see docs/generation.md
 for the actual, current design (data model, provider abstraction, queue
@@ -8,11 +8,14 @@ lifecycle, identity preservation). Phase 5 (docs/lifestyle-generation.md)
 built the first real creative capability on top of this foundation — AI
 lifestyle product imagery (`GenerationType.LIFESTYLE`): category-aware
 scene planning, brand style presets, batch generation, and review
-(Approve/Reject). Phase 6 completed the same capability set with
+(Approve/Reject). Phase 6 completed "Package 2" with
 `GenerationType.MODEL_SHOOT` (model photography, gated on Product
 Intelligence's `modelSuitable`) and merchant-selectable aspect ratio.
-This document now only tracks what's still ahead: the parts of the
-original sketch none of these phases built.
+Phase 7 began "Package 3" with its product-scoped subset —
+`GenerationType.BANNER`/`CTA`, a promotional banner or CTA image still
+featuring one specific product. This document now only tracks what's
+still ahead: the parts of the original sketch none of these phases
+built.
 
 ```
 Merchant selects a product (Phase 3: always every one of its own images —
@@ -28,10 +31,11 @@ no picker yet) in the UI
             referenced by a GenerationResult row — IMPLEMENTED, no real
             storage vendor selected
   → merchant reviews/approves in the UI — IMPLEMENTED as of Phase 5, for
-    LIFESTYLE and (Phase 6) MODEL_SHOOT results (Approve/Reject via
-    `GenerationResult.reviewStatus` — see docs/lifestyle-generation.md
-    "Review, regeneration, and generation history"); PRODUCT_CLEANUP
-    results still show raw metadata only, no review state
+    LIFESTYLE, (Phase 6) MODEL_SHOOT, and (Phase 7) BANNER/CTA results
+    (Approve/Reject via `GenerationResult.reviewStatus` — see
+    docs/lifestyle-generation.md "Review, regeneration, and generation
+    history"); PRODUCT_CLEANUP results still show raw metadata only, no
+    review state
   → services/publishing: publishes approved assets back to Shopify —
     NOT BUILT
 ```
@@ -57,16 +61,22 @@ data flow, not a variant of this one.
   metadata a future phase would need — provider, duration, output count
   — is recorded, but no cost is computed and no plan/credit is enforced)
 - A real image-generation vendor (every generationType, including
-  LIFESTYLE/MODEL_SHOOT, still only runs through the deterministic test
-  provider — see docs/lifestyle-generation.md "Provider strategy") and
-  genuine semantic identity validation (`recordIdentityValidation` is an
-  honest "not yet possible" result, not a real check — see
-  docs/lifestyle-generation.md "Identity validation")
-- Website/category banners, CTA imagery, campaign generation (Package 3)
-  — `GenerationType` reserves the taxonomy (`BANNER`, `CATEGORY_BANNER`,
-  `CTA`, `CAMPAIGN`) but none has dedicated plan-building logic yet; only
-  `PRODUCT_CLEANUP`, `LIFESTYLE`, and (Phase 6) `MODEL_SHOOT` are driven
-  end to end
+  LIFESTYLE/MODEL_SHOOT/BANNER/CTA, still only runs through the
+  deterministic test provider — see docs/lifestyle-generation.md
+  "Provider strategy") and genuine semantic identity validation
+  (`recordIdentityValidation` is an honest "not yet possible" result, not
+  a real check — see docs/lifestyle-generation.md "Identity validation")
+- Homepage/category-level banners and campaign generation — the
+  not-product-scoped half of Package 3, explicitly deferred pending its
+  own architectural decision (see docs/lifestyle-generation.md "Package 3
+  scoping decision"); `GenerationType.CATEGORY_BANNER`/`CAMPAIGN` reserve
+  the taxonomy but have no plan-building logic; only `PRODUCT_CLEANUP`,
+  `LIFESTYLE`, `MODEL_SHOOT` (Phase 6), and the product-scoped
+  `BANNER`/`CTA` (Phase 7) are driven end to end
+- Text/logo/typography rendering onto a generated image — every
+  BANNER/CTA prompt explicitly instructs against it; a generated banner
+  is a background photograph a merchant composites their own promotional
+  copy onto elsewhere, not a finished asset with text baked in
 - A source-image picker for generation, a free-text prompt editor, a full
   lifestyle scene-control panel beyond a brand style preset picker (see
   docs/lifestyle-generation.md "UI"), custom-preset-saving UI (the

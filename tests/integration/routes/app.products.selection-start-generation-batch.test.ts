@@ -162,3 +162,42 @@ describe("app.products.selection — 'start-generation-batch' action (MODEL_SHOO
     expect(batch.generationType).toBe("MODEL_SHOOT");
   });
 });
+
+describe("app.products.selection — 'start-generation-batch' action (BANNER/CTA, Phase 7)", () => {
+  it("creates a BANNER GenerationBatch", async () => {
+    const row = await seedAnalyzed(SHOP, "gid://shopify/Product/3");
+
+    const confirmResult = await callAction(
+      requestFor(SHOP, { entries: JSON.stringify([{ productId: row.id, productMediaId: row.media[0].id }]) }),
+    );
+    const selectionId = (confirmResult as { ok: true; selectionId: string }).selectionId;
+
+    const startResult = await callAction(
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId, generationType: "BANNER" }),
+    );
+
+    expect(startResult).toBeInstanceOf(Response);
+    const location = (startResult as Response).headers.get("Location");
+    const batchId = location!.replace("/app/generation/", "");
+    const batch = await prisma.generationBatch.findUniqueOrThrow({ where: { id: batchId } });
+    expect(batch.generationType).toBe("BANNER");
+  });
+
+  it("creates a CTA GenerationBatch", async () => {
+    const row = await seedAnalyzed(SHOP, "gid://shopify/Product/4");
+
+    const confirmResult = await callAction(
+      requestFor(SHOP, { entries: JSON.stringify([{ productId: row.id, productMediaId: row.media[0].id }]) }),
+    );
+    const selectionId = (confirmResult as { ok: true; selectionId: string }).selectionId;
+
+    const startResult = await callAction(
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId, generationType: "CTA" }),
+    );
+
+    const location = (startResult as Response).headers.get("Location");
+    const batchId = location!.replace("/app/generation/", "");
+    const batch = await prisma.generationBatch.findUniqueOrThrow({ where: { id: batchId } });
+    expect(batch.generationType).toBe("CTA");
+  });
+});

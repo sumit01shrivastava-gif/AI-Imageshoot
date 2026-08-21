@@ -28,7 +28,27 @@ const GENERATION_TYPE_LABEL: Record<GenerationTypeValue, string> = {
   CAMPAIGN: "Campaign",
 };
 
-const DEFAULT_ASPECT_RATIO = "1:1";
+const DEFAULT_ASPECT_RATIO: AspectRatioValue = "1:1";
+
+/** Per-generationType default aspect ratio, used only when the caller
+ * doesn't supply an `aspectRatioOverride` — e.g. BANNER benefits from a
+ * wide hero-style default; everything else keeps the original "1:1"
+ * default ("Generate Test Image"'s long-standing behavior, unchanged). */
+const DEFAULT_ASPECT_RATIO_BY_TYPE: Partial<Record<GenerationTypeValue, AspectRatioValue>> = {
+  BANNER: "21:9",
+};
+
+/** generationTypes a `BrandStylePreset` actually applies to — every
+ * "creative placement" type. PRODUCT_CLEANUP/BACKGROUND_REMOVAL/
+ * BACKGROUND_REPLACEMENT stay preset-free (they're deterministic-feeling
+ * cleanup, not a styled composition); CATEGORY_BANNER/CAMPAIGN aren't
+ * implemented yet (see docs/lifestyle-generation.md "Deferred"). */
+const PRESET_APPLICABLE_TYPES: ReadonlySet<GenerationTypeValue> = new Set([
+  "LIFESTYLE",
+  "MODEL_SHOOT",
+  "BANNER",
+  "CTA",
+]);
 
 export interface BuildGenerationPlanInput {
   product: ProductDetail;
@@ -58,13 +78,14 @@ export interface BuildGenerationPlanInput {
    * pipeline. Defaults to 1. */
   outputCountOverride?: number;
   /**
-   * LIFESTYLE only — the resolved brand style preset (built-in or
-   * shop-owned custom; resolution happens in
-   * services/generation/brand-style-preset.server.ts, one layer up —
-   * this function stays pure/no I/O). `null`/omitted means "no preset
-   * chosen," which still produces a fully-formed scene via category-aware
-   * defaults (services/generation/lifestyle-scene.ts never requires a
-   * preset). Ignored for every other generationType.
+   * LIFESTYLE/MODEL_SHOOT/BANNER/CTA only (see `PRESET_APPLICABLE_TYPES`)
+   * — the resolved brand style preset (built-in or shop-owned custom;
+   * resolution happens in services/generation/brand-style-preset.server.ts,
+   * one layer up — this function stays pure/no I/O). `null`/omitted means
+   * "no preset chosen," which still produces a fully-formed scene via
+   * category-aware defaults (services/generation/lifestyle-scene.ts never
+   * requires a preset, for LIFESTYLE). Ignored for every other
+   * generationType.
    */
   brandStylePreset?: { id: string; name: string; attributes: BrandStylePresetAttributes } | null;
   /** LIFESTYLE only — structured merchant scene-control overrides (never
@@ -123,6 +144,13 @@ function synthesizePrompt(input: {
   /** MODEL_SHOOT only. */
   pose?: string | null;
   modelStyle?: string | null;
+  /** BANNER/CTA only — a resolved brand style preset's own attributes,
+   * used directly (no LIFESTYLE-style scene/category resolution — a
+   * banner's composition is simpler: subject + backdrop + mood, not a
+   * full placed-in-a-scene concept). */
+  backgroundStyle?: string | null;
+  compositionStyle?: string | null;
+  mood?: string | null;
 }): string {
   const descriptor = [input.primaryColor, input.material, input.category].filter(Boolean).join(" ").trim();
   const subject = descriptor || "product";
@@ -157,6 +185,26 @@ function synthesizePrompt(input: {
     if (input.modelStyle) parts.push(`${input.modelStyle} model styling`);
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
+  }
+
+  if (input.generationType === "BANNER") {
+    const parts = [`Promotional banner photography featuring the ${subject}`];
+    if (input.backgroundStyle) parts.push(`${input.backgroundStyle} backdrop`);
+    else if (input.environment) parts.push(`set in ${input.environment}`);
+    if (input.compositionStyle) parts.push(`${input.compositionStyle} composition`);
+    parts.push("composed with clear open space for text overlay");
+    if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
+    if (input.mood) parts.push(`${input.mood} mood`);
+    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography.`;
+  }
+
+  if (input.generationType === "CTA") {
+    const parts = [`Bold, attention-grabbing call-to-action imagery featuring the ${subject}`];
+    if (input.backgroundStyle) parts.push(`${input.backgroundStyle} backdrop`);
+    else if (input.environment) parts.push(`set in ${input.environment}`);
+    if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
+    if (input.mood) parts.push(`${input.mood} mood`);
+    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography.`;
   }
 
   const parts = [`${GENERATION_TYPE_LABEL[input.generationType]} photography of the ${subject}`];
@@ -278,6 +326,15 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
   const pose = generationType === "MODEL_SHOOT" ? (intelligence.recommendedPoseTypes[0] ?? null) : null;
   const modelStyle = generationType === "MODEL_SHOOT" ? (brandStylePreset?.attributes.modelStyle ?? null) : null;
 
+  // BANNER/CTA-only: a resolved preset's own background/composition/mood
+  // attributes, used directly — no category-aware fallback table the way
+  // LIFESTYLE has one, since a promotional banner's styling is meant to
+  // be brand-driven, not category-inferred.
+  const isBannerLike = generationType === "BANNER" || generationType === "CTA";
+  const backgroundStyle = isBannerLike ? (brandStylePreset?.attributes.backgroundStyle ?? null) : null;
+  const compositionStyle = isBannerLike ? (brandStylePreset?.attributes.compositionStyle ?? null) : null;
+  const promotionalMood = isBannerLike ? (brandStylePreset?.attributes.mood ?? null) : null;
+
   const plan = {
     generationType,
     assetType: intelligence.recommendedAssetTypes[0] ?? null,
@@ -302,6 +359,9 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
         scene: sceneResolution?.scene,
         pose,
         modelStyle,
+        backgroundStyle,
+        compositionStyle,
+        mood: promotionalMood,
       }),
       negativeConstraints,
       environment,
@@ -309,7 +369,7 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
       composition,
     },
 
-    aspectRatio: aspectRatioOverride ?? DEFAULT_ASPECT_RATIO,
+    aspectRatio: aspectRatioOverride ?? DEFAULT_ASPECT_RATIO_BY_TYPE[generationType] ?? DEFAULT_ASPECT_RATIO,
     outputFormat: "png",
     quality: "standard",
     outputCount: outputCountOverride ?? 1,
@@ -323,15 +383,16 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
             recommendedPoseTypes: intelligence.recommendedPoseTypes,
           },
 
-    // brandStyle applies to both LIFESTYLE and MODEL_SHOOT (the same
-    // BrandStylePreset — its `modelStyle` field, unused until this phase —
-    // is shared, not a separate "ModelPreset" concept; see
+    // brandStyle applies to every type in PRESET_APPLICABLE_TYPES — the
+    // same BrandStylePreset (its `modelStyle`/`backgroundStyle`/
+    // `compositionStyle`/`mood` fields) is shared across all of them, not
+    // a separate preset concept per generationType; see
     // docs/lifestyle-generation.md "Brand style presets" for why one
-    // preset schema deliberately covers both). A preset passed for any
-    // other generationType is silently ignored rather than leaking into a
-    // plan it wasn't meant for. lifestyleScene stays LIFESTYLE-only.
+    // preset schema deliberately covers all of them. A preset passed for
+    // any other generationType is silently ignored rather than leaking
+    // into a plan it wasn't meant for. lifestyleScene stays LIFESTYLE-only.
     brandStyle:
-      (generationType === "LIFESTYLE" || generationType === "MODEL_SHOOT") && brandStylePreset
+      PRESET_APPLICABLE_TYPES.has(generationType) && brandStylePreset
         ? toBrandStyleContext(brandStylePreset.attributes)
         : null,
     lifestyleScene: sceneResolution?.scene ?? null,

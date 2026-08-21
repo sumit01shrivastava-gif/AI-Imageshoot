@@ -57,7 +57,7 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   the BullMQ job/queue wiring, staleness detection, and category-aware
   generation recommendations. Depends on `services/ai/`'s `AIProvider`
   interface, never a vendor SDK — see docs/product-intelligence.md.
-- **`services/generation/`** (Phase 3; extended Phases 5–6) — the
+- **`services/generation/`** (Phase 3; extended Phases 5–7) — the
   image-generation foundation: building a structured `GenerationPlan`
   from a product + its Product Intelligence profile, the BullMQ job/queue
   wiring, and persisting results through the storage abstraction. Depends
@@ -70,8 +70,12 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   (`GenerationBatch`), and an explicit identity-validation boundary. Phase
   6 added model imagery (`GenerationType.MODEL_SHOOT`, gated on Product
   Intelligence's `modelSuitable`, sharing the same `BrandStylePreset`) and
-  merchant-selectable aspect ratio — zero new Prisma models — see
-  docs/lifestyle-generation.md.
+  merchant-selectable aspect ratio. Phase 7 began Package 3 (store
+  visuals) with its product-scoped subset — `GenerationType.BANNER`/`CTA`,
+  a promotional banner or CTA image still featuring one specific product
+  (an explicit scoping decision — homepage/collection-level generation,
+  which has no single owning product, stays deferred). Zero new Prisma
+  models across all three phases — see docs/lifestyle-generation.md.
 - **`services/processing/`** (Phase 4) — production image processing
   (background removal/enhance/resize): building provider input from a
   source image + validated options, the `"enhancement"` BullMQ job/queue
@@ -164,8 +168,14 @@ capability set with `GenerationType.MODEL_SHOOT` (model photography,
 gated on Product Intelligence's `modelSuitable`, sharing the same
 `BrandStylePreset`) and merchant-selectable aspect ratio, unifying the
 product detail page's lifestyle/model UI into one "AI Product Imagery"
-section — zero new Prisma migrations. Every generation still runs only
-through the deterministic test provider, no real image-generation vendor
-installed. Still no banners/CTA/campaign generation (Package 3, not yet
-scoped), no publishing back to Shopify, and no credits/billing/
-subscriptions/plan enforcement anywhere in this codebase.
+section. Phase 7 began "Package 3" (store visuals) with its
+product-scoped subset — `GenerationType.BANNER`/`CTA`, reusing the same
+architecture, no text/logo rendering — while explicitly deferring
+homepage/collection-level generation (no single owning product; this app
+doesn't sync Shopify collections either) pending its own architectural
+decision. Zero new Prisma migrations across Phases 6–7. Every generation
+still runs only through the deterministic test provider, no real
+image-generation vendor installed. Still no homepage/collection banners
+or campaign generation, no publishing back to Shopify, and no
+credits/billing/subscriptions/plan enforcement anywhere in this
+codebase.

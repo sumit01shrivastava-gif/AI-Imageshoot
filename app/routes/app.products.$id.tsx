@@ -199,7 +199,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const generationType = formData.get("generationType");
     const presetId = formData.get("presetId");
     const aspectRatio = formData.get("aspectRatio");
-    if (generationType !== "LIFESTYLE" && generationType !== "MODEL_SHOOT") {
+    if (typeof generationType !== "string" || !(PRODUCT_IMAGERY_TYPES as readonly string[]).includes(generationType)) {
       return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
     }
     try {
@@ -430,11 +430,23 @@ const OPERATION_LABEL: Record<ImageOperationValue, string> = {
   CROP: "Crop",
 };
 
-// Only the two generationTypes the "AI Product Imagery" section actually
-// drives — see docs/lifestyle-generation.md.
+// The generationTypes the "AI Product Imagery" section drives — see
+// docs/lifestyle-generation.md.
+const PRODUCT_IMAGERY_TYPES = ["LIFESTYLE", "MODEL_SHOOT", "BANNER", "CTA"] as const;
+type ProductImageryType = (typeof PRODUCT_IMAGERY_TYPES)[number];
+
 const GENERATION_TYPE_LABEL: Record<string, string> = {
   LIFESTYLE: "Lifestyle scene",
   MODEL_SHOOT: "Model photography",
+  BANNER: "Promotional banner",
+  CTA: "Call-to-action image",
+};
+
+const GENERATE_BUTTON_LABEL: Record<ProductImageryType, string> = {
+  LIFESTYLE: "Generate Lifestyle Image",
+  MODEL_SHOOT: "Generate Model Image",
+  BANNER: "Generate Banner",
+  CTA: "Generate CTA Image",
 };
 
 const ASPECT_RATIO_LABEL: Record<AspectRatioValue, string> = {
@@ -442,6 +454,7 @@ const ASPECT_RATIO_LABEL: Record<AspectRatioValue, string> = {
   "4:5": "Portrait (4:5)",
   "9:16": "Story (9:16)",
   "16:9": "Landscape (16:9)",
+  "21:9": "Wide hero (21:9)",
 };
 
 export default function ProductDetail() {
@@ -595,13 +608,15 @@ export default function ProductDetail() {
   // imagery + aspect ratio) -------------------------------------------
   // Same "each action creates a brand-new, independently-preserved row"
   // shape as PRODUCT_CLEANUP above, scoped to this product's LIFESTYLE/
-  // MODEL_SHOOT jobs only (see productCleanupHistory's doc comment for why
-  // the same `generationHistory` list needs splitting by type). Both
-  // generationTypes share one section/history/state, since they're the
-  // same merchant-facing feature (a preset + aspect ratio picker,
-  // Generate/Regenerate, Approve/Reject) with only the "what kind of
-  // imagery" choice differing.
-  const productImageryHistory = generationHistory.filter((job) => job.type === "LIFESTYLE" || job.type === "MODEL_SHOOT");
+  // MODEL_SHOOT/BANNER/CTA jobs only (see productCleanupHistory's doc
+  // comment for why the same `generationHistory` list needs splitting by
+  // type). All four generationTypes share one section/history/state,
+  // since they're the same merchant-facing feature (a preset + aspect
+  // ratio picker, Generate/Regenerate, Approve/Reject) with only the
+  // "what kind of imagery" choice differing.
+  const productImageryHistory = generationHistory.filter((job) =>
+    (PRODUCT_IMAGERY_TYPES as readonly string[]).includes(job.type),
+  );
   const latestProductImagery = productImageryHistory[0] ?? null;
   const productImageryStatus = latestProductImagery?.status;
   const isTerminalProductImageryStatus =
@@ -651,11 +666,19 @@ export default function ProductDetail() {
   // docs/generation.md "No arbitrary prompts"). Empty presetId = "no
   // preset," which still produces a fully-formed scene via category-aware
   // defaults (see services/generation/lifestyle-scene.ts).
-  const [productImageryType, setProductImageryType] = useState<"LIFESTYLE" | "MODEL_SHOOT">("LIFESTYLE");
+  const [productImageryType, setProductImageryType] = useState<ProductImageryType>("LIFESTYLE");
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedAspectRatio, setSelectedAspectRatio] = useState<AspectRatioValue>("1:1");
 
   const canGenerateModelImagery = intelligence?.modelSuitable === true;
+
+  // A promotional banner reads best wide — nudge the aspect ratio picker
+  // to match when the merchant switches to it, without taking away their
+  // ability to immediately change it back.
+  const changeProductImageryType = (value: ProductImageryType) => {
+    setProductImageryType(value);
+    if (value === "BANNER") setSelectedAspectRatio("21:9");
+  };
 
   const requestProductImageryClick = () => {
     setAwaitingProductImagery(true);
@@ -964,10 +987,10 @@ export default function ProductDetail() {
       <s-section heading="AI Product Imagery">
         <s-stack direction="block" gap="base">
           <s-text color="subdued">
-            Places this product in a photorealistic lifestyle scene, or generates model photography
-            featuring it, built from its Product Intelligence profile and a brand style preset —
-            never a free-text prompt. The original product image is never modified; every
-            generation is a new, separately reviewable result.
+            Places this product in a photorealistic lifestyle scene, model photograph, promotional
+            banner, or call-to-action image — built from its Product Intelligence profile and a
+            brand style preset, never a free-text prompt. The original product image is never
+            modified; every generation is a new, separately reviewable result.
           </s-text>
 
           <s-select
@@ -975,13 +998,15 @@ export default function ProductDetail() {
             labelAccessibilityVisibility="visible"
             value={productImageryType}
             onChange={(event: Event) =>
-              setProductImageryType((event.currentTarget as HTMLSelectElement).value as "LIFESTYLE" | "MODEL_SHOOT")
+              changeProductImageryType((event.currentTarget as HTMLSelectElement).value as ProductImageryType)
             }
           >
             <s-option value="LIFESTYLE">Lifestyle scene</s-option>
             <s-option value="MODEL_SHOOT" disabled={!canGenerateModelImagery}>
               Model photography{!canGenerateModelImagery ? " (not suited to this product)" : ""}
             </s-option>
+            <s-option value="BANNER">Promotional banner</s-option>
+            <s-option value="CTA">Call-to-action image</s-option>
           </s-select>
 
           <s-select
@@ -1037,7 +1062,7 @@ export default function ProductDetail() {
                 }
                 {...(isGeneratingProductImagery ? { loading: true } : {})}
               >
-                {productImageryType === "MODEL_SHOOT" ? "Generate Model Image" : "Generate Lifestyle Image"}
+                {GENERATE_BUTTON_LABEL[productImageryType]}
               </s-button>
             )}
           </s-stack>

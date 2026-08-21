@@ -20,54 +20,57 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 6 — Model Imagery + Aspect Ratio (Package 2 complete) —
-complete.** Phase 0 (foundation), Phase 1 (Shopify product catalog sync,
-search/detail, image selection), Phase 2 (Product Intelligence, no vendor
-wired up), Phase 3 (image-generation foundation — `GenerationJob`/
-`GenerationResult`, `ImageGenerationProvider`/`ImageProcessingProvider`
-abstractions, the `"generation"` queue, proven only via a deterministic
-test provider), Phase 4 (production image processing — a real vendor
-call, remove.bg, for background removal; local `sharp` for enhance/
-resize; `ProcessingJob`/`ProcessingResult`/`ProcessingBatch`; persistent
-`LocalFilesystemStorageProvider`; signed `/media/*` serving; a review
-lifecycle), and Phase 5 (the first real **creative** generation
-capability — `GenerationType.LIFESTYLE`: category-aware lifestyle scene
-planning (`LifestyleScenePlan`, nested in the existing `GenerationPlan`
-— not a new table), brand style presets (6 built-in code constants +
-shop-saved custom `BrandStylePreset` rows), batch lifestyle generation
-(`GenerationBatch`, mirroring `ProcessingBatch`), review (Approve/Reject
-via `GenerationResult.reviewStatus`, reusing Phase 4's `ReviewStatus`
-enum), regeneration/history (every request is a new, never-overwritten
-`GenerationJob` row), and an explicit, honest identity-validation
-boundary (`recordIdentityValidation`)) are done. Phase 6 completes the
-Pro-plan "Package 2" capability set — **zero new Prisma migrations**,
-entirely built on what Phases 2/3/5 already put in place:
+**Phase 7 — Promotional Banners & CTA Imagery, product-scoped
+(Package 3 begun) — complete.** Phase 0 (foundation), Phase 1 (Shopify
+product catalog sync, search/detail, image selection), Phase 2 (Product
+Intelligence, no vendor wired up), Phase 3 (image-generation foundation —
+`GenerationJob`/`GenerationResult`, `ImageGenerationProvider`/
+`ImageProcessingProvider` abstractions, the `"generation"` queue, proven
+only via a deterministic test provider), Phase 4 (production image
+processing — a real vendor call, remove.bg, for background removal;
+local `sharp` for enhance/resize; `ProcessingJob`/`ProcessingResult`/
+`ProcessingBatch`; persistent `LocalFilesystemStorageProvider`; signed
+`/media/*` serving; a review lifecycle), Phase 5 (the first real
+**creative** generation capability — `GenerationType.LIFESTYLE`:
+category-aware lifestyle scene planning, brand style presets, batch
+generation, review, identity-validation boundary), and Phase 6
+(completed Package 2 — `GenerationType.MODEL_SHOOT` gated on Product
+Intelligence's `modelSuitable`, sharing the same `BrandStylePreset`;
+merchant-selectable aspect ratio; the product detail page's "AI Product
+Imagery" section unifying LIFESTYLE/MODEL_SHOOT) are done. Phase 7 began
+Package 3 ("Complete AI Store Visuals") — **zero new Prisma migrations**:
 
-- `GenerationType.MODEL_SHOOT` — model photography featuring the
-  product, gated on Product Intelligence's existing `modelSuitable`
-  field (`ProductNotModelSuitableError` otherwise); shares the SAME
-  `BrandStylePreset` as LIFESTYLE (its `modelStyle` attribute, unused
-  until now) rather than a separate "ModelPreset" concept.
-- **Merchant-selectable aspect ratio** (`1:1`/`4:5`/`9:16`/`16:9`,
-  `services/generation/types.ts`'s `ASPECT_RATIOS`) — applies to every
-  `GenerationType`; "multiple aspect ratios" is satisfied the same way
-  every other creative choice works here: request again with a different
-  ratio, each its own new, independently preserved result.
-- Product detail page: the Phase 5 "AI Lifestyle Imagery" section was
-  generalized into one "AI Product Imagery" section (Style/Brand
-  style/Aspect ratio pickers, shared history/review) rather than a
-  second, near-duplicate section — `generate-lifestyle`/
-  `regenerate-lifestyle`/`start-lifestyle-batch` intents were
-  renamed/broadened to `generate-product-imagery`/
-  `regenerate-product-imagery`/`start-generation-batch`.
+- **Package 3 scoping decision** (explicit user decision — see
+  docs/lifestyle-generation.md "Package 3 scoping decision"): Package 3
+  splits into product-scoped items (a promotional banner/CTA image
+  featuring one specific product — fits `GenerationJob`'s existing
+  required, non-nullable `productId` with zero schema change) and
+  not-product-scoped items (homepage heroes, collection banners,
+  multi-product campaign assets — no single owning product, and this app
+  doesn't sync Shopify collections yet either). Phase 7 implements only
+  the product-scoped subset; the rest stays deliberately deferred pending
+  a real architectural decision, not guessed at.
+- `GenerationType.BANNER`/`CTA` — a promotional banner or bold
+  call-to-action image featuring one product; reuses the same
+  `BrandStylePreset` as LIFESTYLE/MODEL_SHOOT (its `backgroundStyle`/
+  `compositionStyle`/`mood` attributes); no `modelSuitable`-style gate
+  (any analyzed product qualifies); every prompt explicitly instructs
+  against rendering text/logos/typography (this app has no
+  text-compositing capability — a banner's generated image is a
+  background photograph, not a finished asset with copy on it).
+- `ASPECT_RATIOS` gained `21:9` (wide hero), BANNER's own default when no
+  override is given.
+- Product detail page: the "AI Product Imagery" section's Style picker
+  gained two more options (Promotional banner / Call-to-action image);
+  the selection-review page's Mode picker gained matching batch options.
 
-See docs/lifestyle-generation.md (now covers both phases). **No real
+See docs/lifestyle-generation.md (now covers Phases 5–7). **No real
 image-generation vendor is installed — every generation in this codebase
 still only ever runs through the deterministic test provider; MODEL_SHOOT
-never produces a real depiction of a person.** No banners/CTA/campaign
-imagery (Package 3, not yet scoped), no publishing back to Shopify, no
-credits/billing/subscriptions/plan enforcement, and
-`services/processing/` (Phase 4) was not modified.
+never produces a real depiction of a person.** No homepage/collection
+banners or campaign imagery yet (the not-product-scoped half of Package
+3), no publishing back to Shopify, no credits/billing/subscriptions/plan
+enforcement, and `services/processing/` (Phase 4) was not modified.
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -148,8 +151,9 @@ services/
                       added lifestyle scene planning, brand style presets
                       (built-in + shop-saved custom), and batch lifestyle
                       generation; Phase 6 added model imagery (shares
-                      brand style presets) and aspect ratio selection
-                      (services/generation/README.md)
+                      brand style presets) and aspect ratio selection;
+                      Phase 7 added product-scoped promotional banners +
+                      CTA imagery (services/generation/README.md)
   processing/         Production image processing (Basic plan): operation
                        taxonomy, options schema, job/queue (single-image +
                        batch), review lifecycle (services/processing/README.md)
@@ -507,12 +511,33 @@ Phase 6 (Model imagery + aspect ratio — Package 2 complete) — complete,
       imagery"
 - [x] docs/lifestyle-generation.md updated to cover both phases
 
+Phase 7 (Promotional banners & CTA imagery, product-scoped — Package 3
+begun) — complete, **zero new Prisma migrations**:
+
+- [x] Package 3 scoping decision made explicitly with the user before
+      implementation (see docs/lifestyle-generation.md "Package 3 scoping
+      decision") — product-scoped items only this phase;
+      not-product-scoped items (homepage/collection banners, campaigns)
+      deliberately deferred, not guessed at
+- [x] `GenerationType.BANNER`/`CTA` — `build-plan.ts` gained BANNER/CTA
+      branches, no `modelSuitable`-style gate (any analyzed product
+      qualifies), reusing the same `BrandStylePreset` as LIFESTYLE/
+      MODEL_SHOOT (`backgroundStyle`/`compositionStyle`/`mood`
+      attributes, previously unused); every prompt explicitly instructs
+      against rendering text/logos/typography
+- [x] `ASPECT_RATIOS` gained `21:9`; `DEFAULT_ASPECT_RATIO_BY_TYPE` gives
+      BANNER a wide default when no override is given
+- [x] Product detail page's "AI Product Imagery" Style picker + the
+      selection-review page's Mode picker both extended with two more
+      options (Promotional banner / Call-to-action image)
+- [x] docs/lifestyle-generation.md updated to cover Phases 5–7
+
 No real image-generation vendor is installed — every generation in this
-codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT) runs only through the
-deterministic test provider, never a live network call; MODEL_SHOOT never
-produces a real depiction of a person. Identity validation remains
-non-semantic (an honest "not yet possible" result, not a real check). No
-banners, CTA imagery, or campaign generation (Package 3, not yet
-scoped). No credits/billing/subscriptions/plan enforcement. No publishing
-back to Shopify. `services/processing/` (Phase 4) was not modified. See
-docs/roadmap.md.
+codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT, BANNER, CTA) runs only
+through the deterministic test provider, never a live network call;
+MODEL_SHOOT never produces a real depiction of a person. Identity
+validation remains non-semantic (an honest "not yet possible" result,
+not a real check). No homepage/collection banners or campaign generation
+(the not-product-scoped half of Package 3). No credits/billing/
+subscriptions/plan enforcement. No publishing back to Shopify.
+`services/processing/` (Phase 4) was not modified. See docs/roadmap.md.

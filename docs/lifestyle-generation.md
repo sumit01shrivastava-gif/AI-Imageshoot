@@ -1,4 +1,4 @@
-# AI Product Imagery — Lifestyle Scenes & Model Photography (Phases 5–6)
+# AI Product Imagery — Lifestyle, Model, Banner & CTA (Phases 5–7)
 
 ## Purpose
 
@@ -15,19 +15,44 @@ actually use: placing a product in a photorealistic **lifestyle scene** —
 `GenerationType.LIFESTYLE` — selectable per-product or in batch, built
 from category-aware defaults and a merchant-chosen **brand style
 preset**, reviewable and regenerable exactly like every other generation.
-Phase 6 completes the Pro-plan "Package 2" capability set: **model
+Phase 6 completed the Pro-plan "Package 2" capability set: **model
 photography** (`GenerationType.MODEL_SHOOT`, gated on Product
 Intelligence's existing `modelSuitable` signal) and merchant-selectable
-**aspect ratio**, both sharing the same architecture, review flow, and —
-on the product detail page — the same unified "AI Product Imagery"
-section as lifestyle scenes.
+**aspect ratio**. Phase 7 began "Package 3" (store visuals) with its
+**product-scoped subset**: **promotional banners** and **call-to-action
+imagery** (`GenerationType.BANNER`/`CTA`) — a promotional image that
+still features one specific product, not yet a store/collection-level
+asset (see "Package 3 scoping decision" below for why). All four
+generationTypes share the same architecture, review flow, and — on the
+product detail page — the same unified "AI Product Imagery" section.
 
 **No real image-generation vendor is installed.** Every generation in
 this codebase, like `PRODUCT_CLEANUP` before it, runs only through the
-deterministic test provider — see "Provider strategy" below. No banners,
-CTA imagery, campaign generation, Shopify publishing, billing,
-subscriptions, credits, or plan enforcement are implemented — see
-"Confirmations".
+deterministic test provider — see "Provider strategy" below. No
+homepage/collection-level banners, campaign generation, Shopify
+publishing, billing, subscriptions, credits, or plan enforcement are
+implemented — see "Confirmations".
+
+## Package 3 scoping decision (Phase 7)
+
+Package 3 ("Complete AI Store Visuals") includes items with two
+genuinely different shapes: **product-scoped** (a promotional banner or
+CTA image *featuring one specific product* — fits the existing
+`GenerationJob` architecture, whose `productId` is a required,
+non-nullable foreign key, with zero schema change) and **not
+product-scoped** (a homepage hero, a collection/category banner, a
+multi-product campaign asset — none of which has a single owning
+product; this app also doesn't sync Shopify *collections* yet, only
+products, so "collection banner" has no collection to reference
+regardless). Asked to choose between (a) product-scoped only this phase,
+(b) making `GenerationJob.productId` nullable now, or (c) a separate
+store-visuals model family, the product-scoped-only option was chosen:
+Phase 7 implements `BANNER`/`CTA` as product-scoped generations, reusing
+`GenerationJob` exactly as-is (zero migrations, same as Phase 6).
+`CATEGORY_BANNER`/`CAMPAIGN` remain schema-accepted, unimplemented
+taxonomy — genuinely deferred until there's a real answer for "what owns
+a generation with zero or several products," which is its own
+architectural decision, not a detail to guess at inside this phase.
 
 ## Why this extends `GenerationJob`, not a new model family
 
@@ -143,6 +168,13 @@ merchant-selectable only tightened its Zod validation
 (`GenerationPlanSchema.aspectRatio`: `z.string().min(1)` →
 `AspectRatioSchema`, i.e. `z.enum(ASPECT_RATIOS)`), a schema-only change
 with no column of its own.
+
+**Phase 7 (banners/CTA) also required zero Prisma migrations** — the
+product-scoped scoping decision (see above) means `BANNER`/`CTA` are
+just two more `GenerationType` enum values driven through the exact same
+`GenerationJob` row shape every other type already uses; `ASPECT_RATIOS`
+gained one new curated value (`21:9`) as a plain code-level array change,
+not a schema change.
 
 ## Provider strategy
 
@@ -338,24 +370,72 @@ Package 2 explicitly calls for "multiple aspect ratios." Rather than a
 second, parallel multi-output-per-ratio pipeline, this is satisfied the
 same way every other creative choice already works in this domain:
 **a curated aspect ratio picker** (`services/generation/types.ts`'s
-`ASPECT_RATIOS`: `1:1`, `4:5`, `9:16`, `16:9` — never a merchant-typed
-dimension string) applies to a single request, and "multiple aspect
-ratios" for one product is simply requesting generation again with a
-different ratio selected — each becomes its own new, independently
-preserved, independently reviewable `GenerationResult`, exactly like
-requesting a different preset or regenerating does. `GenerationPlanSchema.aspectRatio`
-was tightened from a free `z.string().min(1)` to `AspectRatioSchema`
+`ASPECT_RATIOS`: `1:1`, `4:5`, `9:16`, `16:9`, `21:9` (added Phase 7 for
+banners — see below) — never a merchant-typed dimension string) applies
+to a single request, and "multiple aspect ratios" for one product is
+simply requesting generation again with a different ratio selected —
+each becomes its own new, independently preserved, independently
+reviewable `GenerationResult`, exactly like requesting a different
+preset or regenerating does. `GenerationPlanSchema.aspectRatio` was
+tightened from a free `z.string().min(1)` to `AspectRatioSchema`
 (`z.enum(ASPECT_RATIOS)`) now that it's genuinely merchant-controllable —
 consistent with every other structured, curated-only creative-direction
 field in this domain. Applies to every `GenerationType`, not only
 LIFESTYLE/MODEL_SHOOT (though `PRODUCT_CLEANUP`'s minimal UI still never
 exposes a picker — it keeps defaulting to `1:1`, unchanged).
 
+**Per-generationType defaults** (`build-plan.ts`'s
+`DEFAULT_ASPECT_RATIO_BY_TYPE`): `BANNER` defaults to the wide `21:9`
+hero ratio when no override is given (a promotional banner reads poorly
+square); every other type still defaults to `1:1`. The product detail
+page's Style picker nudges the Aspect ratio picker to `21:9` the moment a
+merchant switches to "Promotional banner," fully overridable.
+
 On a batch's own progress page, "Regenerate" preserves the **original
 job's own aspect ratio** (read back off its persisted `plan.aspectRatio`)
 rather than defaulting to `1:1` — a batch has no per-job aspect-ratio
 picker to re-select from, so silently reverting to the default on
 regenerate would have been a real, easy-to-miss regression.
+
+## Promotional banners & CTA imagery (Phase 7)
+
+`GenerationType.BANNER`/`CTA` — a promotional image or a bold,
+attention-grabbing call-to-action image, both still featuring one
+specific product (see "Package 3 scoping decision" above). Reuses
+everything Phase 5/6 already built:
+
+- **The same `BrandStylePreset`** as LIFESTYLE/MODEL_SHOOT, specifically
+  its `backgroundStyle`/`compositionStyle`/`mood` attributes (part of
+  `BrandStylePresetAttributesSchema` since Phase 3's original
+  `BrandStyleContextSchema`, unused by any generationType until now for
+  `backgroundStyle`/`compositionStyle`). `PRESET_APPLICABLE_TYPES`
+  (`build-plan.ts`) now lists all four: LIFESTYLE, MODEL_SHOOT, BANNER,
+  CTA.
+- **No new gate.** Unlike MODEL_SHOOT's `modelSuitable` requirement,
+  every analyzed product can get a banner or CTA image — there's no
+  category restriction on "can this product appear in a promotional
+  image." The only precondition is the same one every generationType
+  already has: a `READY` Product Intelligence profile
+  (`ProductNotAnalyzedError` otherwise).
+- **`lifestyleScene` stays `null`** for BANNER/CTA — it's a
+  LIFESTYLE-only concept (no category-aware scene table backs banners;
+  their styling is meant to be brand-driven via the preset, not
+  category-inferred).
+
+**No text/logo/typography rendering.** A banner's whole point is
+carrying promotional copy, but this codebase's "no arbitrary prompts"
+rule (docs/generation.md) extends to imagery content too — nothing here
+lets a merchant type banner headline/CTA copy for the model to render
+as pixels (real image-generation models are also notoriously unreliable
+at rendering legible text). Every BANNER/CTA prompt explicitly instructs
+"Do not render any text, logos, or typography," and BANNER's prompt asks
+for a composition "with clear open space for text overlay" — the
+generated image is meant to be a *background/hero photograph* a merchant
+composites their own text onto elsewhere (in Shopify's own theme editor,
+or a future phase's tooling), not a finished banner-with-copy asset.
+Compositing merchant-supplied text onto a generated image, if ever
+built, is a distinct, explicitly deferred capability — see
+"Confirmations" below.
 
 ## Identity validation — an explicit, honest boundary
 
@@ -455,38 +535,43 @@ defaults), since a batch has no per-job preset picker.
 separate action (`generate-product-imagery`/`regenerate-product-imagery`
 intents) rather than a generalization of the existing `generate` intent,
 so the already-shipped `PRODUCT_CLEANUP` path is at zero risk of
-regression. LIFESTYLE and MODEL_SHOOT share this one section rather than
-each getting their own (Phase 5 shipped a "AI Lifestyle Imagery"-only
-section; Phase 6 generalized it to "AI Product Imagery" once MODEL_SHOOT
-existed as a second, near-identical merchant-facing choice) — same
-status badge, Generate/Regenerate button, failure banner, review card,
-and history list, filtered to `type === "LIFESTYLE" || type === "MODEL_SHOOT"`
-(the same `generationHistory` list Phase 3 already loads;
-`PRODUCT_CLEANUP`'s own history is filtered separately, so the sections
-never show each other's jobs). Contains: a **Style** picker (Lifestyle
-scene / Model photography — the latter option disabled with an inline
-note when Product Intelligence says this product isn't model-suitable),
-a **Brand style** preset picker (built-ins + this shop's saved custom
-presets, plus a "No preset — category defaults" option, shared by both
-styles), an **Aspect ratio** picker (`1:1`/`4:5`/`9:16`/`16:9`), and the
-Generate/Regenerate button (disabled until Product Intelligence is
-`READY`, and additionally until model-suitable when Style is Model
-photography).
+regression. LIFESTYLE, MODEL_SHOOT, BANNER, and CTA all share this one
+section rather than each getting their own (Phase 5 shipped a "AI
+Lifestyle Imagery"-only section; Phase 6 generalized it to "AI Product
+Imagery" once MODEL_SHOOT existed as a second, near-identical
+merchant-facing choice; Phase 7 extended the same Style picker with two
+more options rather than starting a third section) — same status badge,
+Generate/Regenerate button, failure banner, review card, and history
+list, filtered to those four types (the same `generationHistory` list
+Phase 3 already loads; `PRODUCT_CLEANUP`'s own history is filtered
+separately, so the sections never show each other's jobs). Contains: a
+**Style** picker (Lifestyle scene / Model photography — disabled with an
+inline note when Product Intelligence says this product isn't
+model-suitable / Promotional banner / Call-to-action image), a **Brand
+style** preset picker (built-ins + this shop's saved custom presets,
+plus a "No preset — category defaults" option, shared by all four
+styles), an **Aspect ratio** picker (`1:1`/`4:5`/`9:16`/`16:9`/`21:9` —
+switching Style to "Promotional banner" nudges this to `21:9`,
+overridably), and the Generate/Regenerate button (disabled until Product
+Intelligence is `READY`, and additionally until model-suitable when
+Style is Model photography).
 
 **Batch flow** (`app/routes/app.products.selection.tsx`): the existing
-"Review selection" screen's **Mode** picker now has three options —
+"Review selection" screen's **Mode** picker now has five options —
 "Process images," "Generate lifestyle imagery," "Generate model
-imagery" — the latter two reveal the same brand style preset picker
+imagery," "Generate promotional banners," "Generate call-to-action
+images" — the latter four reveal the same brand style preset picker
 before "Start generating," which POSTs the generalized
 `start-generation-batch` intent (`generationType` field; Phase 5's
 `start-lifestyle-batch` was renamed/broadened for this) and redirects
 into `app/routes/app.generation.$batchId.tsx` (progress, per-job
 original-vs-generated card, Approve/Reject/Regenerate) — a structural
 mirror of `app/routes/app.processing.$batchId.tsx`. No batch-level aspect
-ratio picker (`1:1` default) — kept out for the same "curated, not a full
-studio UI" scope reasoning as the rest of this feature; a batch's own
-"Regenerate" preserves whichever aspect ratio the original job actually
-used (read back off its persisted plan), not the `1:1` default.
+ratio picker (the per-type default applies — `21:9` for BANNER, `1:1`
+otherwise) — kept out for the same "curated, not a full studio UI" scope
+reasoning as the rest of this feature; a batch's own "Regenerate"
+preserves whichever aspect ratio the original job actually used (read
+back off its persisted plan), not the default.
 
 **Not built yet**: a UI to save a new custom preset, a full scene-control
 panel (environment/surface/props/camera/mood/colorDirection all
@@ -547,21 +632,25 @@ full single-request end-to-end for LIFESTYLE
 (`lifestyle-generation-queue.test.ts` — category-aware scene plan,
 honest identity-validation metadata persisted, presetId resolution
 through the real preset service, an unknown presetId falling back
-safely, original product media never mutated, `reviewGenerationResult`)
-and for MODEL_SHOOT (`model-shoot-queue.test.ts` — pose/brandStyle
+safely, original product media never mutated, `reviewGenerationResult`),
+for MODEL_SHOOT (`model-shoot-queue.test.ts` — pose/brandStyle
 resolution, the modelSuitable gate via `requestGeneration`, an unknown
 aspect ratio throwing `InvalidGenerationRequestError` rather than
-silently substituting a default, original media untouched), batch
-end-to-end (`batch-generation.test.ts` — LIFESTYLE all-succeeded and a
-REAL (non-racy) partial-skip case (one selected product was never
+silently substituting a default, original media untouched), and for
+BANNER/CTA (`banner-cta-queue.test.ts`, Phase 7 — the wide `21:9`
+BANNER default, no modelSuitable-style gate, original media untouched),
+batch end-to-end (`batch-generation.test.ts` — LIFESTYLE all-succeeded
+and a REAL (non-racy) partial-skip case (one selected product was never
 analyzed); MODEL_SHOOT's own partial-skip case (one selected product
-isn't model-suitable); an aspect ratio applying to every job in a batch),
-and route-level tests for all four routes
+isn't model-suitable); an aspect ratio applying to every job in a batch;
+BANNER/CTA batches, including confirming BANNER has no modelSuitable
+gate unlike MODEL_SHOOT), and route-level tests for all five routes
 (`app.products.id-lifestyle-generation-action.test.ts` (LIFESTYLE),
 `app.products.id-model-shoot-action.test.ts` (MODEL_SHOOT, Phase 6),
+`app.products.id-banner-cta-action.test.ts` (BANNER/CTA, Phase 7),
 `app.generation.batch-action.test.ts`,
-`app.products.selection-start-generation-batch.test.ts` (both
-generationTypes, Phase 6 — renamed/broadened from Phase 5's
+`app.products.selection-start-generation-batch.test.ts` (all four
+generationTypes, Phase 6/7 — renamed/broadened from Phase 5's
 `...-start-lifestyle-batch.test.ts`)).
 
 E2E (`tests/e2e/lifestyle-generation.spec.ts`): a single-product LIFESTYLE
@@ -575,7 +664,12 @@ products → choose "Generate lifestyle imagery" → pick a preset → start →
 batch progress → completed → review → approve → regenerate → the
 previous result remains) — mirroring `tests/e2e/processing.spec.ts`'s
 multi-scenario structure, a real in-process `"generation"` worker, real
-deterministic provider, real queue — never mocked.
+deterministic provider, real queue — never mocked. BANNER/CTA's
+merchant-facing flow is exercised at the route level
+(`app.products.id-banner-cta-action.test.ts`) rather than a third/fourth
+E2E scenario — the UI mechanics (Style/preset/aspect-ratio pickers,
+Generate/Regenerate, review) are identical to LIFESTYLE/MODEL_SHOOT's
+already-covered browser-level flow; only the generationType differs.
 
 ## Environment variables
 
@@ -593,11 +687,20 @@ generation) remain the intended future hook.
 - **Identity validation remains non-semantic.** A documented, honest "not
   yet possible without a vision-capable provider" result — not a real
   check. See "Identity validation" above; do not mistake this for
-  "identity preservation is solved." Applies identically to MODEL_SHOOT.
-- **No banners, category banners, CTA imagery, or campaign generation.**
-  Only `LIFESTYLE` and, as of Phase 6, `MODEL_SHOOT` are driven end to
-  end; `BANNER`/`CATEGORY_BANNER`/`CTA`/`CAMPAIGN` remain schema-accepted,
-  unimplemented taxonomy — Package 3, not yet scoped.
+  "identity preservation is solved." Applies identically to MODEL_SHOOT/
+  BANNER/CTA.
+- **No homepage/collection-level banners or campaign generation.** Only
+  `LIFESTYLE`, `MODEL_SHOOT` (Phase 6), and the product-scoped subset of
+  `BANNER`/`CTA` (Phase 7) are driven end to end; `CATEGORY_BANNER`/
+  `CAMPAIGN` remain schema-accepted, unimplemented taxonomy — the
+  not-product-scoped half of Package 3, deliberately deferred pending a
+  real architectural decision (see "Package 3 scoping decision" above),
+  not yet scoped.
+- **BANNER/CTA never render text, logos, or typography onto the
+  generated image.** Every prompt explicitly instructs against it — see
+  "Promotional banners & CTA imagery" above. Compositing merchant-
+  supplied promotional copy onto a generated image is a distinct,
+  unbuilt capability.
 - **MODEL_SHOOT never generates a real depiction of a person.** The
   deterministic test provider (the only one wired up) produces a
   placeholder pixel with no relationship to a human model whatsoever —
@@ -611,4 +714,4 @@ generation) remain the intended future hook.
 - **No publishing back to Shopify.** Generated results stay in this app's
   own storage/database.
 - **`services/processing/` was not modified.** Phase 4 remains exactly as
-  committed (`b722bfc`), and Phase 6 did not touch it either.
+  committed (`b722bfc`), and Phases 6/7 did not touch it either.

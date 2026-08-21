@@ -42,5 +42,5 @@ export type GenerationQualityValue = (typeof GENERATION_QUALITIES)[number];
  * same "regeneration = a new row" mechanism every other creative choice
  * already uses — not a second, parallel multi-output-per-ratio pipeline.
  * See docs/lifestyle-generation.md "Aspect ratio". */
-export const ASPECT_RATIOS = ["1:1", "4:5", "9:16", "16:9"] as const;
+export const ASPECT_RATIOS = ["1:1", "4:5", "9:16", "16:9", "21:9"] as const;
 export type AspectRatioValue = (typeof ASPECT_RATIOS)[number];

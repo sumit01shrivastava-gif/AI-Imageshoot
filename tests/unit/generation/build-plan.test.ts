@@ -386,4 +386,86 @@ describe("aspect ratio", () => {
     });
     expect(plan.aspectRatio).toBe("9:16");
   });
+
+  it("BANNER defaults to a wide 21:9 hero ratio when no override is given", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "BANNER",
+    });
+    expect(plan.aspectRatio).toBe("21:9");
+  });
+
+  it("an explicit aspectRatioOverride still wins over BANNER's own default", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "BANNER",
+      aspectRatioOverride: "1:1",
+    });
+    expect(plan.aspectRatio).toBe("1:1");
+  });
+});
+
+describe("BANNER generation type", () => {
+  it("builds a real plan using a resolved preset's background/composition/mood, and never renders text", () => {
+    const preset = getBuiltInPreset("clean-commercial")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "BANNER",
+      brandStylePreset: preset,
+    });
+
+    expect(plan.creativeDirection.prompt).toContain("Promotional banner photography");
+    expect(plan.creativeDirection.prompt).toContain("clear open space for text overlay");
+    expect(plan.creativeDirection.prompt).toContain("Do not render any text, logos, or typography");
+    expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+    expect(plan.brandStyle).not.toBeNull();
+    expect(plan.lifestyleScene).toBeNull();
+  });
+
+  it("still builds a valid plan with no preset chosen", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "BANNER",
+    });
+    expect(plan.creativeDirection.prompt).toContain("Promotional banner photography");
+    expect(plan.brandStyle).toBeNull();
+  });
+
+  it("has no modelSuitable gate — any product can get a banner", () => {
+    expect(() =>
+      buildGenerationPlan({
+        product: product(),
+        intelligence: readyIntelligence({ modelSuitable: false }),
+        sourceMediaIds: ["media-1"],
+        generationType: "BANNER",
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("CTA generation type", () => {
+  it("builds a real plan, bold/attention-grabbing framing, and never renders text", () => {
+    const preset = getBuiltInPreset("luxury-editorial")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "CTA",
+      brandStylePreset: preset,
+    });
+
+    expect(plan.creativeDirection.prompt).toContain("call-to-action imagery");
+    expect(plan.creativeDirection.prompt).toContain("Do not render any text, logos, or typography");
+    expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+    expect(plan.brandStyle).not.toBeNull();
+    expect(plan.aspectRatio).toBe("1:1"); // no BANNER-style wide default
+  });
 });

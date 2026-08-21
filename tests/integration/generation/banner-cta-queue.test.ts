@@ -1,9 +1,10 @@
 /**
- * Integration test: MODEL_SHOOT generation through the real
- * `"generation"` queue end to end — mirrors
- * lifestyle-generation-queue.test.ts's structure. Covers what's new for
- * Phase 6: the modelSuitable gate (ProductNotModelSuitableError), pose/
- * brandStyle resolution, and aspect ratio selection.
+ * Integration test: BANNER/CTA generation through the real `"generation"`
+ * queue end to end — mirrors lifestyle-generation-queue.test.ts's and
+ * model-shoot-queue.test.ts's structure. Covers what's new for Phase 7:
+ * no modelSuitable-style gate (any analyzed product can get a banner/CTA),
+ * the "no text/logo rendering" prompt instruction, and BANNER's own
+ * default wide aspect ratio.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Worker } from "bullmq";
@@ -18,16 +19,16 @@ import type { SyncedProduct } from "../../../services/products/types";
 import type { AuthContext } from "../../../lib/auth/types";
 import type { GenerationJobPayload } from "../../../services/generation/job.server";
 
-const SHOP = "model-shoot-gen-queue-test.myshopify.com";
+const SHOP = "banner-cta-gen-queue-test.myshopify.com";
 const CONTEXT: AuthContext = { shop: SHOP, sessionId: "s1", isOnline: false };
 
-function product(shopifyProductId: string, productType = "Handbags"): SyncedProduct {
+function product(shopifyProductId: string): SyncedProduct {
   return {
     shopifyProductId,
     title: "Leather Tote Bag",
     handle: "leather-tote-bag",
     description: "A handcrafted leather tote.",
-    productType,
+    productType: "Handbags",
     category: "Apparel & Accessories > Handbags",
     vendor: "Acme",
     tags: ["leather", "tote"],
@@ -57,16 +58,12 @@ let worker: Worker | undefined;
 let requestGeneration: typeof import("../../../services/generation/request-generation.server").requestGeneration;
 let getGeneration: typeof import("../../../services/generation/request-generation.server").getGeneration;
 let processGenerationJob: typeof import("../../../services/generation/job.server").processGenerationJob;
-let ProductNotModelSuitableError: typeof import("../../../services/generation/build-plan").ProductNotModelSuitableError;
-let InvalidGenerationRequestError: typeof import("../../../services/generation/request-generation.server").InvalidGenerationRequestError;
 
 beforeAll(async () => {
   process.env.AI_PROVIDER = "deterministic-test";
   resetEnvCacheForTests();
 
   ({ requestGeneration, getGeneration } = await import("../../../services/generation/request-generation.server"));
-  ({ InvalidGenerationRequestError } = await import("../../../services/generation/request-generation.server"));
-  ({ ProductNotModelSuitableError } = await import("../../../services/generation/build-plan"));
   ({ processGenerationJob } = await import("../../../services/generation/job.server"));
 
   worker = createWorker<GenerationJobPayload>("generation", processGenerationJob);
@@ -88,15 +85,14 @@ afterAll(async () => {
   delete process.env.AI_PROVIDER;
 });
 
-async function seedAnalyzedProduct(shopifyProductId: string, { modelSuitable = true }: { modelSuitable?: boolean | null } = {}) {
+async function seedAnalyzedProduct(shopifyProductId: string) {
   await upsertSyncedProduct(SHOP, product(shopifyProductId));
   const row = await prisma.shopifyProduct.findFirstOrThrow({ where: { shop: SHOP, shopifyProductId } });
 
   const data = parseProductIntelligenceOutput({
     category: "Handbags",
-    modelSuitable,
-    recommendedAssetTypes: ["product_studio", "lifestyle"],
-    recommendedPoseTypes: modelSuitable ? ["carried/worn detail"] : [],
+    modelSuitable: false,
+    recommendedAssetTypes: ["product_studio"],
     identityAnchors: {
       category: "Handbags",
       shape: "Rectangular",
@@ -138,34 +134,28 @@ function waitForStatus(generationJobId: string, status: "SUCCEEDED" | "FAILED", 
   });
 }
 
-describe("MODEL_SHOOT generation: end-to-end", () => {
+describe("BANNER generation: end-to-end", () => {
   it(
-    "generates a model image through the real pipeline, with a resolved pose and brand style",
+    "generates a banner through the real pipeline, defaulting to a wide 21:9 ratio and a no-text instruction",
     async () => {
       const row = await seedAnalyzedProduct("gid://shopify/Product/1");
 
       const job = await requestGeneration(CONTEXT, {
         productId: row.id,
-        generationType: "MODEL_SHOOT",
-        presetId: "premium-modern",
-        aspectRatio: "4:5",
+        generationType: "BANNER",
+        presetId: "clean-commercial",
       });
       await waitForStatus(job.id, "SUCCEEDED", 8000);
 
       const result = await getGeneration(CONTEXT, job.id);
       expect(result?.status).toBe("SUCCEEDED");
-      expect(result?.type).toBe("MODEL_SHOOT");
+      expect(result?.type).toBe("BANNER");
 
-      const plan = result!.plan as {
-        aspectRatio: string;
-        brandStyle: unknown;
-        lifestyleScene: unknown;
-        creativeDirection: { prompt: string };
-      };
-      expect(plan.aspectRatio).toBe("4:5");
+      const plan = result!.plan as { aspectRatio: string; brandStyle: unknown; creativeDirection: { prompt: string } };
+      expect(plan.aspectRatio).toBe("21:9");
       expect(plan.brandStyle).not.toBeNull();
-      expect(plan.lifestyleScene).toBeNull();
-      expect(plan.creativeDirection.prompt).toContain("Model photography");
+      expect(plan.creativeDirection.prompt).toContain("Promotional banner photography");
+      expect(plan.creativeDirection.prompt).toContain("Do not render any text, logos, or typography");
 
       expect(result?.results).toHaveLength(1);
       expect(result?.results[0].reviewStatus).toBe("PENDING");
@@ -173,33 +163,40 @@ describe("MODEL_SHOOT generation: end-to-end", () => {
     15000,
   );
 
-  it("throws ProductNotModelSuitableError (via requestGeneration) for a product Product Intelligence marked unsuitable", async () => {
-    const row = await seedAnalyzedProduct("gid://shopify/Product/2", { modelSuitable: false });
-    await expect(requestGeneration(CONTEXT, { productId: row.id, generationType: "MODEL_SHOOT" })).rejects.toThrow(
-      ProductNotModelSuitableError,
-    );
+  it("no modelSuitable gate — a category that's never model-suitable still gets a banner", async () => {
+    const row = await seedAnalyzedProduct("gid://shopify/Product/2");
+    // seedAnalyzedProduct already sets modelSuitable: false — this would
+    // throw ProductNotModelSuitableError for MODEL_SHOOT but must not for
+    // BANNER.
+    await expect(requestGeneration(CONTEXT, { productId: row.id, generationType: "BANNER" })).resolves.toBeTruthy();
   });
+});
 
-  // The "modelSuitable was never determined (null)" case is covered at the
-  // build-plan.ts unit level (tests/unit/generation/build-plan.test.ts) —
-  // not reachable through this real pipeline, since
-  // parseProductIntelligenceOutput requires modelSuitable to be a real
-  // boolean; `null` only ever occurs for a product that was never
-  // analyzed at all, which requestGeneration already rejects earlier via
-  // ProductNotAnalyzedError.
+describe("CTA generation: end-to-end", () => {
+  it(
+    "generates a CTA image through the real pipeline, defaulting to 1:1",
+    async () => {
+      const row = await seedAnalyzedProduct("gid://shopify/Product/3");
 
-  it("throws InvalidGenerationRequestError for an unknown aspect ratio — never silently substitutes a default", async () => {
+      const job = await requestGeneration(CONTEXT, { productId: row.id, generationType: "CTA", presetId: "luxury-editorial" });
+      await waitForStatus(job.id, "SUCCEEDED", 8000);
+
+      const result = await getGeneration(CONTEXT, job.id);
+      expect(result?.status).toBe("SUCCEEDED");
+      expect(result?.type).toBe("CTA");
+
+      const plan = result!.plan as { aspectRatio: string; creativeDirection: { prompt: string } };
+      expect(plan.aspectRatio).toBe("1:1");
+      expect(plan.creativeDirection.prompt).toContain("call-to-action imagery");
+    },
+    15000,
+  );
+
+  it("original product media is never mutated by a BANNER/CTA generation request", async () => {
     const row = await seedAnalyzedProduct("gid://shopify/Product/4");
-    await expect(
-      requestGeneration(CONTEXT, { productId: row.id, generationType: "MODEL_SHOOT", aspectRatio: "3:2" }),
-    ).rejects.toThrow(InvalidGenerationRequestError);
-  });
-
-  it("original product media is never mutated by a model-shoot generation request", async () => {
-    const row = await seedAnalyzedProduct("gid://shopify/Product/5");
     const originalMedia = await prisma.shopifyProductMedia.findFirstOrThrow({ where: { productId: row.id } });
 
-    const job = await requestGeneration(CONTEXT, { productId: row.id, generationType: "MODEL_SHOOT" });
+    const job = await requestGeneration(CONTEXT, { productId: row.id, generationType: "CTA" });
     await waitForStatus(job.id, "SUCCEEDED", 8000);
 
     const reloadedMedia = await prisma.shopifyProductMedia.findUniqueOrThrow({ where: { id: originalMedia.id } });

@@ -131,6 +131,8 @@ const GENERATION_TYPE_LABEL: Record<string, string> = {
   PRODUCT_CLEANUP: "Product cleanup",
   LIFESTYLE: "Lifestyle",
   MODEL_SHOOT: "Model photography",
+  BANNER: "Promotional banner",
+  CTA: "Call-to-action",
 };
 
 export default function GenerationBatch() {
