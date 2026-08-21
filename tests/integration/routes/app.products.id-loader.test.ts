@@ -23,6 +23,8 @@ import { upsertSyncedProduct } from "../../../db/repositories/shopify-product.re
 import { logger } from "../../../lib/logging/logger.server";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
 import { loader } from "../../../app/routes/app.products.$id";
+import { createGenerationJob, createResults as createGenerationResults } from "../../../db/repositories/generation-job.repository";
+import { parseGenerationPlan } from "../../../services/generation/schema";
 import type { SyncedProduct } from "../../../services/products/types";
 
 const SHOP_A = "loader-test-a.myshopify.com";
@@ -124,5 +126,64 @@ describe("app.products.$id loader — tenant mismatch / not-found handling", () 
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("app.products.$id loader — no internal storage path leakage", () => {
+  it("never includes a generation result's storageKey in the loader's returned data", async () => {
+    await upsertSyncedProduct(SHOP_A, product("gid://shopify/Product/3"));
+    const row = await prisma.shopifyProduct.findFirstOrThrow({
+      where: { shop: SHOP_A, shopifyProductId: "gid://shopify/Product/3" },
+    });
+
+    const job = await createGenerationJob({
+      shop: SHOP_A,
+      productId: row.id,
+      type: "LIFESTYLE",
+      sourceMediaIds: [],
+      plan: parseGenerationPlan({
+        generationType: "LIFESTYLE",
+        assetType: "lifestyle",
+        category: "Handbags",
+        sourceProductId: "product-1",
+        sourceImages: [{ mediaId: "media-1", url: "https://cdn/1.jpg", altText: "Front", position: 0 }],
+        productFacts: { identityAnchors: null },
+        creativeDirection: { prompt: "A lifestyle scene.", negativeConstraints: [], environment: null, lighting: null, composition: null },
+        aspectRatio: "1:1",
+        outputFormat: "png",
+        quality: "standard",
+        outputCount: 1,
+        modelConfiguration: null,
+        brandStyle: null,
+        lifestyleScene: null,
+        constraints: [],
+      }),
+    });
+    const storageKey = `shops/${SHOP_A}/generation/${job.id}/0.png`;
+    await createGenerationResults(SHOP_A, job.id, [
+      {
+        storageKey,
+        url: null,
+        width: 1024,
+        height: 1024,
+        format: "png",
+        providerName: "deterministic-test",
+        providerResultId: null,
+        metadata: null,
+      },
+    ]);
+
+    const result = await callLoader(SHOP_A, row.id);
+
+    expect(result.generationHistory).toHaveLength(1);
+    // The raw key is not present as its own field...
+    expect(result.generationHistory[0].results[0]).not.toHaveProperty("storageKey");
+    // ...though it legitimately still appears embedded inside the
+    // fetchable, HMAC-signed `/media/...?expires=...&sig=...` url — that
+    // is the intended mechanism (see app/routes/media.$.tsx), not a leak:
+    // the key alone, without a valid signature/expiry, grants nothing.
+    const url = result.generationHistory[0].results[0].url!;
+    expect(url).toContain(storageKey);
+    expect(url).toMatch(/[?&]sig=/);
   });
 });

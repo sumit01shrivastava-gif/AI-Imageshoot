@@ -46,7 +46,10 @@ export default async function handleRequest(
         },
         onError(error) {
           responseStatusCode = 500;
-          console.error(error);
+          logger.error("request.render_error", {
+            url: request.url,
+            message: error instanceof Error ? error.message : String(error),
+          });
         },
       }
     );

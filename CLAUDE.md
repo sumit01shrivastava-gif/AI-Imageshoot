@@ -20,57 +20,82 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 7 — Promotional Banners & CTA Imagery, product-scoped
-(Package 3 begun) — complete.** Phase 0 (foundation), Phase 1 (Shopify
-product catalog sync, search/detail, image selection), Phase 2 (Product
-Intelligence, no vendor wired up), Phase 3 (image-generation foundation —
-`GenerationJob`/`GenerationResult`, `ImageGenerationProvider`/
-`ImageProcessingProvider` abstractions, the `"generation"` queue, proven
-only via a deterministic test provider), Phase 4 (production image
-processing — a real vendor call, remove.bg, for background removal;
-local `sharp` for enhance/resize; `ProcessingJob`/`ProcessingResult`/
-`ProcessingBatch`; persistent `LocalFilesystemStorageProvider`; signed
-`/media/*` serving; a review lifecycle), Phase 5 (the first real
-**creative** generation capability — `GenerationType.LIFESTYLE`:
-category-aware lifestyle scene planning, brand style presets, batch
-generation, review, identity-validation boundary), and Phase 6
-(completed Package 2 — `GenerationType.MODEL_SHOOT` gated on Product
-Intelligence's `modelSuitable`, sharing the same `BrandStylePreset`;
-merchant-selectable aspect ratio; the product detail page's "AI Product
-Imagery" section unifying LIFESTYLE/MODEL_SHOOT) are done. Phase 7 began
-Package 3 ("Complete AI Store Visuals") — **zero new Prisma migrations**:
+**Final productization / completion pass — complete.** Phases 0–7
+(foundation; Shopify catalog sync; Product Intelligence; the
+image-generation foundation; production image processing; lifestyle
+imagery; model imagery + aspect ratio; product-scoped promotional
+banners/CTA imagery) are all done — see docs/roadmap.md for that
+phase-by-phase history and docs/lifestyle-generation.md for Phases 5–7's
+detail. This pass was not another numbered phase adding a new
+generation capability; it completed the product around the existing
+capabilities: the deferred not-product-scoped half of Package 3, brand
+style preset management, a cross-domain asset library, a real-bug fix
+sweep, GDPR compliance, and a merchant-readiness pass. **One new Prisma
+migration** (`add_store_visuals_and_shop_settings` — `StoreVisualJob`/
+`StoreVisualResult`/`StoreVisualJobProduct`/`ShopSettings`, plus two new
+enums; every other model unchanged):
 
-- **Package 3 scoping decision** (explicit user decision — see
-  docs/lifestyle-generation.md "Package 3 scoping decision"): Package 3
-  splits into product-scoped items (a promotional banner/CTA image
-  featuring one specific product — fits `GenerationJob`'s existing
-  required, non-nullable `productId` with zero schema change) and
-  not-product-scoped items (homepage heroes, collection banners,
-  multi-product campaign assets — no single owning product, and this app
-  doesn't sync Shopify collections yet either). Phase 7 implements only
-  the product-scoped subset; the rest stays deliberately deferred pending
-  a real architectural decision, not guessed at.
-- `GenerationType.BANNER`/`CTA` — a promotional banner or bold
-  call-to-action image featuring one product; reuses the same
-  `BrandStylePreset` as LIFESTYLE/MODEL_SHOOT (its `backgroundStyle`/
-  `compositionStyle`/`mood` attributes); no `modelSuitable`-style gate
-  (any analyzed product qualifies); every prompt explicitly instructs
-  against rendering text/logos/typography (this app has no
-  text-compositing capability — a banner's generated image is a
-  background photograph, not a finished asset with copy on it).
-- `ASPECT_RATIOS` gained `21:9` (wide hero), BANNER's own default when no
-  override is given.
-- Product detail page: the "AI Product Imagery" section's Style picker
-  gained two more options (Promotional banner / Call-to-action image);
-  the selection-review page's Mode picker gained matching batch options.
+- **Store Visuals** (`services/store-visuals/`, docs/store-visuals.md) —
+  the not-product-scoped half of Package 3 that Phase 7 deliberately
+  deferred: `HOMEPAGE_HERO`/`COLLECTION_BANNER`/`STORE_CTA`, a sibling
+  domain to `services/generation/` (its own `StoreVisualJob`/
+  `StoreVisualResult` model family, not a nullable-`productId` reuse —
+  same "genuinely different kind of request gets its own model" call
+  Phase 4 made for Processing), supporting zero, one, or several
+  featured products. Reuses the AI provider abstraction, storage, queue
+  factory, review lifecycle, and brand style presets unchanged. Nav:
+  **Store Visuals** (`/app/store-visuals`).
+- **Brand style preset management** (`/app/presets`, nav: **Brand
+  Styles**) — create/edit/delete a shop's own custom presets, set/clear
+  the shop's default preset. The 6 built-ins stay read-only code
+  constants. See docs/lifestyle-generation.md "Brand style presets".
+- **AI Assets library** (`services/assets/`, `/app/assets`, nav: **AI
+  Assets**) — a shop-wide, newest-first, filterable view merging
+  `GenerationResult`/`ProcessingResult`/`StoreVisualResult` into one
+  list. No new Prisma model — a bounded, in-application merge, not a raw
+  SQL `UNION`. See docs/asset-library.md.
+- **Real bugs found and fixed** (not new features — see each doc for
+  detail): (1) every result's signed `url` was signed once at creation
+  and never re-signed on read, silently breaking any image older than an
+  hour on every history/review page across all three domains — fixed by
+  `lib/storage/resign.server.ts`'s `resignResultUrls`, applied at every
+  read-side service function; (2) the same result rows' internal
+  `storageKey` was being returned straight through to the client on
+  every one of those same pages — fixed by that file's
+  `withResultsSanitizedForClient`; (3) `app.store-visuals.tsx` had
+  accidentally become an unintended PARENT LAYOUT for
+  `app.store-visuals.$jobId.tsx` under `@react-router/fs-routes`' naming
+  convention (no `<Outlet/>`), silently breaking the store visual detail
+  page for every real user — caught by E2E testing, fixed by renaming to
+  `app.store-visuals._index.tsx` (see docs/store-visuals.md's UI
+  section for why this convention matters).
+- **Shopify App Store readiness**: the three mandatory GDPR compliance
+  webhooks now exist (`customers/data_request`, `customers/redact`,
+  `shop/redact` — this app holds no customer/PII data, so the first two
+  simply acknowledge; `shop/redact` deletes every row this app holds for
+  the shop via `services/shopify/shop-redaction.server.ts`, tested
+  against every shop-scoped table in the schema); every remaining
+  `console.log`/`console.error` in the codebase was replaced with the
+  redacting `logger`; the production `ImageProcessingProvider`'s network
+  calls now carry a bounded request timeout (`ProviderTimeoutError`)
+  instead of being able to hang a worker indefinitely; a couple of
+  merchant-visible UI strings that leaked internal "test provider"/
+  "deterministic" language were rewritten to plain merchant-facing
+  copy. Read-only audit findings that were NOT code changes (no scope
+  decision, no vendor selection, no billing implementation) are
+  documented in place rather than guessed at — see each domain's own doc
+  for what remains explicitly deferred.
 
-See docs/lifestyle-generation.md (now covers Phases 5–7). **No real
-image-generation vendor is installed — every generation in this codebase
-still only ever runs through the deterministic test provider; MODEL_SHOOT
-never produces a real depiction of a person.** No homepage/collection
-banners or campaign imagery yet (the not-product-scoped half of Package
-3), no publishing back to Shopify, no credits/billing/subscriptions/plan
-enforcement, and `services/processing/` (Phase 4) was not modified.
+**No real image-generation vendor is installed — every generation in
+this codebase still only ever runs through the deterministic test
+provider; MODEL_SHOOT never produces a real depiction of a person.** No
+publishing back to Shopify, no credits/billing/subscriptions/plan
+enforcement (existing job metadata — shop, type, provider, duration,
+output count, timestamps, success/failure — was reviewed and found
+already sufficient for a future billing phase to build on; nothing new
+was added since nothing was missing), and `services/processing/`
+(Phase 4) was not modified beyond the shared signed-URL/storage-key
+fixes above.
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -142,24 +167,38 @@ services/
                        remove.bg for background removal, local sharp for
                        enhance/resize) is the only real vendor-backed provider
                        implemented so far. Unconfigured* fallbacks for the rest.
-  products/           Product import/selection business logic (future)
+  products/           Shopify product catalog sync, search/detail, image
+                       selection (Phase 1)
   intelligence/       Product Intelligence: analysis input/output, schema
                        validation, queue/job, staleness, recommendations
                        (services/intelligence/README.md)
   generation/         Image generation foundation: generation plan, job/
                       queue, provider input, storage persistence. Phase 5
                       added lifestyle scene planning, brand style presets
-                      (built-in + shop-saved custom), and batch lifestyle
+                      (built-in + shop-saved custom, now with a merchant
+                      -facing CRUD UI at /app/presets — see
+                      docs/lifestyle-generation.md), and batch lifestyle
                       generation; Phase 6 added model imagery (shares
                       brand style presets) and aspect ratio selection;
                       Phase 7 added product-scoped promotional banners +
                       CTA imagery (services/generation/README.md)
+  store-visuals/      Non-product-scoped generation (homepage hero/
+                       collection banner/store CTA) — a sibling domain to
+                       generation/, not a nullable-productId extension of
+                       it; see docs/store-visuals.md
+  assets/             The shop-wide AI Assets library — merges
+                       GenerationResult/ProcessingResult/StoreVisualResult
+                       into one filterable, paginated list; no new Prisma
+                       model. See docs/asset-library.md
   processing/         Production image processing (Basic plan): operation
                        taxonomy, options schema, job/queue (single-image +
                        batch), review lifecycle (services/processing/README.md)
   media/              Media library business logic (future)
   publishing/         Publish-to-Shopify business logic (future)
-  usage/              Usage/credit tracking business logic (future)
+  usage/              Usage/credit tracking business logic (future) — see
+                       CLAUDE.md "Current phase" for why nothing new was
+                       built here this pass (existing job metadata was
+                       already sufficient)
 
 db/
   client.server.ts    Prisma client singleton (canonical — app/db.server.ts re-exports it)
@@ -532,12 +571,66 @@ begun) — complete, **zero new Prisma migrations**:
       options (Promotional banner / Call-to-action image)
 - [x] docs/lifestyle-generation.md updated to cover Phases 5–7
 
+Final productization / completion pass — complete, **one new Prisma
+migration** (`add_store_visuals_and_shop_settings`):
+
+- [x] Store Visuals (`services/store-visuals/`) — `StoreVisualJob`/
+      `StoreVisualResult`/`StoreVisualJobProduct` model family,
+      `StoreVisualPlanSchema`, the `"store-visuals"` BullMQ queue,
+      `/app/store-visuals` (create) + `/app/store-visuals/:jobId`
+      (review/regenerate) routes, full test coverage (unit/integration/
+      E2E) — see docs/store-visuals.md
+- [x] Brand style preset CRUD UI (`/app/presets`) — create/edit/delete a
+      shop's custom presets, set/clear the shop's default preset;
+      `ShopSettings` model; repository/service functions
+      (`updateBrandStylePreset`/`deleteBrandStylePreset`/
+      `updateCustomPreset`/`deleteCustomPreset`/`getDefaultPresetId`/
+      `setDefaultPresetId`) — see docs/lifestyle-generation.md "Brand
+      style presets"
+- [x] AI Assets library (`services/assets/`, `/app/assets`) — cross-
+      domain merge of Generation/Processing/StoreVisual results, bounded
+      fetch (not a raw SQL UNION), no new Prisma model — see
+      docs/asset-library.md
+- [x] Real bugs found and fixed: signed-URL staleness (every read-side
+      service function now re-signs fresh via
+      `lib/storage/resign.server.ts`'s `resignResultUrls`), internal
+      `storageKey` leaking into client-visible loader data on 4 routes
+      (`withResultsSanitizedForClient`), and a routing bug where
+      `app.store-visuals.tsx` had become an unintended parent layout for
+      `app.store-visuals.$jobId.tsx` with no `<Outlet/>`, silently
+      breaking the detail page (fixed by renaming to
+      `app.store-visuals._index.tsx`) — each has a regression test
+- [x] Shopify App Store readiness: the 3 mandatory GDPR compliance
+      webhooks (`customers/data_request`, `customers/redact`,
+      `shop/redact` — the last backed by
+      `services/shopify/shop-redaction.server.ts`, deleting every
+      shop-scoped row in the schema, tested against a real seed spanning
+      every domain); every `console.log`/`console.error` replaced with
+      the redacting `logger`; a bounded request timeout added to the
+      production `ImageProcessingProvider`'s network calls
+      (`ProviderTimeoutError`)
+- [x] UX polish: merchant-visible "test provider"/"deterministic"
+      wording removed from the Image Generation section's button label
+      and empty state; aspect ratio surfaced consistently across every
+      result review card; the nav's new Store Visuals/AI Assets/Brand
+      Styles links all resolve (no dead navigation)
+- [x] Usage/credits metadata reviewed — every job model already records
+      shop, type, provider, duration, output count, and timestamps;
+      found sufficient for a future billing phase, nothing new added
+- [x] E2E coverage extended: store-level visual generation, the asset
+      library (merge + filter + tenant isolation), and BANNER/CTA
+      generation (`tests/e2e/store-visuals.spec.ts`,
+      `tests/e2e/lifestyle-generation.spec.ts`)
+- [x] docs/store-visuals.md, docs/asset-library.md added;
+      docs/lifestyle-generation.md, docs/architecture.md,
+      docs/generation-pipeline.md updated
+
 No real image-generation vendor is installed — every generation in this
 codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT, BANNER, CTA) runs only
 through the deterministic test provider, never a live network call;
 MODEL_SHOOT never produces a real depiction of a person. Identity
 validation remains non-semantic (an honest "not yet possible" result,
-not a real check). No homepage/collection banners or campaign generation
-(the not-product-scoped half of Package 3). No credits/billing/
-subscriptions/plan enforcement. No publishing back to Shopify.
-`services/processing/` (Phase 4) was not modified. See docs/roadmap.md.
+not a real check). No credits/billing/subscriptions/plan enforcement. No
+publishing back to Shopify. `services/processing/` (Phase 4) was not
+modified beyond the shared signed-URL/storage-key fixes above. See
+docs/roadmap.md.

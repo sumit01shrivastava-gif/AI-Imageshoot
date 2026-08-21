@@ -136,11 +136,12 @@ model ShopifyProduct {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  media          ShopifyProductMedia[]
-  selectionItems ImageSelectionItem[]
-  intelligence   ProductIntelligence?
-  generationJobs GenerationJob[]
-  processingJobs ProcessingJob[]
+  media           ShopifyProductMedia[]
+  selectionItems  ImageSelectionItem[]
+  intelligence    ProductIntelligence?
+  generationJobs  GenerationJob[]
+  processingJobs  ProcessingJob[]
+  storeVisualRefs StoreVisualJobProduct[]
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -624,6 +625,162 @@ model BrandStylePreset {
   // the picker UI.
   @@unique([shop, name])
   @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Store visuals — the not-product-scoped half of Package 3 ("Complete AI
+// Store Visuals"): a homepage hero, a collection/category banner, or a
+// general store CTA image. Optionally features zero, one, or several
+// products (unlike GenerationJob, whose productId is required and whose
+// whole plan-building pipeline assumes exactly one owning product) — see
+// docs/store-visuals.md "Why a separate model family" for the full
+// evaluation of alternatives (a nullable GenerationJob.productId; a
+// generic subject/asset abstraction; syncing Shopify collections first).
+// This mirrors the SAME "a genuinely different kind of request gets its
+// own model family, but reuses the underlying pattern/queue-factory/
+// storage/review/provider conventions" call Phase 4 already made for
+// ProcessingJob vs. GenerationJob — not a new pattern, the third
+// application of an established one.
+// ---------------------------------------------------------------------------
+
+enum StoreVisualType {
+  HOMEPAGE_HERO
+  COLLECTION_BANNER
+  STORE_CTA
+}
+
+// Same five-terminal-plus-in-flight shape as GenerationStatus/ProcessingStatus
+// — its own enum, following this schema's established one-status-enum-per-
+// domain-model precedent (see ProcessingStatus's own comment) rather than
+// being the first exception to it.
+enum StoreVisualStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// One row per store-visual REQUEST — never overwritten, mirroring
+// GenerationJob's "Generation #1, #2, #3, ..." history model exactly (see
+// docs/store-visuals.md). `plan` stores a `StoreVisualPlan`
+// (services/store-visuals/schema.ts) — a sibling of `GenerationPlan`
+// reusing its shared building blocks (SourceImageSchema,
+// BrandStyleContextSchema, IdentityAnchorsSchema), not the same schema,
+// since a store visual's product references are 0..N, not exactly 1.
+model StoreVisualJob {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  type   StoreVisualType
+  status StoreVisualStatus @default(PENDING)
+
+  // The full structured request (services/store-visuals/schema.ts's
+  // StoreVisualPlanSchema) — snapshotted at request time, exactly like
+  // GenerationJob.plan.
+  plan Json
+
+  errorMessage String?
+  retryCount   Int     @default(0)
+
+  providerName  String?
+  providerJobId String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  durationMs  Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results  StoreVisualResult[]
+  products StoreVisualJobProduct[]
+
+  @@index([shop, type])
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+
+// Optional product reference for one StoreVisualJob — a join row (not a
+// scalar id array) so each reference stays independently queryable and
+// cascades cleanly if the underlying product is later removed by sync,
+// mirroring ImageSelectionItem's pattern. A StoreVisualJob with zero rows
+// here is a fully generic store visual (no specific product featured).
+model StoreVisualJobProduct {
+  id String @id @default(cuid())
+
+  storeVisualJobId String
+  storeVisualJob   StoreVisualJob @relation(fields: [storeVisualJobId], references: [id], onDelete: Cascade)
+
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Merchant-chosen ordering, if the UI ever needs to display "product 1,
+  // product 2, ..." — not currently rendered distinctly, but cheap to
+  // capture now vs. re-deriving later.
+  position Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([storeVisualJobId, productId])
+  @@index([shop])
+}
+
+// One row per output image a StoreVisualJob produced — field-for-field
+// mirror of GenerationResult (never stores image binaries; reuses the
+// existing ReviewStatus enum for Approve/Reject).
+model StoreVisualResult {
+  id String @id @default(cuid())
+
+  shop String
+
+  storeVisualJobId String
+  storeVisualJob   StoreVisualJob @relation(fields: [storeVisualJobId], references: [id], onDelete: Cascade)
+
+  storageKey String
+  url        String?
+
+  width  Int?
+  height Int?
+  format String?
+
+  providerName     String?
+  providerResultId String?
+  metadata         Json?
+
+  reviewStatus ReviewStatus @default(PENDING)
+  reviewedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, storeVisualJobId])
+}
+
+// ---------------------------------------------------------------------------
+// Shop-level settings — currently just the default brand style preset (see
+// docs/lifestyle-generation.md "Brand style presets" / the preset
+// management UI). One row per shop, created lazily on first write.
+// `defaultBrandStylePresetId` is a plain string, not a foreign key,
+// because it may reference either a built-in preset (a code-constant id
+// like "minimal-studio") or a shop-owned `BrandStylePreset` row's cuid —
+// the two are already resolved uniformly wherever a presetId is consumed
+// (see services/generation/brand-style-preset.server.ts's
+// `resolveBrandStylePreset`), so this column follows that same
+// convention rather than a real relation to a row that might not exist.
+// ---------------------------------------------------------------------------
+model ShopSettings {
+  shop String @id
+
+  defaultBrandStylePresetId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ---------------------------------------------------------------------------

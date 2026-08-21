@@ -59,6 +59,21 @@ const JOB_SELECT = {
 export type GenerationJobRow = Prisma.GenerationJobGetPayload<{ select: typeof JOB_SELECT }>;
 export type GenerationResultRow = Prisma.GenerationResultGetPayload<{ select: typeof RESULT_SELECT }>;
 
+const ASSET_RESULT_SELECT = {
+  id: true,
+  storageKey: true,
+  url: true,
+  width: true,
+  height: true,
+  format: true,
+  reviewStatus: true,
+  reviewedAt: true,
+  createdAt: true,
+  generationJob: { select: { id: true, type: true, productId: true, product: { select: { title: true } } } },
+} satisfies Prisma.GenerationResultSelect;
+
+export type GenerationAssetResultRow = Prisma.GenerationResultGetPayload<{ select: typeof ASSET_RESULT_SELECT }>;
+
 export interface CreateGenerationJobInput {
   shop: string;
   productId: string;
@@ -228,6 +243,47 @@ export async function listGenerationJobsForBatch(shop: string, batchId: string):
     where: { shop, batchId },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: JOB_SELECT,
+  });
+}
+
+export interface GenerationAssetFilters {
+  type?: GenerationType;
+  status?: ReviewStatus;
+}
+
+/** Shop-wide, most-recent-first GenerationResults (not jobs — the Asset
+ * Library, services/assets/asset-library.server.ts, merges these flat
+ * with ProcessingResult/StoreVisualResult rows). `limit` bounds the fetch
+ * depth — this is a fan-out source for a cross-model merge, not a
+ * standalone paginated list, so the caller (asset-library.server.ts)
+ * owns the actual page slicing; see that file's doc comment for why a
+ * bounded fetch-then-merge, not a raw SQL UNION, is the chosen strategy. */
+export async function listGenerationResultsForShop(
+  shop: string,
+  filters: GenerationAssetFilters,
+  limit: number,
+): Promise<GenerationAssetResultRow[]> {
+  return prisma.generationResult.findMany({
+    where: {
+      shop,
+      ...(filters.status ? { reviewStatus: filters.status } : {}),
+      ...(filters.type ? { generationJob: { type: filters.type } } : {}),
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit,
+    select: ASSET_RESULT_SELECT,
+  });
+}
+
+/** Exact count for pagination controls — cheap even though the fetch side
+ * above is bounded (COUNT doesn't need to materialize rows). */
+export async function countGenerationResultsForShop(shop: string, filters: GenerationAssetFilters): Promise<number> {
+  return prisma.generationResult.count({
+    where: {
+      shop,
+      ...(filters.status ? { reviewStatus: filters.status } : {}),
+      ...(filters.type ? { generationJob: { type: filters.type } } : {}),
+    },
   });
 }
 

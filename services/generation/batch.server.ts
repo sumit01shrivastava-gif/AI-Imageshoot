@@ -10,6 +10,7 @@ import type { GenerationType } from "@prisma/client";
 import type { AuthContext } from "../../lib/auth/types";
 import { getImageSelectionSummary } from "../products/selection.server";
 import { logger } from "../../lib/logging/logger.server";
+import { resignResultUrls } from "../../lib/storage";
 import {
   createGenerationBatch,
   getGenerationBatch,
@@ -149,9 +150,13 @@ export async function getGenerationBatchSummary(
 ): Promise<GenerationBatchSummary | null> {
   const batch = await getGenerationBatch(context, batchId);
   if (!batch) return null;
-  const [progress, jobs] = await Promise.all([
+  const [progress, rawJobs] = await Promise.all([
     getGenerationBatchProgress(batch.id),
     listGenerationJobsForBatch(context.shop, batch.id),
   ]);
+  // Fresh-sign every job's result URLs (lib/storage/resign.server.ts) —
+  // a batch review page is exactly the kind of view a merchant may
+  // revisit well after the stored URLs' 1-hour lifetime.
+  const jobs = await Promise.all(rawJobs.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
   return { id: batch.id, generationType: batch.generationType, createdAt: batch.createdAt, progress, jobs };
 }

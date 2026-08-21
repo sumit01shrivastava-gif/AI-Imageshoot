@@ -324,9 +324,28 @@ from `TenantMismatchError`), or an empty string — `requestGeneration`
 then silently falls back to category-aware defaults, the same as passing
 no preset at all. A bad or stale id must never block generation.
 
-**Not built this phase**: a "Save as custom preset" UI action. The
-model/repository/service are fully built and tested — adding that button
-later is additive, not a redesign.
+**Merchant-facing preset management** (completion pass): `app/routes/app.presets.tsx`
+(nav: **Brand Styles**) — lists the 6 built-ins (read-only) alongside a
+shop's own custom presets; create/edit/delete a custom preset through a
+short set of plain text fields (visual tone, photography style,
+background, lighting, environment, mood, color direction — deliberately
+a subset of `BrandStylePresetAttributesSchema`'s full field set, no color
+picker/multi-step wizard/design-editor overbuild); set/clear the shop's
+default preset (`ShopSettings.defaultBrandStylePresetId` — see above).
+`db/repositories/brand-style-preset.repository.ts` gained
+`updateBrandStylePreset`/`deleteBrandStylePreset` (both tenant-checked,
+same `assertShopOwnership` pattern as every other repository function);
+`services/generation/brand-style-preset.server.ts` gained
+`updateCustomPreset`/`deleteCustomPreset` (reject a built-in id with
+`BuiltInPresetImmutableError`, a cross-shop/missing id with
+`PresetNotFoundError` — never distinguishing the two to the merchant) and
+`getDefaultPresetId`/`setDefaultPresetId`. Editing/deleting a preset is
+always safe: every `GenerationJob`/`StoreVisualJob` that ever used it
+already snapshotted its resolved attributes into its own `plan` JSON at
+request time, so past generations are never affected — a hard delete,
+not a soft-archive, is correct here (see
+`db/repositories/brand-style-preset.repository.ts`'s `deleteBrandStylePreset`
+doc comment).
 
 ## Model imagery (Phase 6)
 

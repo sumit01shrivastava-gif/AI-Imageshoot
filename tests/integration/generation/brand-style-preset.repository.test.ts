@@ -10,6 +10,8 @@ import {
   createBrandStylePreset,
   listBrandStylePresetsForShop,
   getBrandStylePreset,
+  updateBrandStylePreset,
+  deleteBrandStylePreset,
   DuplicatePresetNameError,
 } from "../../../db/repositories/brand-style-preset.repository";
 import { TenantMismatchError } from "../../../lib/auth/tenant.server";
@@ -80,5 +82,57 @@ describe("getBrandStylePreset", () => {
   it("returns null for a preset id that doesn't exist (including a built-in preset's own id, which is never a row here)", async () => {
     expect(await getBrandStylePreset(CONTEXT_A, "minimal-studio")).toBeNull();
     expect(await getBrandStylePreset(CONTEXT_A, "does-not-exist")).toBeNull();
+  });
+});
+
+describe("updateBrandStylePreset", () => {
+  it("updates name/description/attributes in place — same row id, not a new row", async () => {
+    const created = await createBrandStylePreset({ shop: SHOP_A, name: "Original", description: "Old", attributes: ATTRS });
+    const updated = await updateBrandStylePreset(CONTEXT_A, created.id, {
+      name: "Renamed",
+      description: "New",
+      attributes: { mood: "bright" },
+    });
+    expect(updated?.id).toBe(created.id);
+    expect(updated?.name).toBe("Renamed");
+    expect(updated?.description).toBe("New");
+    expect(updated?.attributes).toEqual({ mood: "bright" });
+
+    const reloaded = await getBrandStylePreset(CONTEXT_A, created.id);
+    expect(reloaded?.name).toBe("Renamed");
+  });
+
+  it("throws TenantMismatchError when updating another shop's preset", async () => {
+    const createdB = await createBrandStylePreset({ shop: SHOP_B, name: "Shop B Look", attributes: ATTRS });
+    await expect(updateBrandStylePreset(CONTEXT_A, createdB.id, { name: "Hijacked" })).rejects.toThrow(TenantMismatchError);
+  });
+
+  it("returns null for a preset id that doesn't exist", async () => {
+    expect(await updateBrandStylePreset(CONTEXT_A, "does-not-exist", { name: "X" })).toBeNull();
+  });
+
+  it("throws DuplicatePresetNameError when renaming to collide with another of this shop's presets", async () => {
+    await createBrandStylePreset({ shop: SHOP_A, name: "Taken", attributes: ATTRS });
+    const other = await createBrandStylePreset({ shop: SHOP_A, name: "Other", attributes: ATTRS });
+    await expect(updateBrandStylePreset(CONTEXT_A, other.id, { name: "Taken" })).rejects.toThrow(DuplicatePresetNameError);
+  });
+});
+
+describe("deleteBrandStylePreset", () => {
+  it("permanently deletes a custom preset for its own shop", async () => {
+    const created = await createBrandStylePreset({ shop: SHOP_A, name: "To Delete", attributes: ATTRS });
+    expect(await deleteBrandStylePreset(CONTEXT_A, created.id)).toBe(true);
+    expect(await getBrandStylePreset(CONTEXT_A, created.id)).toBeNull();
+  });
+
+  it("throws TenantMismatchError when deleting another shop's preset (and does not delete it)", async () => {
+    const createdB = await createBrandStylePreset({ shop: SHOP_B, name: "Shop B Look", attributes: ATTRS });
+    await expect(deleteBrandStylePreset(CONTEXT_A, createdB.id)).rejects.toThrow(TenantMismatchError);
+    const stillThere = await prisma.brandStylePreset.findUnique({ where: { id: createdB.id } });
+    expect(stillThere).not.toBeNull();
+  });
+
+  it("returns false for a preset id that doesn't exist", async () => {
+    expect(await deleteBrandStylePreset(CONTEXT_A, "does-not-exist")).toBe(false);
   });
 });

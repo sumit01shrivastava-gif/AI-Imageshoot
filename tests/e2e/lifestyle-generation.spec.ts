@@ -244,6 +244,36 @@ test.describe("AI Product Imagery — product detail (MODEL_SHOOT)", () => {
   });
 });
 
+test.describe("AI Product Imagery — product detail (BANNER/CTA)", () => {
+  test("switch to Promotional banner, generate, and verify the wide default aspect ratio", async ({ page }) => {
+    const product = await seedAnalyzedProduct(BAG_PRODUCT_ID, "Banner Detail Test Bag");
+
+    await page.goto(`/app/products/${product.id}`);
+    const productImagerySection = page.locator("s-section", { has: page.getByRole("heading", { name: "AI Product Imagery" }) });
+    await expect(productImagerySection).toBeVisible();
+
+    // → switch Style to Promotional banner — its own default aspect ratio
+    // (21:9, a wide hero) is applied automatically, no product-suitability
+    // gate the way MODEL_SHOOT has (see docs/lifestyle-generation.md
+    // "Package 3 scoping decision" — any analyzed product qualifies).
+    await page.getByLabel("Style", { exact: true }).selectOption({ label: "Promotional banner" });
+    await expect(page.getByLabel("Aspect ratio")).toHaveValue("21:9");
+
+    const generateButton = page.getByRole("button", { name: "Generate Banner" });
+    await expect(generateButton).toBeEnabled();
+    await generateButton.click();
+
+    await expect(page.getByText(/Succeeded/).first()).toBeVisible({ timeout: 15_000 });
+
+    const job = await prisma.generationJob.findFirstOrThrow({
+      where: { shop: TEST_SHOP, productId: product.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(job.type).toBe("BANNER");
+    expect(job.status).toBe("SUCCEEDED");
+  });
+});
+
 test.describe("AI Lifestyle Imagery — batch generation", () => {
   test("select multiple products, choose Generate lifestyle imagery, start, watch batch progress, review, approve, and regenerate preserving the previous result", async ({
     page,

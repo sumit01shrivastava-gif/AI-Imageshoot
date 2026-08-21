@@ -76,6 +76,20 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   (an explicit scoping decision — homepage/collection-level generation,
   which has no single owning product, stays deferred). Zero new Prisma
   models across all three phases — see docs/lifestyle-generation.md.
+- **`services/store-visuals/`** (completion pass) — non-product-scoped
+  generation (homepage hero/collection banner/store CTA): its own
+  `StoreVisualJob`/`StoreVisualResult` model family (a sibling of
+  `GenerationJob`/`GenerationResult`, not a nullable-`productId` reuse —
+  see docs/store-visuals.md for why), a `"store-visuals"` BullMQ queue
+  built on the same factory, and a `StoreVisualPlanSchema` that reuses
+  `GenerationPlanSchema`'s building blocks without inheriting its
+  mandatory-one-product shape. Reuses the AI provider abstraction,
+  storage, review lifecycle, and brand style presets unchanged.
+- **`services/assets/`** (completion pass) — the shop-wide AI Assets
+  library: merges `GenerationResult`/`ProcessingResult`/`StoreVisualResult`
+  into one normalized, filterable, paginated, newest-first list. No new
+  Prisma model — a bounded-fetch, in-application merge across the three
+  existing result tables, not a raw SQL `UNION`. See docs/asset-library.md.
 - **`services/processing/`** (Phase 4) — production image processing
   (background removal/enhance/resize): building provider input from a
   source image + validated options, the `"enhancement"` BullMQ job/queue

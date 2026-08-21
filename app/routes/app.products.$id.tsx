@@ -9,6 +9,7 @@ import { findProductForShop } from "../../db/repositories/shopify-product.reposi
 import { fetchProductVariants, type ProductVariant } from "../../services/products/shopify-queries.server";
 import { logger } from "../../lib/logging/logger.server";
 import { TenantMismatchError } from "../../lib/auth";
+import { withResultsSanitizedForClient } from "../../lib/storage";
 import {
   requestProductAnalysis,
   getProductIntelligence,
@@ -122,9 +123,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     variantsError,
     intelligence,
     intelligenceState,
-    generationHistory,
+    // See lib/storage/resign.server.ts's `withResultsSanitizedForClient`
+    // doc comment — the repository select needs `storageKey` server-side
+    // (to resign a fresh URL) but it must never reach the client.
+    generationHistory: generationHistory.map(withResultsSanitizedForClient),
     availableBrandStylePresets,
-    processingHistory,
+    processingHistory: processingHistory.map(withResultsSanitizedForClient),
   };
 };
 
@@ -158,7 +162,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   if (intent === "generate") {
     try {
-      // "Generate Test Image" (docs/generation.md "UI") — no image picker,
+      // "Generate Image" (docs/generation.md "UI") — no image picker,
       // no generation-type selector: PRODUCT_CLEANUP against every one of
       // the product's current media (see request-generation.server.ts's
       // `sourceMediaIds` default). Proving the architecture, not the full
@@ -931,7 +935,7 @@ export default function ProductDetail() {
               disabled={isGenerating || !canGenerate}
               {...(isGenerating ? { loading: true } : {})}
             >
-              {latestGeneration ? "Regenerate" : "Generate Test Image"}
+              {latestGeneration ? "Regenerate" : "Generate Image"}
             </s-button>
           </s-stack>
 
@@ -950,11 +954,7 @@ export default function ProductDetail() {
           )}
 
           {!latestGeneration && canGenerate && (
-            <s-paragraph color="subdued">
-              No test generation yet. This uses the safe, deterministic development provider — see
-              docs/generation.md — to prove the request → job → provider → storage → result
-              pipeline end to end. No real AI image is produced.
-            </s-paragraph>
+            <s-paragraph color="subdued">No image generated yet.</s-paragraph>
           )}
 
           {generationStatus === "SUCCEEDED" && latestGeneration && (
@@ -1342,6 +1342,7 @@ function ProductImageryResultDetail({
         <s-stack direction="inline" gap="base" alignItems="center">
           <s-badge tone={GENERATION_STATUS_TONE[job.status]}>{GENERATION_STATUS_LABEL[job.status]}</s-badge>
           <s-text color="subdued">{GENERATION_TYPE_LABEL[job.type] ?? job.type}</s-text>
+          <s-text color="subdued">{plan.aspectRatio}</s-text>
           <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
         </s-stack>
 

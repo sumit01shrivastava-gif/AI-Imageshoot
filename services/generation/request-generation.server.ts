@@ -16,6 +16,7 @@ import type { AuthContext } from "../../lib/auth/types";
 import { findProductForShop } from "../../db/repositories/shopify-product.repository";
 import { getProductIntelligence } from "../intelligence/product-intelligence.server";
 import { TenantMismatchError } from "../../lib/auth/tenant.server";
+import { resignResultUrls } from "../../lib/storage";
 import {
   createGenerationJob,
   markQueued,
@@ -251,14 +252,24 @@ export async function requestGeneration(
   });
 }
 
+/** Re-signs a job's results' URLs fresh (see lib/storage/resign.server.ts
+ * — a stored `.url` expires after an hour) before returning it to a
+ * route. Every read path in this module goes through this rather than
+ * returning the repository row's URLs as-is. */
+async function withFreshResultUrls(job: GenerationJobRow): Promise<GenerationJobRow> {
+  return { ...job, results: await resignResultUrls(job.results) };
+}
+
 export async function getGeneration(context: AuthContext, id: string): Promise<GenerationJobRow | null> {
-  return getGenerationJobRow(context, id);
+  const job = await getGenerationJobRow(context, id);
+  return job ? withFreshResultUrls(job) : null;
 }
 
 /** Most-recent-first generation history for a product — see
  * docs/generation.md "Generation history". */
 export async function listGenerationHistory(context: AuthContext, productId: string): Promise<GenerationJobRow[]> {
-  return listGenerationJobsForProductRow(context, productId);
+  const jobs = await listGenerationJobsForProductRow(context, productId);
+  return Promise.all(jobs.map(withFreshResultUrls));
 }
 
 /**

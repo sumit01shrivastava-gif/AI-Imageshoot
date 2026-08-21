@@ -20,6 +20,7 @@ describe("environment validation", () => {
 
   it("rejects a missing required variable", () => {
     const { SHOPIFY_API_KEY: _omit, ...rest } = validEnv;
+    void _omit;
     expect(() => loadEnv(rest)).toThrow(/SHOPIFY_API_KEY/);
   });
 

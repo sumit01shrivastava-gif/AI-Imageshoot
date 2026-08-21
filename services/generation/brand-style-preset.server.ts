@@ -10,9 +10,12 @@ import { TenantMismatchError } from "../../lib/auth/tenant.server";
 import {
   createBrandStylePreset as createBrandStylePresetRow,
   getBrandStylePreset as getBrandStylePresetRow,
+  updateBrandStylePreset as updateBrandStylePresetRow,
+  deleteBrandStylePreset as deleteBrandStylePresetRow,
   listBrandStylePresetsForShop,
   DuplicatePresetNameError,
 } from "../../db/repositories/brand-style-preset.repository";
+import { getShopSettings, setDefaultBrandStylePreset as setDefaultBrandStylePresetRow } from "../../db/repositories/shop-settings.repository";
 import { BRAND_STYLE_PRESETS, getBuiltInPreset, isBuiltInPresetId, type BrandStylePresetSummary } from "./brand-style-presets";
 import { parseBrandStylePresetAttributes, type BrandStylePresetAttributes } from "./schema";
 
@@ -98,4 +101,100 @@ export async function createCustomPreset(context: AuthContext, input: CreateCust
 
   const attributes = parseBrandStylePresetAttributes(input.attributes);
   return createBrandStylePresetRow({ shop: context.shop, name, description: input.description ?? null, attributes });
+}
+
+export class PresetNotFoundError extends Error {
+  constructor() {
+    super("Preset not found.");
+    this.name = "PresetNotFoundError";
+  }
+}
+
+export class BuiltInPresetImmutableError extends Error {
+  constructor() {
+    super("Built-in presets can't be edited or deleted.");
+    this.name = "BuiltInPresetImmutableError";
+  }
+}
+
+export interface UpdateCustomPresetInput {
+  name?: string;
+  description?: string | null;
+  attributes?: unknown;
+}
+
+/** Updates a shop-owned custom preset. Throws `BuiltInPresetImmutableError`
+ * for any of the 6 built-in ids (they're code constants, not rows — see
+ * ./brand-style-presets), `PresetNotFoundError` for a missing or
+ * cross-shop id (the repository's `TenantMismatchError` is mapped to the
+ * same not-found result a merchant would see for a nonexistent preset,
+ * never distinguishing the two), and `InvalidPresetNameError`/
+ * `InvalidBrandStylePresetError` for bad input — the same validation
+ * `createCustomPreset` applies. */
+export async function updateCustomPreset(context: AuthContext, id: string, input: UpdateCustomPresetInput): Promise<{ id: string }> {
+  if (isBuiltInPresetId(id)) {
+    throw new BuiltInPresetImmutableError();
+  }
+
+  let name: string | undefined;
+  if (input.name !== undefined) {
+    name = input.name.trim();
+    if (name.length === 0) {
+      throw new InvalidPresetNameError("Preset name is required.");
+    }
+    if (BRAND_STYLE_PRESETS.some((preset) => preset.name.toLowerCase() === name!.toLowerCase())) {
+      throw new InvalidPresetNameError(`"${name}" is a built-in preset name and can't be reused.`);
+    }
+  }
+
+  const attributes = input.attributes !== undefined ? parseBrandStylePresetAttributes(input.attributes) : undefined;
+
+  try {
+    const row = await updateBrandStylePresetRow(context, id, { name, description: input.description, attributes });
+    if (!row) throw new PresetNotFoundError();
+    return { id: row.id };
+  } catch (error) {
+    if (error instanceof TenantMismatchError) throw new PresetNotFoundError();
+    throw error;
+  }
+}
+
+/** Permanently deletes a shop-owned custom preset. Throws
+ * `BuiltInPresetImmutableError` for a built-in id, `PresetNotFoundError`
+ * for a missing or cross-shop id. See
+ * db/repositories/brand-style-preset.repository.ts's `deleteBrandStylePreset`
+ * doc comment for why this is a safe hard delete (past generation plans
+ * already snapshotted the resolved attributes; nothing else references
+ * this row live). */
+export async function deleteCustomPreset(context: AuthContext, id: string): Promise<void> {
+  if (isBuiltInPresetId(id)) {
+    throw new BuiltInPresetImmutableError();
+  }
+  let deleted: boolean;
+  try {
+    deleted = await deleteBrandStylePresetRow(context, id);
+  } catch (error) {
+    if (error instanceof TenantMismatchError) throw new PresetNotFoundError();
+    throw error;
+  }
+  if (!deleted) throw new PresetNotFoundError();
+}
+
+/** The shop's default preset id, or `null` if none is set. Never
+ * validated against the built-in/custom catalog on read — a stale
+ * default (e.g. pointing at a since-deleted custom preset) is the read
+ * side's concern (`resolveBrandStylePreset` already returns `null` for
+ * an unresolvable id, treated the same as "no preset chosen" everywhere
+ * this is consumed). */
+export async function getDefaultPresetId(context: AuthContext): Promise<string | null> {
+  const settings = await getShopSettings(context.shop);
+  return settings?.defaultBrandStylePresetId ?? null;
+}
+
+/** Sets (or, with `id: null`, clears) the shop's default preset. Does not
+ * require `id` to resolve to a real preset — see
+ * `setDefaultBrandStylePreset`'s repository-level doc comment for why
+ * that's intentional. */
+export async function setDefaultPresetId(context: AuthContext, id: string | null): Promise<void> {
+  await setDefaultBrandStylePresetRow(context.shop, id);
 }

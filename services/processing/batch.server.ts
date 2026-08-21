@@ -15,6 +15,7 @@ import type { ImageOperation } from "@prisma/client";
 import type { AuthContext } from "../../lib/auth/types";
 import { getImageSelectionSummary } from "../products/selection.server";
 import { logger } from "../../lib/logging/logger.server";
+import { resignResultUrls } from "../../lib/storage";
 import { createBatch, getBatch, getBatchProgress, type BatchProgress } from "../../db/repositories/processing-batch.repository";
 import { listProcessingJobsForBatch, type ProcessingJobRow } from "../../db/repositories/processing-job.repository";
 import { createAndEnqueueProcessingJob, ProductNotFoundError } from "./request-processing.server";
@@ -123,9 +124,10 @@ export interface BatchSummary {
 export async function getBatchSummary(context: AuthContext, batchId: string): Promise<BatchSummary | null> {
   const batch = await getBatch(context, batchId);
   if (!batch) return null;
-  const [progress, jobs] = await Promise.all([
+  const [progress, rawJobs] = await Promise.all([
     getBatchProgress(batch.id),
     listProcessingJobsForBatch(context.shop, batch.id),
   ]);
+  const jobs = await Promise.all(rawJobs.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
   return { id: batch.id, operation: batch.operation, createdAt: batch.createdAt, progress, jobs };
 }

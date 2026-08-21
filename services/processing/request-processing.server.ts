@@ -18,6 +18,7 @@ import type { AuthContext } from "../../lib/auth/types";
 import { findProductForShop } from "../../db/repositories/shopify-product.repository";
 import { getProductIntelligence } from "../intelligence/product-intelligence.server";
 import { TenantMismatchError } from "../../lib/auth/tenant.server";
+import { resignResultUrls } from "../../lib/storage";
 import {
   createProcessingJob,
   markQueued,
@@ -138,14 +139,23 @@ export async function requestProcessing(context: AuthContext, input: RequestProc
   });
 }
 
+/** Re-signs a job's results' URLs fresh (see lib/storage/resign.server.ts
+ * — a stored `.url` expires after an hour) before returning it to a
+ * route. */
+async function withFreshResultUrls(job: ProcessingJobRow): Promise<ProcessingJobRow> {
+  return { ...job, results: await resignResultUrls(job.results) };
+}
+
 export async function getProcessing(context: AuthContext, id: string): Promise<ProcessingJobRow | null> {
-  return getProcessingJobRow(context, id);
+  const job = await getProcessingJobRow(context, id);
+  return job ? withFreshResultUrls(job) : null;
 }
 
 /** Most-recent-first processing history for a product — see
  * docs/image-processing.md "Versioning". */
 export async function listProcessingHistory(context: AuthContext, productId: string): Promise<ProcessingJobRow[]> {
-  return listProcessingJobsForProductRow(context, productId);
+  const jobs = await listProcessingJobsForProductRow(context, productId);
+  return Promise.all(jobs.map(withFreshResultUrls));
 }
 
 export type ReviewDecision = "APPROVED" | "REJECTED";

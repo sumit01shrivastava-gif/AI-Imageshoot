@@ -60,6 +60,21 @@ const JOB_SELECT = {
 export type ProcessingJobRow = Prisma.ProcessingJobGetPayload<{ select: typeof JOB_SELECT }>;
 export type ProcessingResultRow = Prisma.ProcessingResultGetPayload<{ select: typeof RESULT_SELECT }>;
 
+const ASSET_RESULT_SELECT = {
+  id: true,
+  storageKey: true,
+  url: true,
+  width: true,
+  height: true,
+  format: true,
+  reviewStatus: true,
+  reviewedAt: true,
+  createdAt: true,
+  processingJob: { select: { id: true, operation: true, productId: true, product: { select: { title: true } } } },
+} satisfies Prisma.ProcessingResultSelect;
+
+export type ProcessingAssetResultRow = Prisma.ProcessingResultGetPayload<{ select: typeof ASSET_RESULT_SELECT }>;
+
 export interface CreateProcessingJobInput {
   shop: string;
   productId: string;
@@ -213,6 +228,43 @@ export async function listProcessingJobsForBatch(shop: string, batchId: string):
     where: { shop, batchId },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: JOB_SELECT,
+  });
+}
+
+export interface ProcessingAssetFilters {
+  operation?: ImageOperation;
+  status?: ReviewStatus;
+}
+
+/** Shop-wide, most-recent-first ProcessingResults — mirrors
+ * db/repositories/generation-job.repository.ts's
+ * `listGenerationResultsForShop`; see that function's doc comment and
+ * services/assets/asset-library.server.ts for the cross-model merge
+ * strategy this feeds. */
+export async function listProcessingResultsForShop(
+  shop: string,
+  filters: ProcessingAssetFilters,
+  limit: number,
+): Promise<ProcessingAssetResultRow[]> {
+  return prisma.processingResult.findMany({
+    where: {
+      shop,
+      ...(filters.status ? { reviewStatus: filters.status } : {}),
+      ...(filters.operation ? { processingJob: { operation: filters.operation } } : {}),
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit,
+    select: ASSET_RESULT_SELECT,
+  });
+}
+
+export async function countProcessingResultsForShop(shop: string, filters: ProcessingAssetFilters): Promise<number> {
+  return prisma.processingResult.count({
+    where: {
+      shop,
+      ...(filters.status ? { reviewStatus: filters.status } : {}),
+      ...(filters.operation ? { processingJob: { operation: filters.operation } } : {}),
+    },
   });
 }
 

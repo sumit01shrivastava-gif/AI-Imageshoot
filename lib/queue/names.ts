@@ -11,7 +11,11 @@
  *     see services/intelligence/job.server.ts and workers/index.ts
  *   - "generation"            → AI image generation jobs (Phase 3) — see
  *     services/generation/job.server.ts and workers/index.ts
- *   - "enhancement"           → background removal / cleanup / upscale jobs (future)
+ *   - "enhancement"           → background removal / cleanup / upscale jobs — see
+ *     services/processing/job.server.ts and workers/index.ts
+ *   - "store-visuals"         → store-level visual generation (homepage hero,
+ *     collection banner, store CTA — not product-scoped) — see
+ *     services/store-visuals/job.server.ts and workers/index.ts
  *   - "publishing"            → publishing approved assets back to Shopify (future)
  */
 export const QUEUE_NAMES = [
@@ -19,6 +23,7 @@ export const QUEUE_NAMES = [
   "product-intelligence",
   "generation",
   "enhancement",
+  "store-visuals",
   "publishing",
 ] as const;
 

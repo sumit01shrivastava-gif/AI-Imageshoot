@@ -22,6 +22,16 @@
  * double-gate. `REMOVE_BG_API_KEY` is read only via
  * lib/validation/env.server.ts, never hardcoded, never logged (see
  * SECRET_ENV_KEYS).
+ *
+ * Both network calls below (fetching a source image, calling remove.bg)
+ * carry a bounded request timeout via `AbortController` — without one, a
+ * hung upstream (dead CDN, a stalled vendor response) would hang the
+ * BullMQ job indefinitely rather than failing and letting the queue's own
+ * `attempts: 3` retry (lib/queue/queue.server.ts) do its job. A timeout
+ * is reported as `ProviderTimeoutError`, still mapped to the same generic
+ * merchant-facing failure message by services/processing/job.server.ts
+ * (see CLAUDE.md "Safe error handling") — this is purely about not
+ * hanging, not about a different user-facing outcome.
  */
 import sharp from "sharp";
 import { getEnv } from "../../lib/validation/env.server";
@@ -29,6 +39,39 @@ import { UnconfiguredAIProviderError } from "./unconfigured-provider";
 import type { ImageProcessingInput, ImageProcessingOutput, ImageProcessingProvider } from "./types";
 
 const REMOVE_BG_ENDPOINT = "https://api.remove.bg/v1.0/removebg";
+
+/** Applied to every outbound network call this provider makes — generous
+ * enough for a large source image / a vendor under normal load, short
+ * enough that a hung request fails within one HTTP request cycle rather
+ * than blocking a worker slot indefinitely. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** A provider-specific error distinct from a generic network/HTTP
+ * failure — see this module's doc comment. */
+export class ProviderTimeoutError extends Error {
+  constructor(what: string) {
+    super(`Timed out after ${REQUEST_TIMEOUT_MS}ms: ${what}`);
+    this.name = "ProviderTimeoutError";
+  }
+}
+
+/** `fetch` with a bounded timeout — an aborted request surfaces as
+ * `ProviderTimeoutError`, never a raw `AbortError` (which is easy to
+ * mistake for a merchant-initiated cancellation). */
+async function fetchWithTimeout(url: string, what: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ProviderTimeoutError(what);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 /** Mild, conservative defaults — "do not over-process the product" (see
  * docs/image-processing.md "Image cleanup"). */
@@ -46,7 +89,7 @@ const ASPECT_RATIO_DIMENSIONS: Record<string, { width: number; height: number }>
 };
 
 async function fetchSourceBytes(url: string): Promise<Buffer> {
-  const response = await fetch(url);
+  const response = await fetchWithTimeout(url, "fetching source image");
   if (!response.ok) {
     throw new Error(`Failed to fetch source image (status ${response.status})`);
   }
@@ -63,7 +106,7 @@ export class ProductionImageProcessingProvider implements ImageProcessingProvide
     }
 
     const body = new URLSearchParams({ image_url: input.sourceImage.url, size: "auto", format: "png" });
-    const response = await fetch(REMOVE_BG_ENDPOINT, {
+    const response = await fetchWithTimeout(REMOVE_BG_ENDPOINT, "calling remove.bg", {
       method: "POST",
       headers: { "X-Api-Key": env.REMOVE_BG_API_KEY, "Content-Type": "application/x-www-form-urlencoded" },
       body,

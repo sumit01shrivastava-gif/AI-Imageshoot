@@ -1,12 +1,12 @@
 /**
  * E2E: Image Generation foundation (Phase 3).
  *
- * Product → Generate Test Image → queued/processing → succeeded → result
+ * Product → Generate Image → queued/processing → succeeded → result
  * visible → Regenerate → a second, independent generation exists.
  *
  * Same pattern as tests/e2e/product-intelligence.spec.ts: the web app
  * under test runs in a separate process (playwright.config.ts's
- * webServer), so "Generate Test Image" only *enqueues* a real BullMQ job
+ * webServer), so "Generate Image" only *enqueues* a real BullMQ job
  * there; this file runs an actual `"generation"` worker *in the test
  * process* (both processes share the same Redis/Postgres) rather than
  * mocking generation away — see the Phase 3 instructions ("do not mock
@@ -130,7 +130,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("Image Generation", () => {
-  test("Generate Test Image moves from not-generated to a succeeded result, and Regenerate creates a second generation", async ({
+  test("Generate Image moves from not-generated to a succeeded result, and Regenerate creates a second generation", async ({
     page,
   }) => {
     const product = await seedAnalyzedProduct();
@@ -145,8 +145,8 @@ test.describe("Image Generation", () => {
     await expect(generationSection).toBeVisible();
     await expect(generationSection.getByText("Not generated yet", { exact: true })).toBeVisible();
 
-    // → Generate Test Image.
-    const generateButton = page.getByRole("button", { name: "Generate Test Image" });
+    // → Generate Image.
+    const generateButton = page.getByRole("button", { name: "Generate Image" });
     await expect(generateButton).toBeVisible();
     await expect(generateButton).toBeEnabled(); // Product Intelligence is READY
     await generateButton.click();

@@ -82,3 +82,64 @@ export async function getBrandStylePreset(context: AuthContext, id: string): Pro
   assertShopOwnership(context, row.shop);
   return row;
 }
+
+export interface UpdateBrandStylePresetInput {
+  name?: string;
+  description?: string | null;
+  attributes?: BrandStylePresetAttributes;
+}
+
+/** Updates a custom preset in place — never a new row, unlike
+ * `GenerationJob`'s "every request is new" history convention: a preset
+ * is a reusable configuration, not a generation record, so editing it is
+ * expected to affect only *future* generations. Past `GenerationJob.plan`
+ * snapshots already captured the preset's resolved attributes at request
+ * time (see services/generation/build-plan.ts), so they're unaffected by
+ * this edit — no historical data is mutated. Verifies shop ownership
+ * first; throws `DuplicatePresetNameError` on a name collision with
+ * another of this shop's presets. */
+export async function updateBrandStylePreset(
+  context: AuthContext,
+  id: string,
+  input: UpdateBrandStylePresetInput,
+): Promise<BrandStylePresetRow | null> {
+  const existing = await prisma.brandStylePreset.findUnique({ where: { id }, select: { shop: true } });
+  if (!existing) return null;
+  assertShopOwnership(context, existing.shop);
+
+  try {
+    return await prisma.brandStylePreset.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.attributes !== undefined ? { attributes: input.attributes as unknown as Prisma.InputJsonValue } : {}),
+      },
+      select: PRESET_SELECT,
+    });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002") {
+      throw new DuplicatePresetNameError(input.name ?? "");
+    }
+    throw error;
+  }
+}
+
+/** Permanently deletes a custom preset after verifying shop ownership.
+ * Safe to do unconditionally — every `GenerationJob`/`StoreVisualJob`
+ * that ever used this preset already snapshotted its resolved attributes
+ * into its own `plan` JSON at request time (see
+ * services/generation/build-plan.ts /
+ * services/store-visuals/build-plan.ts), so deleting the preset row
+ * never mutates or invalidates historical generation results. A shop's
+ * `defaultBrandStylePresetId` pointing at a since-deleted preset degrades
+ * gracefully (see `setDefaultBrandStylePreset`'s doc comment) — this
+ * function does not need to clear it. Returns `false` if the preset
+ * doesn't exist for this shop (already gone, not an error). */
+export async function deleteBrandStylePreset(context: AuthContext, id: string): Promise<boolean> {
+  const existing = await prisma.brandStylePreset.findUnique({ where: { id }, select: { shop: true } });
+  if (!existing) return false;
+  assertShopOwnership(context, existing.shop);
+  await prisma.brandStylePreset.delete({ where: { id } });
+  return true;
+}

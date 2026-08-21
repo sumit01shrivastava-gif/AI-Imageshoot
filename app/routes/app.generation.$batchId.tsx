@@ -15,6 +15,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 
 import { requireAdminContext } from "../../services/shopify";
 import { TenantMismatchError } from "../../lib/auth";
+import { withResultsSanitizedForClient } from "../../lib/storage";
 import { getGenerationBatchSummary } from "../../services/generation/batch.server";
 import {
   createAndEnqueueGenerationJob,
@@ -47,7 +48,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
   if (!summary) throw NOT_FOUND_RESPONSE();
 
-  return { summary };
+  return { summary: { ...summary, jobs: summary.jobs.map(withResultsSanitizedForClient) } };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {

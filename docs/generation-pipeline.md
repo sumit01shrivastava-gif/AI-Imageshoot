@@ -66,23 +66,28 @@ data flow, not a variant of this one.
   "Provider strategy") and genuine semantic identity validation
   (`recordIdentityValidation` is an honest "not yet possible" result, not
   a real check — see docs/lifestyle-generation.md "Identity validation")
-- Homepage/category-level banners and campaign generation — the
-  not-product-scoped half of Package 3, explicitly deferred pending its
-  own architectural decision (see docs/lifestyle-generation.md "Package 3
-  scoping decision"); `GenerationType.CATEGORY_BANNER`/`CAMPAIGN` reserve
-  the taxonomy but have no plan-building logic; only `PRODUCT_CLEANUP`,
-  `LIFESTYLE`, `MODEL_SHOOT` (Phase 6), and the product-scoped
-  `BANNER`/`CTA` (Phase 7) are driven end to end
+- Homepage/category-level banners and campaign generation THROUGH
+  `GenerationJob` itself remain deferred — `GenerationType.CATEGORY_BANNER`/
+  `CAMPAIGN` still reserve the taxonomy with no plan-building logic; only
+  `PRODUCT_CLEANUP`, `LIFESTYLE`, `MODEL_SHOOT` (Phase 6), and the
+  product-scoped `BANNER`/`CTA` (Phase 7) are driven end to end through
+  `GenerationJob`. The not-product-scoped half of Package 3 — a homepage
+  hero, a collection banner, a generic store CTA — IS now built, but as
+  its own domain (`services/store-visuals/`, `StoreVisualJob`, see
+  docs/store-visuals.md), not as a `GenerationJob` extension — the
+  architectural decision this list used to describe as deferred has been
+  made and implemented (a sibling model family, mirroring how Phase 4
+  gave Processing its own family rather than reusing `GenerationJob`).
 - Text/logo/typography rendering onto a generated image — every
   BANNER/CTA prompt explicitly instructs against it; a generated banner
   is a background photograph a merchant composites their own promotional
   copy onto elsewhere, not a finished asset with text baked in
 - A source-image picker for generation, a free-text prompt editor, a full
   lifestyle scene-control panel beyond a brand style preset picker (see
-  docs/lifestyle-generation.md "UI"), custom-preset-saving UI (the
-  `BrandStylePreset` model/service are fully built; no UI action exists
-  to create one yet), an output-count picker, a batch-level aspect ratio
-  picker
+  docs/lifestyle-generation.md "UI"), an output-count picker, a
+  batch-level aspect ratio picker. Custom-preset-saving/editing/deleting
+  IS now built (`/app/presets` — see docs/lifestyle-generation.md "Brand
+  style presets").
 - Real *upscale*/*shadow-generation*/*crop* infrastructure — the
   `ImageProcessingProvider` interface has these three methods, but only
   `removeBackground`/`enhance`/`resize` are implemented (Phase 4); see
