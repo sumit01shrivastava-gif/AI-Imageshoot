@@ -40,6 +40,7 @@ import {
 import { buildGenerateImageInput } from "./build-input";
 import { getConfiguredImageGenerationProvider } from "./provider.server";
 import { parseGenerationPlan, assertValidGenerateImageResult, InvalidGenerationResultError } from "./schema";
+import { recordIdentityValidation, type IdentityValidationResult } from "./identity-validation.server";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { GeneratedImageOutput } from "../ai/types";
 
@@ -69,6 +70,7 @@ async function persistOutput(
   index: number,
   output: GeneratedImageOutput,
   providerName: string,
+  identityValidation: IdentityValidationResult,
 ): Promise<CreateResultInput> {
   const format = formatFromContentType(output.contentType) ?? "bin";
   const key = `shops/${shop}/generations/${generationJobId}/${index}.${format}`;
@@ -85,7 +87,10 @@ async function persistOutput(
     format: formatFromContentType(output.contentType),
     providerName,
     providerResultId: output.providerResultId ?? null,
-    metadata: output.metadata ?? null,
+    // See identity-validation.server.ts — an honest, structured "not yet
+    // possible" result, not a fake pass, merged alongside whatever the
+    // provider itself returned as output-level metadata.
+    metadata: { ...(output.metadata ?? {}), identityValidation },
   };
 }
 
@@ -118,8 +123,13 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     const result = await provider.generateImage(input);
     assertValidGenerateImageResult(result);
 
+    const identityValidation = plan.productFacts.identityAnchors
+      ? recordIdentityValidation(plan.productFacts.identityAnchors)
+      : { validated: false, reason: "no identity anchors present on this generation plan", identityAnchorsChecked: [] };
     const storedResults = await Promise.all(
-      result.outputs.map((output, index) => persistOutput(shop, generationJobId, index, output, provider.name)),
+      result.outputs.map((output, index) =>
+        persistOutput(shop, generationJobId, index, output, provider.name, identityValidation),
+      ),
     );
     await createResults(shop, generationJobId, storedResults);
 

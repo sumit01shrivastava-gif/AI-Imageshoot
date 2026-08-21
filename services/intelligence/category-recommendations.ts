@@ -18,6 +18,15 @@
  * See docs/product-intelligence.md "Generation recommendations" and
  * "Model suitability" for the worked examples this table encodes
  * (jewelry/furniture/shoes/food, ...).
+ *
+ * Phase 5 (docs/lifestyle-generation.md) added a third consumer:
+ * `services/generation/lifestyle-scene.ts` uses the same
+ * `getCategoryRecommendation` lookup for category-aware lifestyle scene
+ * defaults (`recommendedSurfaces`/`recommendedProps`/`recommendedMood`/
+ * `recommendedColorDirection` below) — reusing this table rather than a
+ * second, parallel category-matching table, per CLAUDE.md "Do not create
+ * unnecessary normalization tables"/"don't duplicate Product
+ * Intelligence".
  */
 
 /** Kept intentionally small and reusable — the same handful of asset
@@ -39,6 +48,14 @@ export interface CategoryRecommendation {
   modelSuitable: boolean;
   recommendedEnvironments: string[];
   recommendedPoseTypes: string[];
+  /** Lifestyle-scene defaults (Phase 5) — see
+   * services/generation/lifestyle-scene.ts. Optional so this table's
+   * Phase 2 role (asset-type/pose recommendation) stays unaffected for
+   * any consumer that doesn't care about these. */
+  recommendedSurfaces?: string[];
+  recommendedProps?: string[];
+  recommendedMood?: string;
+  recommendedColorDirection?: string;
 }
 
 interface CategoryProfile extends CategoryRecommendation {
@@ -59,6 +76,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: true,
     recommendedEnvironments: ["studio", "luxury lifestyle setting"],
     recommendedPoseTypes: ["hand close-up", "worn detail"],
+    recommendedSurfaces: ["velvet", "polished marble"],
+    recommendedProps: ["soft draped fabric", "delicate flowers"],
+    recommendedMood: "elegant, luxurious",
+    recommendedColorDirection: "deep, rich tones with soft highlights",
   },
   {
     matchKeywords: ["eyewear", "glasses", "sunglasses", "spectacles"],
@@ -66,6 +87,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: true,
     recommendedEnvironments: ["studio", "outdoor lifestyle"],
     recommendedPoseTypes: ["face close-up", "worn detail"],
+    recommendedSurfaces: ["matte surface", "outdoor setting"],
+    recommendedProps: ["natural sunlight"],
+    recommendedMood: "confident, modern",
+    recommendedColorDirection: "natural, sunlit tones",
   },
   {
     matchKeywords: ["handbag", "backpack", "purse", "tote", "luggage", "wallet"],
@@ -73,6 +98,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: true,
     recommendedEnvironments: ["studio", "lifestyle setting"],
     recommendedPoseTypes: ["carried/worn detail"],
+    recommendedSurfaces: ["polished marble", "wood table", "leather bench"],
+    recommendedProps: ["folded scarf", "sunglasses"],
+    recommendedMood: "sophisticated, aspirational",
+    recommendedColorDirection: "warm neutrals",
   },
   {
     matchKeywords: ["shoe", "footwear", "sneaker", "boot", "sandal", "heel"],
@@ -80,6 +109,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: true,
     recommendedEnvironments: ["studio", "street", "lifestyle"],
     recommendedPoseTypes: ["worn full-body", "worn detail"],
+    recommendedSurfaces: ["concrete", "wood floor", "pavement"],
+    recommendedProps: ["urban backdrop"],
+    recommendedMood: "energetic, dynamic",
+    recommendedColorDirection: "bold, contrast-rich",
   },
   {
     matchKeywords: [
@@ -97,6 +130,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: true,
     recommendedEnvironments: ["studio", "street", "lifestyle"],
     recommendedPoseTypes: ["worn full-body", "worn detail"],
+    recommendedSurfaces: ["street", "studio backdrop"],
+    recommendedProps: [],
+    recommendedMood: "natural, candid",
+    recommendedColorDirection: "true-to-life color",
   },
   {
     matchKeywords: ["furniture", "sofa", "chair", "table", "desk", "shelf", "cabinet", "bed"],
@@ -104,6 +141,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: false,
     recommendedEnvironments: ["studio", "living room", "room scene"],
     recommendedPoseTypes: [],
+    recommendedSurfaces: ["room floor", "area rug"],
+    recommendedProps: ["potted plant", "throw pillow", "reading lamp"],
+    recommendedMood: "cozy, inviting",
+    recommendedColorDirection: "warm, homey tones",
   },
   {
     matchKeywords: ["appliance", "kitchen", "blender", "toaster", "microwave", "cookware"],
@@ -111,6 +152,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: false,
     recommendedEnvironments: ["studio", "kitchen scene"],
     recommendedPoseTypes: [],
+    recommendedSurfaces: ["kitchen countertop"],
+    recommendedProps: ["fresh ingredients", "kitchen towel"],
+    recommendedMood: "clean, functional",
+    recommendedColorDirection: "bright, crisp tones",
   },
   {
     matchKeywords: [
@@ -127,6 +172,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: false,
     recommendedEnvironments: ["studio", "desk scene"],
     recommendedPoseTypes: [],
+    recommendedSurfaces: ["minimalist desk"],
+    recommendedProps: ["notebook", "coffee cup"],
+    recommendedMood: "sleek, modern",
+    recommendedColorDirection: "cool, neutral tones",
   },
   {
     matchKeywords: ["food", "snack", "beverage", "drink", "grocery", "coffee", "tea"],
@@ -134,6 +183,10 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     modelSuitable: false,
     recommendedEnvironments: ["studio", "serving scene", "table scene"],
     recommendedPoseTypes: [],
+    recommendedSurfaces: ["wood table", "linen cloth"],
+    recommendedProps: ["fresh ingredients", "rustic dishware"],
+    recommendedMood: "appetizing, warm",
+    recommendedColorDirection: "warm, natural tones",
   },
 ];
 
@@ -144,6 +197,10 @@ const DEFAULT_RECOMMENDATION: CategoryRecommendation = {
   modelSuitable: false,
   recommendedEnvironments: ["studio"],
   recommendedPoseTypes: [],
+  recommendedSurfaces: ["neutral surface"],
+  recommendedProps: [],
+  recommendedMood: "clean, professional",
+  recommendedColorDirection: "neutral tones",
 };
 
 /**

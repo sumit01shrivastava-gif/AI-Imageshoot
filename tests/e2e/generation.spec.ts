@@ -135,10 +135,15 @@ test.describe("Image Generation", () => {
   }) => {
     const product = await seedAnalyzedProduct();
 
-    // Product → product detail.
+    // Product → product detail. "Not generated yet" is shared vocabulary
+    // with Phase 5's "AI Lifestyle Imagery" section (GENERATION_STATUS_LABEL/
+    // _TONE are reused across both — see app.products.$id.tsx), so scope
+    // to the "Image Generation" (PRODUCT_CLEANUP) section specifically
+    // rather than asserting the text page-wide.
     await page.goto(`/app/products/${product.id}`);
-    await expect(page.getByText("Image Generation")).toBeVisible();
-    await expect(page.getByText("Not generated yet", { exact: true })).toBeVisible();
+    const generationSection = page.locator("s-section", { has: page.getByRole("heading", { name: "Image Generation" }) });
+    await expect(generationSection).toBeVisible();
+    await expect(generationSection.getByText("Not generated yet", { exact: true })).toBeVisible();
 
     // → Generate Test Image.
     const generateButton = page.getByRole("button", { name: "Generate Test Image" });

@@ -18,6 +18,20 @@
 // docs/image-processing.md — including why this is a dedicated model
 // family rather than reusing GenerationJob/GenerationResult.
 //
+// Phase 5 adds AI lifestyle imagery (the Pro plan foundation) as targeted
+// extensions of Phase 3's existing GenerationJob/GenerationResult rather
+// than a new model family — unlike Phase 4, lifestyle generation is the
+// same *kind* of request PRODUCT_CLEANUP already is (a creative
+// GenerationPlan → GenerationJob → GenerationResult), so it doesn't
+// justify a parallel table set. Adds: GenerationJob.batchId +
+// GenerationBatch (mirrors ProcessingBatch — Prisma has no polymorphic
+// relation, so batching still needs its own model, just not its own job/
+// result pair), GenerationResult.reviewStatus/reviewedAt (reuses the
+// existing ReviewStatus enum), and BrandStylePreset (shop-saved custom
+// presets only — built-in presets are code constants, see
+// services/generation/brand-style-presets.ts). See
+// docs/lifestyle-generation.md.
+//
 // Remaining domain models (GenerationPreset, BrandStyle, ModelPreset,
 // MediaAsset, MediaVersion, UsageRecord, CreditBalance, CreditTransaction,
 // Publication, AuditLog, ...) are intentionally NOT defined yet — they
@@ -282,7 +296,7 @@ model ProductIntelligence {
   productId String         @unique
   product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  status IntelligenceStatus @default(PENDING)
+  status       IntelligenceStatus @default(PENDING)
   // Merchant-safe summary of the last failure, if any (see CLAUDE.md "Safe
   // error handling" — no stack traces/internal detail here).
   errorMessage String?
@@ -464,7 +478,7 @@ model GenerationJob {
   // How many attempts BullMQ has made at this job — see
   // services/generation/job.server.ts. Distinct from a merchant clicking
   // "Regenerate" (which creates a brand-new row, not a retry of this one).
-  retryCount Int @default(0)
+  retryCount   Int     @default(0)
 
   providerName  String?
   providerJobId String?
@@ -474,7 +488,14 @@ model GenerationJob {
   // Wall-clock duration of the last processing attempt, in milliseconds —
   // usage-accounting foundation only; no billing is computed from this.
   // See docs/generation.md "Usage tracking foundation".
-  durationMs Int?
+  durationMs  Int?
+
+  // Which batch this job belongs to, if it was created as part of one —
+  // see GenerationBatch below (Phase 5). Null for a single-product
+  // request from the product detail page. Mirrors
+  // ProcessingJob.batchId/ProcessingBatch exactly.
+  batchId String?
+  batch   GenerationBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -484,6 +505,7 @@ model GenerationJob {
   @@index([shop, productId])
   @@index([shop, status])
   @@index([shop, createdAt])
+  @@index([batchId])
 }
 
 // One row per output image a GenerationJob produced — a single job may
@@ -519,11 +541,89 @@ model GenerationResult {
   providerResultId String?
   // Free-form provider-reported detail (seed, model name, per-output
   // timing, ...) — see docs/generation.md "Usage tracking foundation".
-  metadata Json?
+  // Phase 5 also records identity-validation results here (see
+  // docs/lifestyle-generation.md "Identity validation") — a structured,
+  // honest "not yet validated" result, not a new column, since it's
+  // debugging/traceability detail, not something queried directly.
+  metadata         Json?
+
+  // The merchant's review decision for this result — see
+  // docs/lifestyle-generation.md "Review lifecycle". Reuses the existing
+  // ReviewStatus enum (Phase 4) rather than a new one. Approving/
+  // rejecting never deletes/overwrites the result; "Regenerate" always
+  // creates a new GenerationJob/GenerationResult.
+  reviewStatus ReviewStatus @default(PENDING)
+  reviewedAt   DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([shop, generationJobId])
+}
+
+// Groups the independent GenerationJobs created by one "select products →
+// choose lifestyle configuration → start generation" batch action — see
+// docs/lifestyle-generation.md "Batch generation". Field-for-field mirror
+// of ProcessingBatch (Phase 4); a separate model rather than reusing it
+// because ProcessingBatch.operation/jobs are typed to Processing's own
+// enum/model and Prisma has no polymorphic relation — see
+// docs/lifestyle-generation.md for the full reasoning. Progress (total/
+// queued/processing/succeeded/failed) is likewise computed at read time
+// via a groupBy over GenerationJob.status scoped to this batch, never a
+// persisted counter.
+model GenerationBatch {
+  id String @id @default(cuid())
+
+  shop String
+
+  generationType GenerationType
+
+  // The ImageSelection this batch was started from, if any — traceability
+  // only; the batch's own jobs are the source of truth once created.
+  sourceSelectionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  jobs GenerationJob[]
+
+  @@index([shop, createdAt])
+}
+
+// A merchant-saved, reusable, named lifestyle generation configuration —
+// see docs/lifestyle-generation.md "Brand style presets". Only CUSTOM
+// presets are rows here: the built-in catalog (Minimal Studio, Luxury
+// Editorial, ...) is a code constant
+// (services/generation/brand-style-presets.ts), not seeded data — every
+// shop gets it for free, with zero migration cost, and it's trivially
+// versionable in code. `attributes` bundles both brand-style attributes
+// (mood, photography style, color direction) and scene defaults
+// (environment, surface, props, composition, camera) into one reusable
+// named thing, validated by
+// services/generation/schema.ts's BrandStylePresetAttributesSchema — the
+// instructions' own preset examples mix both kinds of attribute into one
+// preset, so this is deliberately one model, not two.
+model BrandStylePreset {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  name        String
+  description String?
+
+  // Validated by BrandStylePresetAttributesSchema before being written —
+  // never trusted as-is (see CLAUDE.md "Reject malformed provider
+  // output", applied here to merchant input rather than provider output).
+  attributes Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // One name per shop — avoids two "Custom Warm Look" presets confusing
+  // the picker UI.
+  @@unique([shop, name])
+  @@index([shop])
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +735,7 @@ model ProcessingJob {
   errorMessage String?
   // How many attempts BullMQ has made at this job — mirrors
   // GenerationJob.retryCount; see services/processing/job.server.ts.
-  retryCount Int @default(0)
+  retryCount   Int     @default(0)
 
   providerName  String?
   providerJobId String?
@@ -644,7 +744,7 @@ model ProcessingJob {
   completedAt DateTime?
   // Wall-clock duration of the last processing attempt, in milliseconds —
   // usage-accounting foundation only; no billing is computed from this.
-  durationMs Int?
+  durationMs  Int?
 
   // Which batch this job belongs to, if it was created as part of one
   // (see ProcessingBatch below). Null for a single-image request from

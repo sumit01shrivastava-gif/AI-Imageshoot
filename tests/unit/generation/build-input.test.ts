@@ -6,6 +6,7 @@ function plan() {
   return parseGenerationPlan({
     generationType: "PRODUCT_CLEANUP",
     assetType: "product_studio",
+    category: "Handbags",
     sourceProductId: "product-1",
     sourceImages: [{ mediaId: "media-1", url: "https://cdn/1.jpg", altText: "Front", position: 0 }],
     productFacts: {
@@ -33,6 +34,7 @@ function plan() {
     outputCount: 2,
     modelConfiguration: null,
     brandStyle: { visualTone: "luxury" },
+    lifestyleScene: null,
     constraints: [],
   });
 }
@@ -67,5 +69,52 @@ describe("buildGenerateImageInput", () => {
   it("passes the given attempt number through, distinct per call", () => {
     expect(buildGenerateImageInput(plan(), 1).attempt).toBe(1);
     expect(buildGenerateImageInput(plan(), 2).attempt).toBe(2);
+  });
+
+  it("sceneDetails is undefined when the plan has no lifestyleScene", () => {
+    expect(buildGenerateImageInput(plan(), 1).sceneDetails).toBeUndefined();
+  });
+
+  it("flattens plan.lifestyleScene into sceneDetails", () => {
+    const withScene = parseGenerationPlan({
+      generationType: "LIFESTYLE",
+      assetType: "lifestyle",
+      category: "Handbags",
+      sourceProductId: "product-1",
+      sourceImages: [{ mediaId: "media-1", url: "https://cdn/1.jpg", altText: "Front", position: 0 }],
+      productFacts: { identityAnchors: null },
+      creativeDirection: {
+        prompt: "Lifestyle photography of the red leather handbag.",
+        negativeConstraints: [],
+        environment: "a sunlit studio",
+        lighting: null,
+        composition: null,
+      },
+      aspectRatio: "4:5",
+      outputFormat: "png",
+      quality: "standard",
+      outputCount: 1,
+      modelConfiguration: null,
+      brandStyle: null,
+      lifestyleScene: {
+        sceneType: "styled flat lay",
+        surface: "marble",
+        props: ["fresh flowers"],
+        camera: "45-degree overhead",
+        mood: "warm",
+        colorDirection: "neutral tones",
+      },
+      constraints: [],
+    });
+
+    const input = buildGenerateImageInput(withScene, 1);
+    expect(input.sceneDetails).toEqual({
+      sceneType: "styled flat lay",
+      surface: "marble",
+      props: ["fresh flowers"],
+      camera: "45-degree overhead",
+      mood: "warm",
+      colorDirection: "neutral tones",
+    });
   });
 });

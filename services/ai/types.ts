@@ -156,6 +156,19 @@ export interface GenerateImageInput {
    * retry tests. See docs/generation.md "Retry semantics". */
   attempt: number;
   brandStyle?: BrandStyleContext | null;
+  /** Structured, generation-type-specific scene detail (e.g. Phase 5's
+   * lifestyle scene: surface, props, camera angle, mood, color direction)
+   * — deliberately generic (`Record<string, unknown>`), mirroring
+   * `productFacts`'s existing pattern: `services/ai/` must not import a
+   * higher domain layer's concrete shape (see CLAUDE.md's domain
+   * boundaries and docs/lifestyle-generation.md "Provider strategy").
+   * The caller (`services/generation/build-input.ts`) is the "provider
+   * adapter" that flattens its own structured plan into this; a real
+   * provider implementation decides how (or whether) to use it — folded
+   * into its own prompt construction, or passed as structured params if
+   * the vendor's API accepts them. `undefined`/absent for generation
+   * types with no scene concept (e.g. PRODUCT_CLEANUP). */
+  sceneDetails?: Record<string, unknown>;
 }
 
 export interface GeneratedImageOutput {

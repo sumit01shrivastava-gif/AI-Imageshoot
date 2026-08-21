@@ -4,6 +4,7 @@ import {
   MissingSourceImagesError,
   ProductNotAnalyzedError,
 } from "../../../services/generation/build-plan";
+import { getBuiltInPreset } from "../../../services/generation/brand-style-presets";
 import type { ProductDetail } from "../../../db/repositories/shopify-product.repository";
 import type { ProductIntelligenceRow } from "../../../db/repositories/product-intelligence.repository";
 
@@ -233,5 +234,77 @@ describe("buildGenerationPlan", () => {
       outputCountOverride: 3,
     });
     expect(plan.outputCount).toBe(3);
+  });
+});
+
+describe("LIFESTYLE generation type", () => {
+  it("populates lifestyleScene and brandStyle from a resolved brand style preset", () => {
+    const preset = getBuiltInPreset("luxury-editorial")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+      brandStylePreset: preset,
+    });
+
+    expect(plan.lifestyleScene).not.toBeNull();
+    expect(plan.lifestyleScene?.sceneType).toBe("environmental");
+    expect(plan.lifestyleScene?.surface).toBe(preset.attributes.surface);
+    expect(plan.brandStyle).not.toBeNull();
+    expect(plan.brandStyle?.photographyStyle).toBe(preset.attributes.photographyStyle);
+    expect(plan.creativeDirection.prompt).toContain("Lifestyle product photography");
+    expect(plan.creativeDirection.environment).toBe(preset.attributes.environment);
+  });
+
+  it("falls back to category-aware defaults when no preset is chosen", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+    });
+
+    expect(plan.brandStyle).toBeNull();
+    expect(plan.lifestyleScene).not.toBeNull();
+    expect(plan.lifestyleScene?.surface).not.toBeNull();
+  });
+
+  it("a lifestyleSceneOverride's fields win over the preset's own", () => {
+    const preset = getBuiltInPreset("luxury-editorial")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+      brandStylePreset: preset,
+      lifestyleSceneOverride: { mood: "playful" },
+    });
+
+    expect(plan.lifestyleScene?.mood).toBe("playful");
+  });
+
+  it("every non-LIFESTYLE generationType keeps lifestyleScene/brandStyle null, even if a preset is passed", () => {
+    const preset = getBuiltInPreset("luxury-editorial")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "PRODUCT_CLEANUP",
+      brandStylePreset: preset,
+    });
+
+    expect(plan.lifestyleScene).toBeNull();
+    expect(plan.brandStyle).toBeNull();
+  });
+
+  it("the prompt always includes the identity-preservation instruction", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+    });
+    expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
   });
 });

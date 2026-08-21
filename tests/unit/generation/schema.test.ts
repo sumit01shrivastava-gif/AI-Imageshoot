@@ -10,6 +10,7 @@ function validPlan(overrides: Record<string, unknown> = {}) {
   return {
     generationType: "PRODUCT_CLEANUP",
     assetType: "product_studio",
+    category: "Handbags",
     sourceProductId: "product-1",
     sourceImages: [{ mediaId: "media-1", url: "https://cdn/1.jpg", altText: "Front", position: 0 }],
     productFacts: {
@@ -37,6 +38,7 @@ function validPlan(overrides: Record<string, unknown> = {}) {
     outputCount: 1,
     modelConfiguration: null,
     brandStyle: null,
+    lifestyleScene: null,
     constraints: [],
     ...overrides,
   };

@@ -57,12 +57,18 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   the BullMQ job/queue wiring, staleness detection, and category-aware
   generation recommendations. Depends on `services/ai/`'s `AIProvider`
   interface, never a vendor SDK — see docs/product-intelligence.md.
-- **`services/generation/`** (Phase 3) — the image-generation foundation:
-  building a structured `GenerationPlan` from a product + its Product
-  Intelligence profile, the BullMQ job/queue wiring, and persisting
-  results through the storage abstraction. Depends on `services/ai/`'s
-  `ImageGenerationProvider` and `services/intelligence/`'s
-  `IdentityAnchors` shape, never a vendor SDK — see docs/generation.md.
+- **`services/generation/`** (Phase 3; extended Phase 5) — the
+  image-generation foundation: building a structured `GenerationPlan`
+  from a product + its Product Intelligence profile, the BullMQ job/queue
+  wiring, and persisting results through the storage abstraction. Depends
+  on `services/ai/`'s `ImageGenerationProvider` and
+  `services/intelligence/`'s `IdentityAnchors` shape, never a vendor SDK
+  — see docs/generation.md. Phase 5 extended this same domain with
+  lifestyle scene planning (`LifestyleScenePlan`, nested in
+  `GenerationPlan`), brand style presets (built-in constants + shop-saved
+  custom `BrandStylePreset` rows), batch lifestyle generation
+  (`GenerationBatch`), and an explicit identity-validation boundary — see
+  docs/lifestyle-generation.md.
 - **`services/processing/`** (Phase 4) — production image processing
   (background removal/enhance/resize): building provider input from a
   source image + validated options, the `"enhancement"` BullMQ job/queue
@@ -146,6 +152,12 @@ Phase 1's `ImageSelection`), review (Approve/Reject/Regenerate), and
 `ProcessingBatch`/`ProcessingJob`/`ProcessingResult` — the first phase
 with a real, working vendor call (remove.bg, background removal only)
 and real persistent storage (`LocalFilesystemStorageProvider`, not yet a
-cloud vendor). Still no lifestyle/AI-model image generation, no
-publishing back to Shopify, and no credits/billing/subscriptions
-anywhere in this codebase.
+cloud vendor). Phase 5 added AI lifestyle product imagery (`GenerationType.LIFESTYLE`,
+see docs/lifestyle-generation.md) — category-aware scene planning, brand
+style presets (built-in + shop-saved custom), batch lifestyle generation,
+review/regeneration/history, and an explicit (currently non-semantic)
+identity-validation boundary — still driven only by the deterministic
+test provider, no real image-generation vendor installed. Still no AI
+human models/model shoots, no banners/CTA/campaign generation, no
+publishing back to Shopify, and no credits/billing/subscriptions/plan
+enforcement anywhere in this codebase.

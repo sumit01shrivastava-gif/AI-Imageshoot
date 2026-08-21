@@ -12,7 +12,8 @@
 import type { ProductDetail } from "../../db/repositories/shopify-product.repository";
 import type { ProductIntelligenceRow } from "../../db/repositories/product-intelligence.repository";
 import { IdentityAnchorsSchema } from "../intelligence/schema";
-import { parseGenerationPlan, type GenerationPlan } from "./schema";
+import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes, type LifestyleScene } from "./schema";
+import { buildLifestyleScene, type LifestyleSceneOverride } from "./lifestyle-scene";
 import type { GenerationTypeValue } from "./types";
 
 const GENERATION_TYPE_LABEL: Record<GenerationTypeValue, string> = {
@@ -56,6 +57,20 @@ export interface BuildGenerationPlanInput {
    * tests can exercise multi-result storage/persistence through the real
    * pipeline. Defaults to 1. */
   outputCountOverride?: number;
+  /**
+   * LIFESTYLE only — the resolved brand style preset (built-in or
+   * shop-owned custom; resolution happens in
+   * services/generation/brand-style-preset.server.ts, one layer up —
+   * this function stays pure/no I/O). `null`/omitted means "no preset
+   * chosen," which still produces a fully-formed scene via category-aware
+   * defaults (services/generation/lifestyle-scene.ts never requires a
+   * preset). Ignored for every other generationType.
+   */
+  brandStylePreset?: { id: string; name: string; attributes: BrandStylePresetAttributes } | null;
+  /** LIFESTYLE only — structured merchant scene-control overrides (never
+   * a free-text prompt — see docs/generation.md "No arbitrary prompts").
+   * Ignored for every other generationType. */
+  lifestyleSceneOverride?: LifestyleSceneOverride;
 }
 
 export class MissingSourceImagesError extends Error {
@@ -72,6 +87,13 @@ export class ProductNotAnalyzedError extends Error {
   }
 }
 
+// Identity-preservation instruction appended to every synthesized prompt
+// that places the product somewhere new (i.e. not the plain studio
+// cleanup case, which already states this itself) — see
+// docs/generation.md "Identity preservation" / docs/lifestyle-generation.md.
+const PRESERVE_PRODUCT_INSTRUCTION =
+  "Preserve the product exactly as shown in the source image — do not alter its shape, material, color, or any visible branding.";
+
 function synthesizePrompt(input: {
   generationType: GenerationTypeValue;
   category: string;
@@ -80,16 +102,28 @@ function synthesizePrompt(input: {
   style: string | null;
   environment: string | null;
   photographyStyle: string | null;
+  scene?: LifestyleScene;
 }): string {
   const descriptor = [input.primaryColor, input.material, input.category].filter(Boolean).join(" ").trim();
   const subject = descriptor || "product";
 
   if (input.generationType === "PRODUCT_CLEANUP") {
     return (
-      `Clean, evenly lit product photography of the ${subject}. Preserve the product exactly as ` +
-      `shown in the source image — do not alter its shape, material, color, or any visible ` +
-      `branding. Neutral, distraction-free background.`
+      `Clean, evenly lit product photography of the ${subject}. ${PRESERVE_PRODUCT_INSTRUCTION} ` +
+      `Neutral, distraction-free background.`
     );
+  }
+
+  if (input.generationType === "LIFESTYLE") {
+    const parts = [`Lifestyle product photography of the ${subject}`];
+    if (input.environment) parts.push(`placed in ${input.environment}`);
+    if (input.scene?.surface) parts.push(`resting on ${input.scene.surface}`);
+    if (input.scene?.props && input.scene.props.length > 0) parts.push(`styled with ${input.scene.props.join(", ")}`);
+    if (input.scene?.camera) parts.push(`${input.scene.camera} camera angle`);
+    if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
+    if (input.scene?.mood) parts.push(`${input.scene.mood} mood`);
+    if (input.scene?.colorDirection) parts.push(`${input.scene.colorDirection} color palette`);
+    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
   }
 
   const parts = [`${GENERATION_TYPE_LABEL[input.generationType]} photography of the ${subject}`];
@@ -97,6 +131,18 @@ function synthesizePrompt(input: {
   if (input.environment) parts.push(`set in ${input.environment}`);
   if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
   return `${parts.join(", ")}.`;
+}
+
+// The subset of BrandStylePresetAttributes that GenerateImageInput.brandStyle
+// (BrandStyleContextSchema) actually accepts — see that schema's own doc
+// comment for why BrandStylePresetAttributesSchema is deliberately a
+// superset (it also carries scene defaults BrandStyleContext doesn't).
+function toBrandStyleContext(attributes: BrandStylePresetAttributes) {
+  const { visualTone, colorPalette, photographyStyle, backgroundStyle, lightingStyle, compositionStyle, luxuryLevel, modelStyle } =
+    attributes;
+  const context = { visualTone, colorPalette, photographyStyle, backgroundStyle, lightingStyle, compositionStyle, luxuryLevel, modelStyle };
+  const hasAnyField = Object.values(context).some((value) => value !== undefined);
+  return hasAnyField ? context : null;
 }
 
 /**
@@ -109,8 +155,16 @@ function synthesizePrompt(input: {
  * than silently generating with `productFacts.identityAnchors: null`.
  */
 export function buildGenerationPlan(input: BuildGenerationPlanInput): GenerationPlan {
-  const { product, intelligence, sourceMediaIds, generationType, visualDirectionOverride, outputCountOverride } =
-    input;
+  const {
+    product,
+    intelligence,
+    sourceMediaIds,
+    generationType,
+    visualDirectionOverride,
+    outputCountOverride,
+    brandStylePreset,
+    lifestyleSceneOverride,
+  } = input;
 
   const requestedIds = new Set(sourceMediaIds);
   const sourceImages = product.media
@@ -142,14 +196,42 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
     throw new ProductNotAnalyzedError();
   }
 
-  const environment = visualDirectionOverride?.environment ?? intelligence.recommendedEnvironments[0] ?? null;
+  const category = intelligence.category ?? (product.productType || "product");
+
+  // LIFESTYLE resolves its scene (surface/props/camera/mood/colorDirection
+  // + environment/photographyStyle) via the resolved brand style preset
+  // (if any) and category-aware defaults — see
+  // services/generation/lifestyle-scene.ts. Every other generationType
+  // keeps its existing behavior untouched (Product Intelligence's own
+  // recommendedEnvironments/recommendedPhotographyStyles, no preset/scene
+  // concept at all).
+  const sceneResolution =
+    generationType === "LIFESTYLE"
+      ? buildLifestyleScene({
+          categorySignal: category,
+          preset: brandStylePreset?.attributes ?? null,
+          override: lifestyleSceneOverride,
+        })
+      : null;
+
+  const environment =
+    visualDirectionOverride?.environment ??
+    (generationType === "LIFESTYLE" ? sceneResolution!.environment : null) ??
+    intelligence.recommendedEnvironments[0] ??
+    null;
   const lighting = visualDirectionOverride?.lighting ?? null;
   const composition = visualDirectionOverride?.composition ?? null;
-  const category = intelligence.category ?? (product.productType || "product");
+  const photographyStyle =
+    (generationType === "LIFESTYLE" ? sceneResolution!.photographyStyle : null) ??
+    intelligence.recommendedPhotographyStyles[0] ??
+    null;
+  const negativeConstraints =
+    visualDirectionOverride?.negativeConstraints ?? sceneResolution?.negativeConstraints ?? [];
 
   const plan = {
     generationType,
     assetType: intelligence.recommendedAssetTypes[0] ?? null,
+    category,
 
     sourceProductId: product.id,
     sourceImages,
@@ -166,9 +248,10 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
         primaryColor: intelligence.primaryColor,
         style: intelligence.style,
         environment,
-        photographyStyle: intelligence.recommendedPhotographyStyles[0] ?? null,
+        photographyStyle,
+        scene: sceneResolution?.scene,
       }),
-      negativeConstraints: visualDirectionOverride?.negativeConstraints ?? [],
+      negativeConstraints,
       environment,
       lighting,
       composition,
@@ -188,7 +271,11 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
             recommendedPoseTypes: intelligence.recommendedPoseTypes,
           },
 
-    brandStyle: null,
+    // Both LIFESTYLE-only this phase — a preset/scene override passed for
+    // any other generationType is silently ignored rather than leaking
+    // into a plan it wasn't meant for.
+    brandStyle: generationType === "LIFESTYLE" && brandStylePreset ? toBrandStyleContext(brandStylePreset.attributes) : null,
+    lifestyleScene: sceneResolution?.scene ?? null,
 
     constraints: [],
   };

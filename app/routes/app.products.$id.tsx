@@ -18,13 +18,19 @@ import {
 } from "../../services/intelligence/product-intelligence.server";
 import {
   requestGeneration,
+  createAndEnqueueGenerationJob,
+  reviewGenerationResult,
+  getGeneration,
   listGenerationHistory,
   ProductNotFoundError as GenerationProductNotFoundError,
   MissingSourceImagesError,
   ProductNotAnalyzedError,
   InvalidGenerationRequestError,
+  GenerationResultNotFoundError,
 } from "../../services/generation/request-generation.server";
-import type { GenerationResultRow } from "../../db/repositories/generation-job.repository";
+import { listAvailablePresets } from "../../services/generation/brand-style-preset.server";
+import type { GenerationJobRow, GenerationResultRow } from "../../db/repositories/generation-job.repository";
+import type { GenerationPlan } from "../../services/generation/schema";
 import {
   requestProcessing,
   createAndEnqueueProcessingJob,
@@ -94,8 +100,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Most-recent-first — see docs/generation.md "Generation history". The
   // UI only ever renders the latest as "current" plus a compact list of
   // the rest; nothing here fetches results eagerly beyond what the
-  // repository's select already includes.
+  // repository's select already includes. Contains every generationType
+  // for this product (PRODUCT_CLEANUP and LIFESTYLE both land here) — the
+  // component splits it by type below.
   const generationHistory = await listGenerationHistory(context, product.id);
+
+  // Built-in + this shop's own saved custom presets — see
+  // docs/lifestyle-generation.md "Brand style presets".
+  const availableBrandStylePresets = await listAvailablePresets(context);
 
   // Most-recent-first — see docs/image-processing.md "Versioning". Same
   // reasoning as generationHistory above: every request is its own
@@ -109,6 +121,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     intelligence,
     intelligenceState,
     generationHistory,
+    availableBrandStylePresets,
     processingHistory,
   };
 };
@@ -172,6 +185,95 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         error: error instanceof Error ? error.message : "unknown error",
       });
       return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
+  }
+
+  if (intent === "generate-lifestyle") {
+    // Structured preset choice only — never a free-text prompt (see
+    // docs/generation.md "No arbitrary prompts"). An unknown/empty
+    // presetId is not an error: requestGeneration/resolveBrandStylePreset
+    // silently falls back to category-aware defaults.
+    const presetId = formData.get("presetId");
+    try {
+      await requestGeneration(context, {
+        productId: params.id!,
+        generationType: "LIFESTYLE",
+        presetId: typeof presetId === "string" && presetId.length > 0 ? presetId : undefined,
+      });
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof GenerationProductNotFoundError) {
+        logger.warn("products.detail.generate_lifestyle_tenant_mismatch_or_missing", {
+          shop: context.shop,
+          requestedId: params.id,
+        });
+        throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof ProductNotAnalyzedError) {
+        return { ok: false as const, error: error.message };
+      }
+      if (error instanceof MissingSourceImagesError || error instanceof InvalidGenerationRequestError) {
+        return { ok: false as const, error: error.message };
+      }
+      logger.error("products.detail.generate_lifestyle_request_failed", {
+        shop: context.shop,
+        productId: params.id,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
+  }
+
+  if (intent === "regenerate-lifestyle") {
+    const jobId = formData.get("jobId");
+    const presetId = formData.get("presetId");
+    if (typeof jobId !== "string") {
+      return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
+    try {
+      // Looked up server-side (never trusting a client-supplied product/
+      // media) — mirrors "regenerate-processing" below: the new request
+      // targets the SAME product/source images and stays in the same
+      // batch (if any) as the original job. The preset applied is
+      // whichever the merchant currently has selected in the picker (not
+      // necessarily the one the original request used) — see
+      // docs/lifestyle-generation.md "Regeneration".
+      const original = await getGeneration(context, jobId);
+      if (!original) throw NOT_FOUND_RESPONSE();
+
+      await createAndEnqueueGenerationJob(context, {
+        productId: original.productId,
+        generationType: "LIFESTYLE",
+        sourceMediaIds: original.sourceMediaIds,
+        presetId: typeof presetId === "string" && presetId.length > 0 ? presetId : undefined,
+        batchId: original.batchId ?? undefined,
+      });
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof GenerationProductNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof ProductNotAnalyzedError || error instanceof MissingSourceImagesError) {
+        return { ok: false as const, error: error.message };
+      }
+      return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
+  }
+
+  if (intent === "review-generation-result") {
+    const resultId = formData.get("resultId");
+    const decision = formData.get("decision");
+    if (typeof resultId !== "string" || (decision !== "APPROVED" && decision !== "REJECTED")) {
+      return { ok: false as const, error: "Couldn't complete that action right now. Please try again." };
+    }
+    try {
+      await reviewGenerationResult(context, resultId, decision);
+      return { ok: true as const };
+    } catch (error) {
+      if (error instanceof GenerationResultNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: "Couldn't complete that action right now. Please try again." };
     }
   }
 
@@ -318,12 +420,15 @@ export default function ProductDetail() {
     intelligence,
     intelligenceState,
     generationHistory,
+    availableBrandStylePresets,
     processingHistory,
   } = useLoaderData<typeof loader>();
   const { isImageSelected, toggleImage, setProductImages, productSelectionState, selectedCountForProduct } =
     useSelection();
   const analyzeFetcher = useFetcher<typeof action>();
   const generateFetcher = useFetcher<typeof action>();
+  const lifestyleFetcher = useFetcher<typeof action>();
+  const lifestyleReviewFetcher = useFetcher<typeof action>();
   const processFetcher = useFetcher<typeof action>();
   const processingReviewFetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
@@ -404,7 +509,13 @@ export default function ProductDetail() {
   // made, the moment the post-action revalidation lands. No "which state
   // means 'not started yet' vs. 'a fresh request that hasn't been picked
   // up'" ambiguity to work around here.
-  const latestGeneration = generationHistory[0] ?? null;
+  //
+  // `generationHistory` carries every generationType for this product
+  // (PRODUCT_CLEANUP and LIFESTYLE both land in the same list — see the
+  // loader) — this section only concerns itself with PRODUCT_CLEANUP;
+  // LIFESTYLE gets its own section/history filter below (Phase 5).
+  const productCleanupHistory = generationHistory.filter((job) => job.type === "PRODUCT_CLEANUP");
+  const latestGeneration = productCleanupHistory[0] ?? null;
   const generationStatus = latestGeneration?.status;
   const isTerminalGenerationStatus =
     generationStatus === "SUCCEEDED" || generationStatus === "FAILED" || generationStatus === "CANCELLED";
@@ -446,6 +557,76 @@ export default function ProductDetail() {
   const requestGenerationClick = () => {
     setAwaitingGeneration(true);
     generateFetcher.submit({ intent: "generate" }, { method: "POST" });
+  };
+
+  // --- AI Lifestyle Imagery (Phase 5) ------------------------------------
+  // Same "each action creates a brand-new, independently-preserved row"
+  // shape as PRODUCT_CLEANUP above, scoped to this product's LIFESTYLE
+  // jobs only (see productCleanupHistory's doc comment for why the same
+  // `generationHistory` list needs splitting by type).
+  const lifestyleHistory = generationHistory.filter((job) => job.type === "LIFESTYLE");
+  const latestLifestyle = lifestyleHistory[0] ?? null;
+  const lifestyleStatus = latestLifestyle?.status;
+  const isTerminalLifestyleStatus =
+    lifestyleStatus === "SUCCEEDED" || lifestyleStatus === "FAILED" || lifestyleStatus === "CANCELLED";
+
+  const [awaitingLifestyle, setAwaitingLifestyle] = useState(false);
+  const isGeneratingLifestyle = awaitingLifestyle || (lifestyleStatus !== undefined && !isTerminalLifestyleStatus);
+
+  const [prevLifestyleStatus, setPrevLifestyleStatus] = useState(lifestyleStatus);
+  if (lifestyleStatus !== prevLifestyleStatus) {
+    setPrevLifestyleStatus(lifestyleStatus);
+    if (isTerminalLifestyleStatus) {
+      setAwaitingLifestyle(false);
+    }
+  }
+
+  const [prevLifestyleFetcherData, setPrevLifestyleFetcherData] = useState(lifestyleFetcher.data);
+  if (lifestyleFetcher.data !== prevLifestyleFetcherData) {
+    setPrevLifestyleFetcherData(lifestyleFetcher.data);
+    if (lifestyleFetcher.data && !lifestyleFetcher.data.ok) {
+      setAwaitingLifestyle(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!awaitingLifestyle || isTerminalLifestyleStatus) return;
+    const id = setInterval(() => revalidator.revalidate(), 3000);
+    return () => clearInterval(id);
+  }, [awaitingLifestyle, isTerminalLifestyleStatus, revalidator]);
+
+  useEffect(() => {
+    if (lifestyleFetcher.data?.ok) {
+      shopify.toast.show("Lifestyle generation started");
+    } else if (lifestyleFetcher.data && !lifestyleFetcher.data.ok) {
+      shopify.toast.show(lifestyleFetcher.data.error, { isError: true });
+    }
+  }, [lifestyleFetcher.data, shopify]);
+
+  useEffect(() => {
+    if (lifestyleReviewFetcher.data && !lifestyleReviewFetcher.data.ok) {
+      shopify.toast.show(lifestyleReviewFetcher.data.error, { isError: true });
+    }
+  }, [lifestyleReviewFetcher.data, shopify]);
+
+  // Structured preset choice only — never a free-text prompt (see
+  // docs/generation.md "No arbitrary prompts"). Empty string = "no
+  // preset," which still produces a fully-formed scene via category-aware
+  // defaults (see services/generation/lifestyle-scene.ts).
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+
+  const requestLifestyleClick = () => {
+    setAwaitingLifestyle(true);
+    lifestyleFetcher.submit({ intent: "generate-lifestyle", presetId: selectedPresetId }, { method: "POST" });
+  };
+
+  const regenerateLifestyle = (jobId: string) => {
+    setAwaitingLifestyle(true);
+    lifestyleFetcher.submit({ intent: "regenerate-lifestyle", jobId, presetId: selectedPresetId }, { method: "POST" });
+  };
+
+  const reviewLifestyleResult = (resultId: string, decision: "APPROVED" | "REJECTED") => {
+    lifestyleReviewFetcher.submit({ intent: "review-generation-result", resultId, decision }, { method: "POST" });
   };
 
   // --- Image Processing (Phase 4) ----------------------------------------
@@ -713,16 +894,112 @@ export default function ProductDetail() {
             </s-grid>
           )}
 
-          {generationHistory.length > 1 && (
+          {productCleanupHistory.length > 1 && (
             <s-stack direction="block" gap="small-200">
               <s-text color="subdued">Generation history</s-text>
               <s-stack direction="block" gap="small-200">
-                {generationHistory.map((job, index) => (
+                {productCleanupHistory.map((job, index) => (
                   <s-paragraph key={job.id}>
-                    Generation #{generationHistory.length - index} —{" "}
+                    Generation #{productCleanupHistory.length - index} —{" "}
                     <s-badge tone={GENERATION_STATUS_TONE[job.status]}>
                       {GENERATION_STATUS_LABEL[job.status]}
                     </s-badge>{" "}
+                    <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
+                  </s-paragraph>
+                ))}
+              </s-stack>
+            </s-stack>
+          )}
+        </s-stack>
+      </s-section>
+
+      <s-section heading="AI Lifestyle Imagery">
+        <s-stack direction="block" gap="base">
+          <s-text color="subdued">
+            Places this product in a photorealistic lifestyle scene, built from its Product
+            Intelligence profile and a brand style preset — never a free-text prompt. The original
+            product image is never modified; every generation is a new, separately reviewable
+            result.
+          </s-text>
+
+          <s-select
+            label="Brand style"
+            labelAccessibilityVisibility="visible"
+            value={selectedPresetId}
+            onChange={(event: Event) => setSelectedPresetId((event.currentTarget as HTMLSelectElement).value)}
+          >
+            <s-option value="">No preset — category defaults</s-option>
+            {availableBrandStylePresets.map((preset) => (
+              <s-option key={preset.id} value={preset.id}>
+                {preset.name}
+                {preset.isCustom ? " (custom)" : ""}
+              </s-option>
+            ))}
+          </s-select>
+
+          <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
+            {lifestyleStatus ? (
+              <s-badge tone={GENERATION_STATUS_TONE[lifestyleStatus]}>{GENERATION_STATUS_LABEL[lifestyleStatus]}</s-badge>
+            ) : (
+              <s-badge tone="info">Not generated yet</s-badge>
+            )}
+            {/* Only offered while there's no succeeded result to regenerate
+                from yet — once one exists, LifestyleResultDetail's own
+                "Regenerate" below is the single place that action lives
+                (avoids two controls both labeled "Regenerate" doing
+                near-identical things — see docs/lifestyle-generation.md
+                "Review, regeneration, and generation history"). */}
+            {lifestyleStatus !== "SUCCEEDED" && (
+              <s-button
+                variant="primary"
+                onClick={requestLifestyleClick}
+                disabled={isGeneratingLifestyle || !canGenerate}
+                {...(isGeneratingLifestyle ? { loading: true } : {})}
+              >
+                Generate Lifestyle Image
+              </s-button>
+            )}
+          </s-stack>
+
+          {!canGenerate && (
+            <s-paragraph color="subdued">
+              Analyze this product (see Product Intelligence above) before generating lifestyle
+              imagery.
+            </s-paragraph>
+          )}
+
+          {lifestyleStatus === "FAILED" && (
+            <s-banner tone="critical">
+              <s-paragraph>{latestLifestyle?.errorMessage ?? "Generation failed."}</s-paragraph>
+            </s-banner>
+          )}
+
+          {lifestyleStatus === "SUCCEEDED" && latestLifestyle && (
+            <LifestyleResultDetail
+              job={latestLifestyle}
+              onReview={reviewLifestyleResult}
+              onRegenerate={() => regenerateLifestyle(latestLifestyle.id)}
+              isRegenerating={isGeneratingLifestyle}
+            />
+          )}
+
+          {lifestyleHistory.length > 1 && (
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Lifestyle generation history</s-text>
+              <s-stack direction="block" gap="small-200">
+                {lifestyleHistory.map((job, index) => (
+                  <s-paragraph key={job.id}>
+                    Generation #{lifestyleHistory.length - index} —{" "}
+                    <s-badge tone={GENERATION_STATUS_TONE[job.status]}>{GENERATION_STATUS_LABEL[job.status]}</s-badge>{" "}
+                    {job.results[job.results.length - 1] && (
+                      <>
+                        {job.results[job.results.length - 1].reviewStatus === "APPROVED"
+                          ? "Approved"
+                          : job.results[job.results.length - 1].reviewStatus === "REJECTED"
+                            ? "Rejected"
+                            : "Not reviewed"}{" "}
+                      </>
+                    )}
                     <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
                   </s-paragraph>
                 ))}
@@ -916,6 +1193,88 @@ function GenerationResultCard({ result, index }: { result: GenerationResultRow; 
           {result.width && result.height ? ` · ${result.width}×${result.height}` : ""}
         </s-text>
         <s-text color="subdued">{result.providerName ?? "—"}</s-text>
+      </s-stack>
+    </s-box>
+  );
+}
+
+/**
+ * The detailed "latest result" card for AI Lifestyle Imagery — original
+ * (from the plan's own `sourceImages` snapshot — GenerationJob has no
+ * single `sourceMedia` relation the way ProcessingJob does, since a
+ * generation's `sourceMediaIds` is an array; see prisma/schema.prisma's
+ * model comment) vs. generated, with Approve/Reject/Regenerate. Mirrors
+ * ProcessingResultDetail below field-for-field.
+ */
+function LifestyleResultDetail({
+  job,
+  onReview,
+  onRegenerate,
+  isRegenerating,
+}: {
+  job: GenerationJobRow;
+  onReview: (resultId: string, decision: "APPROVED" | "REJECTED") => void;
+  onRegenerate: () => void;
+  isRegenerating: boolean;
+}) {
+  const result: GenerationResultRow | undefined = job.results[job.results.length - 1];
+  if (!result) return null;
+  const plan = job.plan as unknown as GenerationPlan;
+  const original = plan.sourceImages[0];
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued">
+      <s-stack direction="block" gap="base">
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone={GENERATION_STATUS_TONE[job.status]}>{GENERATION_STATUS_LABEL[job.status]}</s-badge>
+          <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
+        </s-stack>
+
+        <s-grid gridTemplateColumns="repeat(2, minmax(160px, 1fr))" gap="base">
+          <s-stack direction="block" gap="small-200">
+            <s-text color="subdued">Original</s-text>
+            {original ? (
+              <s-image src={original.url} alt={original.altText ?? "Original image"} />
+            ) : (
+              <s-paragraph color="subdued">Not available.</s-paragraph>
+            )}
+          </s-stack>
+          <s-stack direction="block" gap="small-200">
+            <s-text color="subdued">Lifestyle result</s-text>
+            {result.url ? (
+              <s-image src={result.url} alt="Lifestyle generation result" />
+            ) : (
+              <s-paragraph color="subdued">Not available.</s-paragraph>
+            )}
+          </s-stack>
+        </s-grid>
+
+        <s-text color="subdued">
+          {result.format ?? "—"}
+          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""} ·{" "}
+          {result.reviewStatus === "APPROVED" ? "Approved" : result.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
+        </s-text>
+
+        <s-stack direction="inline" gap="base">
+          <s-button
+            variant="tertiary"
+            disabled={result.reviewStatus === "APPROVED"}
+            onClick={() => onReview(result.id, "APPROVED")}
+          >
+            Approve
+          </s-button>
+          <s-button
+            variant="tertiary"
+            tone="critical"
+            disabled={result.reviewStatus === "REJECTED"}
+            onClick={() => onReview(result.id, "REJECTED")}
+          >
+            Reject
+          </s-button>
+          <s-button variant="tertiary" onClick={onRegenerate} {...(isRegenerating ? { loading: true } : {})}>
+            Regenerate
+          </s-button>
+        </s-stack>
       </s-stack>
     </s-box>
   );

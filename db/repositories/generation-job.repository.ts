@@ -9,7 +9,7 @@
  * (list/create/update helpers below) are inherently shop-scoped by their
  * `where` clause and don't need a separate ownership check.
  */
-import type { GenerationStatus, GenerationType, Prisma } from "@prisma/client";
+import type { GenerationStatus, GenerationType, Prisma, ReviewStatus } from "@prisma/client";
 import prisma from "../client.server";
 import type { AuthContext } from "../../lib/auth/types";
 import { assertShopOwnership } from "../../lib/auth/tenant.server";
@@ -25,6 +25,8 @@ const RESULT_SELECT = {
   providerName: true,
   providerResultId: true,
   metadata: true,
+  reviewStatus: true,
+  reviewedAt: true,
   createdAt: true,
 } satisfies Prisma.GenerationResultSelect;
 
@@ -44,9 +46,14 @@ const JOB_SELECT = {
   startedAt: true,
   completedAt: true,
   durationMs: true,
+  batchId: true,
   createdAt: true,
   updatedAt: true,
   results: { select: RESULT_SELECT, orderBy: { createdAt: "asc" } },
+  // For the review UI's "original vs. generated" comparison (mirrors
+  // db/repositories/processing-job.repository.ts's JOB_SELECT) — a plain
+  // reference, never a binary.
+  product: { select: { title: true } },
 } satisfies Prisma.GenerationJobSelect;
 
 export type GenerationJobRow = Prisma.GenerationJobGetPayload<{ select: typeof JOB_SELECT }>;
@@ -58,6 +65,7 @@ export interface CreateGenerationJobInput {
   type: GenerationType;
   sourceMediaIds: string[];
   plan: GenerationPlan;
+  batchId?: string;
 }
 
 /** Creates a new PENDING generation job row. Always a NEW row — unlike
@@ -74,6 +82,7 @@ export async function createGenerationJob(input: CreateGenerationJobInput): Prom
       sourceMediaIds: input.sourceMediaIds,
       plan: input.plan as unknown as Prisma.InputJsonValue,
       identityAnchors: input.plan.productFacts.identityAnchors as unknown as Prisma.InputJsonValue,
+      ...(input.batchId ? { batchId: input.batchId } : {}),
     },
     select: { id: true },
   });
@@ -207,4 +216,42 @@ export async function listGenerationJobsForProduct(
   });
 }
 
-export type { GenerationStatus, GenerationType };
+/** All generation jobs in one batch, oldest first — used by the batch
+ * progress page (see services/generation/batch.server.ts). Scoped
+ * directly by `[shop, batchId]`, so — like `listGenerationJobsForProduct`
+ * — no separate ownership check is needed here; the caller loads the
+ * owning `GenerationBatch` via `getGenerationBatch` (which does check)
+ * first. See `listGenerationJobsForProduct`'s doc comment for why `id` is
+ * a secondary sort key. */
+export async function listGenerationJobsForBatch(shop: string, batchId: string): Promise<GenerationJobRow[]> {
+  return prisma.generationJob.findMany({
+    where: { shop, batchId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: JOB_SELECT,
+  });
+}
+
+/** Sets a specific result's review decision. Verifies the result belongs
+ * to this shop (via its job) before updating — never trusts a
+ * client-supplied result id directly. Returns `false` if not found for
+ * this shop (never throws — the caller maps that to a safe 404). Mirrors
+ * db/repositories/processing-job.repository.ts's `setResultReviewStatus`. */
+export async function setGenerationResultReviewStatus(
+  context: AuthContext,
+  resultId: string,
+  reviewStatus: Exclude<ReviewStatus, "PENDING">,
+): Promise<boolean> {
+  const result = await prisma.generationResult.findUnique({
+    where: { id: resultId },
+    select: { id: true, shop: true },
+  });
+  if (!result || result.shop !== context.shop) return false;
+
+  await prisma.generationResult.update({
+    where: { id: resultId },
+    data: { reviewStatus, reviewedAt: new Date() },
+  });
+  return true;
+}
+
+export type { GenerationStatus, GenerationType, ReviewStatus };

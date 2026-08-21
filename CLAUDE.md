@@ -20,33 +20,37 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 4 — Production Image Processing (Basic Plan Foundation) —
+**Phase 5 — AI Lifestyle Product Imagery (Pro Plan Foundation) —
 complete.** Phase 0 (foundation), Phase 1 (Shopify product catalog sync,
 search/detail, image selection), Phase 2 (Product Intelligence, no vendor
-wired up), and Phase 3 (image-generation foundation — `GenerationJob`/
+wired up), Phase 3 (image-generation foundation — `GenerationJob`/
 `GenerationResult`, `ImageGenerationProvider`/`ImageProcessingProvider`
 abstractions, the `"generation"` queue, proven only via a deterministic
-test provider) are done. Phase 4 is the **first phase with a real,
-working AI vendor call**: `ProductionImageProcessingProvider`
-(`services/ai/production-image-processing-provider.server.ts`) calls
-remove.bg for background removal; enhancement and resizing run locally
-via `sharp` (no vendor needed for deterministic transforms). It adds
-`ProcessingJob`/`ProcessingResult`/`ProcessingBatch` models (a dedicated
-family, not a reuse of `GenerationJob`/`GenerationResult` — see
-docs/image-processing.md for why), the `"enhancement"` BullMQ queue
-(single-image and batch, with automatic retry), batch processing built
-on Phase 1's existing `ImageSelection`, a review lifecycle (Approve/
-Reject/Regenerate — never overwrites a prior result), replaces
-`MemoryStorageProvider` with a genuinely persistent
-`LocalFilesystemStorageProvider` as the storage default, and a signed,
-tenant-authorized `/media/*` route for serving processed images to the
-browser (which can't carry Shopify's session-token auth on a plain
-`<img>` load). See docs/image-processing.md. **No real AI *generation*
-vendor is installed (only the one processing vendor, remove.bg, for
-background removal); no lifestyle/AI-model/campaign imagery; no
-publishing back to Shopify; no credits/billing/subscriptions; and
-`LocalFilesystemStorageProvider` is not yet a horizontally-scalable cloud
-storage vendor.**
+test provider), and Phase 4 (production image processing — a real vendor
+call, remove.bg, for background removal; local `sharp` for enhance/
+resize; `ProcessingJob`/`ProcessingResult`/`ProcessingBatch`; persistent
+`LocalFilesystemStorageProvider`; signed `/media/*` serving; a review
+lifecycle) are done. Phase 5 built the first real **creative** generation
+capability — `GenerationType.LIFESTYLE`, the core Pro-plan feature:
+category-aware lifestyle scene planning (`LifestyleScenePlan`, nested in
+the existing `GenerationPlan` — not a new table), brand style presets (6
+built-in code constants + shop-saved custom `BrandStylePreset` rows),
+batch lifestyle generation (`GenerationBatch`, mirroring
+`ProcessingBatch`), review (Approve/Reject via `GenerationResult.reviewStatus`,
+reusing Phase 4's `ReviewStatus` enum), regeneration/history (unchanged
+Phase 3 mechanism — every request is a new, never-overwritten
+`GenerationJob` row), and an explicit, honest identity-validation
+boundary (`recordIdentityValidation` — records *what would need
+checking*, not a real semantic check; no vision-capable provider is
+configured). This deliberately **extends** `services/generation/`
+(same kind of request `PRODUCT_CLEANUP` already was) rather than
+duplicating Phase 4's separate-model-family pattern. See
+docs/lifestyle-generation.md. **No real image-generation vendor is
+installed — lifestyle generation, like `PRODUCT_CLEANUP`, only ever runs
+through the deterministic test provider. No AI human models/model
+shoots/poses, no banners/CTA/campaign imagery, no publishing back to
+Shopify, no credits/billing/subscriptions/plan enforcement, and
+`services/processing/` (Phase 4) was not modified.**
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -123,8 +127,10 @@ services/
                        validation, queue/job, staleness, recommendations
                        (services/intelligence/README.md)
   generation/         Image generation foundation: generation plan, job/
-                      queue, provider input, storage persistence
-                      (services/generation/README.md)
+                      queue, provider input, storage persistence. Phase 5
+                      added lifestyle scene planning, brand style presets
+                      (built-in + shop-saved custom), and batch lifestyle
+                      generation (services/generation/README.md)
   processing/         Production image processing (Basic plan): operation
                        taxonomy, options schema, job/queue (single-image +
                        batch), review lifecycle (services/processing/README.md)
@@ -416,6 +422,49 @@ Phase 4 (Production image processing — Basic plan foundation) — complete:
       selection UI built
 - [x] docs/image-processing.md
 
-No real AI *generation* vendor, no lifestyle/AI-model/campaign imagery,
-no publishing back to Shopify, no credits/billing/subscriptions is
-implemented. See docs/roadmap.md.
+Phase 5 (AI Lifestyle Product Imagery — Pro plan foundation) — complete:
+
+- [x] `GenerationJob.batchId` + new `GenerationBatch` model (mirrors
+      `ProcessingBatch`, not reused — Prisma has no polymorphic relation);
+      `GenerationResult.reviewStatus`/`reviewedAt` (reuses Phase 4's
+      `ReviewStatus` enum); new `BrandStylePreset` model — only
+      shop-saved CUSTOM presets are rows, the 6 built-ins are code
+      constants
+- [x] `LifestyleScenePlan` — a nested, optional field on the existing
+      `GenerationPlanSchema` (`lifestyleScene`), not a new table;
+      populated only for `generationType === "LIFESTYLE"`, resolved from
+      category-aware defaults + a brand style preset + optional merchant
+      overrides (`services/generation/lifestyle-scene.ts`)
+- [x] `services/generation/brand-style-presets.ts` (6 built-in presets)
+      + `brand-style-preset.server.ts` (built-in + shop-custom
+      resolution/listing) + `db/repositories/brand-style-preset.repository.ts`
+      (shop-scoped custom-preset CRUD)
+- [x] `services/generation/identity-validation.server.ts` — an explicit,
+      honest, non-semantic identity-validation boundary (`{validated: false,
+      reason: "no vision-capable provider configured", identityAnchorsChecked}`),
+      recorded on every `GenerationResult.metadata.identityValidation`
+- [x] `services/generation/batch.server.ts` — batch lifestyle generation
+      built on Phase 1's `ImageSelection`, mirroring
+      `services/processing/batch.server.ts`; a shared
+      `createAndEnqueueGenerationJob` primitive (factored out of
+      `request-generation.server.ts`) backs both single-product and batch
+      requests
+- [x] `services/ai/types.ts`'s `GenerateImageInput` gained one new
+      generic field, `sceneDetails?: Record<string, unknown>` — the
+      provider-adapter boundary for a future real vendor; no vendor
+      selected this phase
+- [x] Product detail page "AI Lifestyle Imagery" section (preset picker,
+      Generate/Regenerate, Approve/Reject, lifestyle-only history) + a
+      new batch progress/review page
+      (`app/routes/app.generation.$batchId.tsx`) + a mode picker on the
+      selection-review page (`app/routes/app.products.selection.tsx`)
+- [x] docs/lifestyle-generation.md
+
+No real image-generation vendor is installed — every LIFESTYLE (and
+PRODUCT_CLEANUP) generation in this codebase runs only through the
+deterministic test provider, never a live network call. Identity
+validation remains non-semantic (an honest "not yet possible" result, not
+a real check). No AI human models/model shoots/poses, banners, CTA
+imagery, or campaign generation. No credits/billing/subscriptions/plan
+enforcement. No publishing back to Shopify. `services/processing/`
+(Phase 4) was not modified. See docs/roadmap.md.

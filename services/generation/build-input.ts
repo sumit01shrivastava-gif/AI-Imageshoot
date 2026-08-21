@@ -21,5 +21,10 @@ export function buildGenerateImageInput(plan: GenerationPlan, attempt: number): 
     outputCount: plan.outputCount,
     attempt,
     brandStyle: plan.brandStyle,
+    // Flatten the plan's lifestyleScene (if any) into the provider's
+    // generic sceneDetails — this IS the "provider adapter" boundary
+    // (docs/lifestyle-generation.md "Provider strategy"): services/ai/
+    // never needs to know these field names.
+    sceneDetails: plan.lifestyleScene ?? undefined,
   };
 }

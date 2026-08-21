@@ -43,6 +43,85 @@ export const SourceImageSchema = z.object({
 });
 
 /**
+ * The lifestyle-specific portion of a generation plan — see
+ * docs/lifestyle-generation.md "LifestyleScenePlan". Nested under
+ * `GenerationPlanSchema.lifestyleScene` rather than folded into
+ * `creativeDirection` (below) so PRODUCT_CLEANUP's existing, tested plan
+ * shape/behavior is untouched: `environment`/`lighting`/`composition`/
+ * `negativeConstraints` stay in `creativeDirection` (meaningful for every
+ * generation type), while these fields only ever apply to LIFESTYLE.
+ * `null` for every non-LIFESTYLE `generationType`.
+ */
+export const LifestyleSceneSchema = z.object({
+  /** e.g. "in-use", "styled flat lay", "environmental". */
+  sceneType: z.string().min(1).nullable(),
+  surface: z.string().min(1).nullable(),
+  props: z.array(z.string()).default([]),
+  /** e.g. "eye-level", "45-degree overhead". */
+  camera: z.string().min(1).nullable(),
+  mood: z.string().min(1).nullable(),
+  colorDirection: z.string().min(1).nullable(),
+});
+
+export type LifestyleScene = z.infer<typeof LifestyleSceneSchema>;
+
+/**
+ * A merchant-saved OR built-in brand style preset's structured
+ * attributes — see docs/lifestyle-generation.md "Brand style presets".
+ * Deliberately a superset of `BrandStyleContextSchema` (the narrower
+ * shape actually sent to the provider) plus scene defaults: the
+ * instructions' own preset examples (Minimal Studio, Luxury Editorial,
+ * ...) mix brand-style attributes (mood, photography style, color
+ * direction) and scene attributes (environment, props) into one reusable
+ * named thing, so this is one schema, not two. Every field optional —
+ * `services/generation/lifestyle-scene.ts` fills gaps with category-aware
+ * defaults, never requires a preset to specify everything.
+ */
+export const BrandStylePresetAttributesSchema = z.object({
+  visualTone: z.string().min(1).optional(),
+  colorPalette: z.array(z.string()).optional(),
+  photographyStyle: z.string().min(1).optional(),
+  backgroundStyle: z.string().min(1).optional(),
+  lightingStyle: z.string().min(1).optional(),
+  compositionStyle: z.string().min(1).optional(),
+  luxuryLevel: z.string().min(1).optional(),
+  modelStyle: z.string().min(1).optional(),
+  environment: z.string().min(1).optional(),
+  surface: z.string().min(1).optional(),
+  props: z.array(z.string()).optional(),
+  camera: z.string().min(1).optional(),
+  mood: z.string().min(1).optional(),
+  colorDirection: z.string().min(1).optional(),
+  negativeConstraints: z.array(z.string()).optional(),
+});
+
+export type BrandStylePresetAttributes = z.infer<typeof BrandStylePresetAttributesSchema>;
+
+export class InvalidBrandStylePresetError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(`Invalid brand style preset attributes: ${issues.join("; ")}`);
+    this.name = "InvalidBrandStylePresetError";
+    this.issues = issues;
+  }
+}
+
+/** Validates a preset's attributes — a merchant's own input for a custom
+ * preset, or this module's built-in catalog — throwing on anything
+ * malformed rather than persisting/using an untrustworthy shape. See
+ * CLAUDE.md "Reject malformed provider output", applied here to merchant
+ * input. */
+export function parseBrandStylePresetAttributes(raw: unknown): BrandStylePresetAttributes {
+  const result = BrandStylePresetAttributesSchema.safeParse(raw);
+  if (!result.success) {
+    const issues = result.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    throw new InvalidBrandStylePresetError(issues);
+  }
+  return result.data;
+}
+
+/**
  * The structured bridge between Product Intelligence and image generation
  * — see docs/generation.md "Generation plan". Everything the UI is
  * allowed to influence flows through this, never a raw prompt string (see
@@ -56,6 +135,11 @@ export const SourceImageSchema = z.object({
 export const GenerationPlanSchema = z.object({
   generationType: GenerationTypeSchema,
   assetType: z.string().min(1).nullable(),
+  /** The product's category — informational, alongside `assetType`;
+   * mirrors `services/intelligence`'s `category` field rather than
+   * re-deriving it. Populated for every generation type, not just
+   * LIFESTYLE (useful context regardless). */
+  category: z.string().min(1).nullable(),
 
   sourceProductId: z.string().min(1),
   sourceImages: z.array(SourceImageSchema).min(1),
@@ -95,6 +179,11 @@ export const GenerationPlanSchema = z.object({
     .nullable(),
 
   brandStyle: BrandStyleContextSchema.nullable(),
+
+  /** Populated only when `generationType === "LIFESTYLE"` — see
+   * `LifestyleSceneSchema`'s doc comment for why this is a separate,
+   * optional field rather than folded into `creativeDirection`. */
+  lifestyleScene: LifestyleSceneSchema.nullable(),
 
   constraints: z.array(z.string()).default([]),
 });
