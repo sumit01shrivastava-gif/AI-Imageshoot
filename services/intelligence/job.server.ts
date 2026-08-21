@@ -20,11 +20,22 @@ import { getConfiguredAIProvider } from "./provider.server";
 import { parseProductIntelligenceOutput, InvalidProductIntelligenceOutputError } from "./schema";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
+import { settleReservation, refundReservation } from "../../db/repositories/credit-reservation.repository";
 
 export interface ProductIntelligenceJobPayload {
   shop: string;
   /** Our internal `ShopifyProduct.id` (not the Shopify GraphQL id). */
   productId: string;
+  /** The `CreditReservation.jobId` this specific request reserved credits
+   * against (see product-intelligence.server.ts's `requestProductAnalysis`)
+   * — a synthetic per-REQUEST id, deliberately NOT `productId`/this
+   * queue's own deterministic job id (both are reused across repeat
+   * analyses, which would make every re-analysis collide with — and
+   * silently no-op against — the first request's reservation). Absent
+   * when the request was recognized as a duplicate collapsing onto an
+   * already-in-flight job (nothing to settle/refund in that case — the
+   * ORIGINAL request's reservation is what resolves). */
+  creditReservationId?: string;
 }
 
 export function productIntelligenceJobId(payload: ProductIntelligenceJobPayload): string {
@@ -35,8 +46,29 @@ const GENERIC_ANALYSIS_FAILURE_MESSAGE = "Analysis failed. Please try analyzing 
 const NOT_CONFIGURED_MESSAGE = "AI analysis isn't configured for this store yet.";
 const INVALID_OUTPUT_MESSAGE = "The AI analysis returned an unexpected result. Please try again.";
 
+/** Best-effort settle/refund — never allowed to fail the job itself, same
+ * reasoning as every other domain's credit-resolution helper. A no-op
+ * when `creditReservationId` is absent (a collapsed-duplicate request —
+ * see `ProductIntelligenceJobPayload`'s doc comment). */
+async function resolveAnalysisCredits(shop: string, creditReservationId: string | undefined, outcome: "SUCCEEDED" | "FAILED"): Promise<void> {
+  if (!creditReservationId) return;
+  try {
+    if (outcome === "SUCCEEDED") {
+      await settleReservation(shop, creditReservationId);
+    } else {
+      await refundReservation(shop, creditReservationId);
+    }
+  } catch (error) {
+    logger.warn("intelligence.job.credit_resolution_failed", {
+      shop,
+      creditReservationId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
+
 export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayload> = async (job) => {
-  const { shop, productId } = job.data;
+  const { shop, productId, creditReservationId } = job.data;
   logger.info("intelligence.job.start", { shop, productId });
 
   await markProcessing(shop, productId);
@@ -64,6 +96,7 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       // requested and this job running.
       await markFailed(shop, productId, "This product no longer exists.");
       await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
+      await resolveAnalysisCredits(shop, creditReservationId, "FAILED");
       return;
     }
 
@@ -81,6 +114,7 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       providerName: provider.name,
       durationMs: Date.now() - startedAt,
     });
+    await resolveAnalysisCredits(shop, creditReservationId, "SUCCEEDED");
 
     logger.info("intelligence.job.completed", { shop, productId, providerName: provider.name });
   } catch (error) {
@@ -98,6 +132,7 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
     });
     await markFailed(shop, productId, message);
     await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
+    await resolveAnalysisCredits(shop, creditReservationId, "FAILED");
     throw error;
   }
 };

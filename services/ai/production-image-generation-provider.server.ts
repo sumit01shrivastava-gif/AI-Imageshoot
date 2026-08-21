@@ -19,19 +19,35 @@
  * about the boundary.
  *
  * Instead, this implements a genuinely real, working HTTP client against
- * a fully-specified, documented JSON contract (see docs/ai-providers.md)
- * that closely follows the widely-adopted "OpenAI Images API-compatible"
- * shape (`prompt`/`n`/`size`/`response_format` in, `data[].b64_json` or
- * `data[].url` out) — the closest thing to a de facto standard in this
- * space, already implemented by multiple hosted and self-hosted vendors
- * specifically so client code written against it is portable. A merchant
- * who configures `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` against any
- * endpoint speaking this contract gets a genuinely working integration
- * today, with zero code changes. A vendor with a materially different
- * wire shape needs its own adapter file alongside this one, behind the
- * same `ImageGenerationProvider` interface — that adapter is exactly what
- * remains vendor-specific and not yet built (see docs/ai-providers.md
- * "What remains vendor-specific").
+ * a fully-specified, documented JSON contract (see docs/ai-pipeline.md
+ * "Provider contract") that closely follows the widely-adopted "OpenAI
+ * Images API-compatible" shape (`prompt`/`n`/`size`/`response_format` in,
+ * `data[].b64_json` or `data[].url` out) — the closest thing to a de
+ * facto standard in this space, already implemented by multiple hosted
+ * and self-hosted vendors specifically so client code written against it
+ * is portable. A merchant who configures `AI_PROVIDER_BASE_URL`/
+ * `AI_PROVIDER_API_KEY` against any endpoint speaking this contract gets
+ * a genuinely working integration today, with zero code changes. A
+ * vendor with a materially different wire shape needs its own adapter
+ * file alongside this one, behind the same `ImageGenerationProvider`
+ * interface — that adapter is exactly what remains vendor-specific and
+ * not yet built (see docs/ai-pipeline.md "What remains vendor-specific").
+ *
+ * ## Two request shapes, one contract family
+ *
+ * A plain `TEXT_TO_IMAGE`/absent-mode request (every pre-existing
+ * generationType) POSTs to `/v1/images/generations` — no reference image,
+ * exactly as before. A Creative Studio edit — `IMAGE_TO_IMAGE`/
+ * `IMAGE_EDIT`/`VARIATION`, i.e. `input.mode` set AND at least one
+ * reference/source image available — POSTs to `/v1/images/edits`
+ * instead, carrying the reference image(s) as base64-encoded JSON fields
+ * (`image` for one, `images[]` for more than one — this app's own
+ * superset of the single-image-only OpenAI edits endpoint, since several
+ * modern editing models genuinely accept multiple references; see
+ * `GenerationReferenceImage`'s `role` in services/ai/types.ts for what
+ * each one represents). A vendor's edit endpoint may ignore extra
+ * references beyond the first if it only supports one — this app always
+ * sends every reference available and lets the vendor decide.
  *
  * Selected by services/generation/provider.server.ts whenever `AI_PROVIDER`
  * is set to anything other than the test seam's own `"deterministic-test"`
@@ -108,6 +124,38 @@ function isContractResponse(value: unknown): value is ContractResponse {
   return typeof value === "object" && value !== null;
 }
 
+/** `IMAGE_TO_IMAGE`/`IMAGE_EDIT`/`VARIATION` are all "start from an
+ * existing image" requests — see `GenerationMode`'s doc comment
+ * (services/ai/types.ts). A plain text-to-image request has no `mode` at
+ * all (every pre-existing generationType). */
+function isEditMode(mode: string | undefined): boolean {
+  return mode === "IMAGE_TO_IMAGE" || mode === "IMAGE_EDIT" || mode === "VARIATION";
+}
+
+/** The model identifier to send for this request — the mode-specific env
+ * var when set, falling back to `AI_PROVIDER_MODEL`, falling back to the
+ * contract's own "default" sentinel. See env.server.ts's doc comments on
+ * `AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`. */
+function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string {
+  const specific = editMode ? env.AI_IMAGE_EDIT_MODEL : env.AI_IMAGE_GENERATION_MODEL;
+  return specific || env.AI_PROVIDER_MODEL || "default";
+}
+
+/** Every reference image this request has available to ground an edit
+ * against, most-relevant-first: explicit `referenceImages` (e.g. the
+ * exact prior result a conversational follow-up is editing forward
+ * from) take priority; `sourceImages` (the original product photos)
+ * fill in when no reference was supplied at all. Never both concatenated
+ * — a provider's edit endpoint should see one coherent "what to edit"
+ * set, not the original AND an edited descendant of it in the same
+ * request. */
+function resolveReferenceImageUrls(input: GenerateImageInput): string[] {
+  if (input.referenceImages && input.referenceImages.length > 0) {
+    return input.referenceImages.map((ref) => ref.url);
+  }
+  return input.sourceImages.map((image) => image.url);
+}
+
 export class ProductionImageGenerationProvider implements ImageGenerationProvider {
   readonly name = "production";
 
@@ -122,11 +170,29 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
 
     const timeoutMs = env.AI_PROVIDER_TIMEOUT_MS ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const negativeConstraints = input.creativeDirection.negativeConstraints ?? [];
+    const editMode = isEditMode(input.mode);
+    const referenceUrls = editMode ? resolveReferenceImageUrls(input) : [];
+    const endpoint = editMode && referenceUrls.length > 0 ? "/v1/images/edits" : "/v1/images/generations";
+
+    let referenceImagesBase64: string[] = [];
+    if (editMode && referenceUrls.length > 0) {
+      try {
+        referenceImagesBase64 = await Promise.all(referenceUrls.map((url) => this.fetchAsBase64(url, timeoutMs)));
+      } catch (error) {
+        logger.error("ai_provider.generation.reference_fetch_failed", {
+          provider: this.name,
+          reason: error instanceof Error ? error.name : "unknown",
+        });
+        throw error;
+      }
+    }
 
     const requestBody = {
-      model: env.AI_PROVIDER_MODEL || "default",
+      model: resolveModel(env, editMode && referenceImagesBase64.length > 0),
       prompt: input.creativeDirection.prompt,
       ...(negativeConstraints.length > 0 ? { negative_prompt: negativeConstraints.join(", ") } : {}),
+      ...(referenceImagesBase64.length === 1 ? { image: referenceImagesBase64[0] } : {}),
+      ...(referenceImagesBase64.length > 1 ? { images: referenceImagesBase64 } : {}),
       n: input.outputCount,
       size: sizeForAspectRatio(input.aspectRatio),
       quality: qualityForTier(input.quality),
@@ -136,20 +202,24 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
     logger.info("ai_provider.generation.request", {
       provider: this.name,
       generationType: input.generationType,
+      mode: input.mode ?? "TEXT_TO_IMAGE",
+      endpoint,
+      referenceImageCount: referenceImagesBase64.length,
       outputCount: input.outputCount,
       aspectRatio: input.aspectRatio,
       attempt: input.attempt,
-      // Never the prompt text itself or the base URL/key — see module
-      // doc comment. A generic "a request was made" event is enough for
-      // observability; the prompt is merchant-facing product creative
-      // detail, not something that belongs in ops logs.
+      // Never the prompt text itself, reference image bytes/URLs, or the
+      // base URL/key — see module doc comment. A generic "a request was
+      // made" event is enough for observability; the prompt is
+      // merchant-facing product creative detail, not something that
+      // belongs in ops logs.
     });
 
     let response: Response;
     let latencyMs: number;
     try {
       const measured = await measureLatencyMs(() =>
-        fetchWithTimeout(`${env.AI_PROVIDER_BASE_URL}/v1/images/generations`, "calling the image generation provider", timeoutMs, {
+        fetchWithTimeout(`${env.AI_PROVIDER_BASE_URL}${endpoint}`, "calling the image generation provider", timeoutMs, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${env.AI_PROVIDER_API_KEY}`,
@@ -215,6 +285,21 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
       providerJobId: parsed.id,
       raw: { model: parsed.model, created: parsed.created },
     };
+  }
+
+  /** Fetches a reference image (a signed URL from this app's own storage
+   * — see lib/storage's `getSignedUrl`) and base64-encodes it for the
+   * edits contract's `image`/`images[]` field. A failure here is this
+   * app's own infrastructure, not the vendor's — still surfaced as a
+   * plain error (job.server.ts's generic failure-message mapping covers
+   * it; see docs/creative-studio.md "Provider failure handling"). */
+  private async fetchAsBase64(url: string, timeoutMs: number): Promise<string> {
+    const response = await fetchWithTimeout(url, "fetching a reference image", timeoutMs);
+    if (!response.ok) {
+      throw new ProviderResponseError(this.name, `failed to fetch a reference image (status ${response.status})`);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return Buffer.from(bytes).toString("base64");
   }
 
   /** One output item can carry either inline base64 bytes or a URL to

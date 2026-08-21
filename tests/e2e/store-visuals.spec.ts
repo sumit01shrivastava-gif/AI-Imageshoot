@@ -124,10 +124,22 @@ test.beforeAll(async () => {
     new Promise<void>((resolve) => storeVisualWorker!.on("ready", () => resolve())),
     new Promise<void>((resolve) => generationWorker!.on("ready", () => resolve())),
   ]);
+
+  // STORE_VISUAL_GENERATION is plan-gated (FREE doesn't include it —
+  // see services/billing/plans.ts); this spec exercises store visuals
+  // directly, not billing, so both shops need a plan that does.
+  for (const shop of [TEST_SHOP, OTHER_SHOP]) {
+    await prisma.shopSubscription.upsert({
+      where: { shop },
+      create: { shop, planId: "STARTER", status: "ACTIVE" },
+      update: { planId: "STARTER", status: "ACTIVE" },
+    });
+  }
 });
 
 test.afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: { in: [TEST_SHOP, OTHER_SHOP] } } });
   await storeVisualWorker?.close();
   await generationWorker?.close();
   await closeRedisConnection();

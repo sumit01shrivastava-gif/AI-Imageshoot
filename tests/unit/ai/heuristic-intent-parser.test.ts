@@ -124,4 +124,34 @@ describe("HeuristicIntentParser", () => {
     // Validated by parseParsedIntent already (would have thrown
     // otherwise) — this assertion just documents the guarantee.
   });
+
+  describe("attributeOverrides (Part 2's creative-override mechanism)", () => {
+    it("extracts an explicit color override from 'Make the bottle black'", async () => {
+      const result = await parse("Make the bottle black");
+      expect(result.attributeOverrides.color).toBe("black");
+      expect(result.attributeOverrides.material).toBeNull();
+      expect(result.intent).toBe("CHANGE_COLOR");
+    });
+
+    it("extracts an explicit color override from 'Make it red'", async () => {
+      const result = await parse("Make it red");
+      expect(result.attributeOverrides.color).toBe("red");
+    });
+
+    it("extracts an explicit material override from 'Make it out of wood'", async () => {
+      const result = await parse("Make it out of wood");
+      expect(result.attributeOverrides.material).toBe("wood");
+      expect(result.attributeOverrides.color).toBeNull();
+    });
+
+    it("extracts a material override phrased with 'in'", async () => {
+      const result = await parse("Make the chair in oak");
+      expect(result.attributeOverrides.material).toBe("oak");
+    });
+
+    it("leaves both overrides null for a message that doesn't request one", async () => {
+      const result = await parse("Put it in a luxury bathroom");
+      expect(result.attributeOverrides).toEqual({ color: null, material: null });
+    });
+  });
 });

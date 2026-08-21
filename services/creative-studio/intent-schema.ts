@@ -84,6 +84,28 @@ export const ParsedIntentSchema = z.object({
    * being redesigned. */
   preserveHints: z.array(z.string()).default([]),
 
+  /**
+   * The structured "creative override" mechanism (Part 2): explicit,
+   * merchant-requested changes to specific NON-CRITICAL product
+   * attributes — e.g. "Make the bottle black" → `{ color: "black" }`.
+   * Deliberately a narrow, named field set (color/material today), never
+   * a free-text override — this is what lets
+   * services/creative-studio/identity-constraints.ts distinguish "the
+   * merchant explicitly asked to change this one attribute" from "every
+   * other attribute must stay exactly as shown," without resorting to
+   * fragile string search/replace over the identity instruction text.
+   * `null` for each field means "no override requested" — the
+   * corresponding identity anchor (if Product Intelligence observed one)
+   * stays fully immutable. See docs/creative-studio.md "Creative
+   * overrides".
+   */
+  attributeOverrides: z
+    .object({
+      color: z.string().min(1).nullable().default(null),
+      material: z.string().min(1).nullable().default(null),
+    })
+    .default({ color: null, material: null }),
+
   /** One machine-generated sentence summarizing the requested change —
    * used as the seed for prompt synthesis (plan-builder.ts), not sent to
    * the provider verbatim on its own; still entirely built from the

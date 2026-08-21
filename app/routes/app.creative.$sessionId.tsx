@@ -42,6 +42,7 @@ import {
   PublishSourceNotFoundError,
 } from "../../services/publishing/request-publish.server";
 import { PublishControl } from "../components/publish-control";
+import { getPlan } from "../../services/usage/entitlement.server";
 
 const NOT_FOUND_RESPONSE = () => new Response("Creative session not found", { status: 404 });
 const GENERIC_ERROR = "Couldn't complete that action right now. Please try again.";
@@ -62,12 +63,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const publishStatus = detail.session.currentResultId
     ? await getLatestPublishStatus(context, "GENERATION_RESULT", detail.session.currentResultId)
     : null;
+  const plan = await getPlan(context.shop);
 
   return {
     session: detail.session,
     messages: detail.messages,
     jobs: detail.jobs.map(withResultsSanitizedForClient),
     entitlement: detail.entitlement,
+    planName: plan.name,
     publishStatus,
   };
 };
@@ -194,7 +197,7 @@ function jobStatusPhrase(status: string, outputCount: number): string {
 }
 
 export default function CreativeStudio() {
-  const { session, messages, jobs, entitlement, publishStatus } = useLoaderData<typeof loader>();
+  const { session, messages, jobs, entitlement, planName, publishStatus } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const shopify = useAppBridge();
   const messageFetcher = useFetcher<typeof action>();
@@ -348,9 +351,12 @@ export default function CreativeStudio() {
 
         <s-section heading="Conversation">
           <s-stack direction="block" gap="base">
-            <s-text color="subdued">
-              {entitlement.available} of {entitlement.limit} credits available this month (development allowance).
-            </s-text>
+            <s-stack direction="inline" gap="small-200" alignItems="center">
+              <s-text color="subdued">
+                {entitlement.available} of {entitlement.limit} credits remaining this month · {planName} plan
+              </s-text>
+              <s-link href="/app/billing">Manage plan</s-link>
+            </s-stack>
 
             {messages.length === 0 ? (
               <s-stack direction="block" gap="small-200">
@@ -396,9 +402,14 @@ export default function CreativeStudio() {
 
             {insufficientCredits && (
               <s-banner tone="warning">
-                <s-paragraph>{messageFetcher.data && !messageFetcher.data.ok ? messageFetcher.data.error : ""}</s-paragraph>
+                <s-stack direction="block" gap="small-200">
+                  <s-paragraph>{messageFetcher.data && !messageFetcher.data.ok ? messageFetcher.data.error : ""}</s-paragraph>
+                  <s-link href="/app/billing">Upgrade plan or buy more credits</s-link>
+                </s-stack>
               </s-banner>
             )}
+
+            <s-text color="subdued">Each generation typically costs 2–3 credits (more for edits/variations).</s-text>
 
             <s-stack direction="inline" gap="base">
               <s-text-field

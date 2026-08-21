@@ -16,6 +16,11 @@ import {
   type ProductIntelligenceRow,
 } from "../../db/repositories/product-intelligence.repository";
 import { enqueueProductIntelligenceAnalysis } from "./queue.server";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { getCreditCost } from "../usage/credit-costs";
+import { randomUUID } from "node:crypto";
+
+export { InsufficientCreditsError };
 
 /**
  * Deliberately the SAME error for "doesn't exist" and "belongs to another
@@ -57,8 +62,32 @@ export async function requestProductAnalysis(context: AuthContext, productId: st
     throw new ProductNotFoundError();
   }
 
+  // This domain's queue dedups an already-in-flight request onto the
+  // SAME BullMQ job (see job.server.ts's module doc comment) — a
+  // merchant double-clicking "Analyze" while a job is PENDING/PROCESSING
+  // must NOT reserve a second, never-to-be-settled credit for a request
+  // that will never actually run its own worker attempt. Only a genuinely
+  // fresh request (no row yet, or the last one already reached a
+  // terminal READY/FAILED state) is billed. A narrow race remains
+  // possible between this check and the worker's own claim of the job —
+  // an accepted limitation, same class as every other domain's
+  // check-then-reserve gap (see docs/usage.md "Known limitations").
+  const existing = await getForProduct(context, productId);
+  const alreadyInFlight = existing?.status === "PENDING" || existing?.status === "PROCESSING";
+
+  let creditReservationId: string | undefined;
+  if (!alreadyInFlight) {
+    const requiredCredits = getCreditCost({ operationType: "PRODUCT_ANALYSIS" });
+    const entitlement = await checkEntitlement(context, "PRODUCT_ANALYSIS", requiredCredits);
+    if (!entitlement.allowed) {
+      throw new InsufficientCreditsError(entitlement);
+    }
+    creditReservationId = randomUUID();
+    await reserveCredits(context, creditReservationId, "PRODUCT_ANALYSIS", requiredCredits);
+  }
+
   await ensurePendingAnalysis(context.shop, productId);
-  await enqueueProductIntelligenceAnalysis({ shop: context.shop, productId });
+  await enqueueProductIntelligenceAnalysis({ shop: context.shop, productId, creditReservationId });
 }
 
 export async function getProductIntelligence(

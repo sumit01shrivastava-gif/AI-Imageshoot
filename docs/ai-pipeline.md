@@ -1,6 +1,11 @@
 # AI pipeline
 
-## Current state (Phase 4)
+## Current state
+
+(Originally written for Phase 4; updated for the commercial-readiness
+pass that added real image-to-image/edit support, a real LLM-backed
+intent parser, and credit-cost accounting — see docs/creative-studio.md,
+docs/usage.md, docs/billing.md.)
 
 `services/ai/types.ts` defines three separate, focused provider
 interfaces. `services/ai/unconfigured-provider.ts` provides an
@@ -22,17 +27,24 @@ didn't implement.
   `AI_PROVIDER_API_KEY` are configured; `UnconfiguredImageGenerationProvider`
   remains the default. No live vendor account is configured in this
   environment, so every generation still runs through the deterministic
-  test provider in practice.
+  test provider in practice. **Now supports two request shapes**, not
+  just text-to-image — see "Image-to-image / editing contract" below.
 - **`IntentParsingProvider`** (Creative Studio pass) — turns a merchant's
   natural-language message into a structured instruction
   (`parseIntent`). Called by `services/creative-studio/` — see
-  docs/creative-studio.md. Unlike every other provider here,
-  `HeuristicIntentParser` (`services/ai/heuristic-intent-parser.ts`) is a
-  real, rule-based, ALWAYS-ON default — not gated behind
-  `NODE_ENV==="test"` — since the Creative Studio needs a genuinely
-  working interpretation step even with no AI vendor configured; see that
-  file's own doc comment for the full reasoning and its honest
-  limitations.
+  docs/creative-studio.md. `HeuristicIntentParser`
+  (`services/ai/heuristic-intent-parser.ts`) is a real, rule-based,
+  ALWAYS-ON default — not gated behind `NODE_ENV==="test"` — since the
+  Creative Studio needs a genuinely working interpretation step even
+  with no AI vendor configured. **A real-LLM implementation now exists
+  too** —`ProductionIntentParsingProvider`
+  (`services/ai/production-intent-parser.server.ts`), selected by
+  `services/creative-studio/provider.server.ts`'s resolver whenever
+  `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` are configured, wrapped in
+  a `FallbackIntentParser` that falls back to the heuristic parser on
+  any failure. Tests never configure those env vars, so they always
+  exercise the heuristic parser (CLAUDE.md "Never make a real AI API
+  call from a test").
 - **`ImageProcessingProvider`** — deterministic/transformative operations
   on an existing image (`removeBackground`, `enhance`, `upscale`,
   `generateShadow`, `crop`, `resize`). Established as an interface in
@@ -102,6 +114,39 @@ temporary, provider-owned artifact, never assumed to live anywhere in
 particular; the caller persists it through `lib/storage/`'s
 `StorageProvider` abstraction (see docs/generation.md "Storage").
 
+## Image-to-image / editing contract
+
+`ProductionImageGenerationProvider.generateImage` picks one of two
+request shapes based on `GenerateImageInput.mode`
+(`services/ai/types.ts`'s `GenerationMode`):
+
+- **`TEXT_TO_IMAGE`/absent** (every pre-Creative-Studio generationType,
+  unchanged) → `POST {baseUrl}/v1/images/generations` — `prompt`/`n`/
+  `size`/`quality`/`response_format`, no reference image.
+- **`IMAGE_TO_IMAGE`/`IMAGE_EDIT`/`VARIATION`** (Creative Studio's
+  conversational edits, whenever at least one reference/source image is
+  available) → `POST {baseUrl}/v1/images/edits` — the same fields, PLUS
+  the reference image(s), fetched and base64-encoded, as `image` (one
+  reference) or `images[]` (more than one) — this app's own superset of
+  OpenAI's single-image-only edits endpoint, since several modern
+  editing models genuinely accept multiple references. Which images are
+  sent, and in what priority, is `resolveReferenceImageUrls`'s job:
+  `GenerateImageInput.referenceImages` (explicit references — e.g. the
+  exact prior result a follow-up is editing forward from) win when
+  present; `sourceImages` (the original product photos) are the
+  fallback.
+
+**Model selection** is mode-aware: `AI_IMAGE_EDIT_MODEL` for an editing
+request, `AI_IMAGE_GENERATION_MODEL` for a fresh one, both falling back
+to `AI_PROVIDER_MODEL` when unset — many real vendors run editing on a
+materially different model than fresh generation, so this is a genuine
+distinction, not just two names for the same setting.
+
+A reference-image fetch failure (this app's own storage, not the
+vendor) surfaces as `ProviderResponseError`, not a raw exception —
+merchant-safe error mapping happens the same way as every other provider
+failure (see docs/generation.md "Error handling").
+
 ## Rules for a real provider
 
 - Lives in `services/ai/`, implements one of the interfaces above. No
@@ -109,29 +154,39 @@ particular; the caller persists it through `lib/storage/`'s
   `ProductionImageProcessingProvider` is the existing example: it's the
   only file that calls `fetch()` against remove.bg or imports `sharp`.
 - Reads credentials only via `lib/validation/env.server.ts`
-  (`AI_PROVIDER`/`AI_PROVIDER_API_KEY`/`AI_PROVIDER_BASE_URL` for
-  analysis/generation; `IMAGE_PROCESSING_PROVIDER`/`REMOVE_BG_API_KEY`
-  for processing) — never hardcoded, never logged (all in
-  `SECRET_ENV_KEYS` where applicable).
+  (`AI_PROVIDER`/`AI_PROVIDER_API_KEY`/`AI_PROVIDER_BASE_URL`/
+  `AI_PROVIDER_MODEL`/`AI_PROVIDER_TIMEOUT_MS` for analysis/generation/
+  intent parsing, plus `AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`
+  for mode-specific model selection — see "Image-to-image / editing
+  contract" above; `IMAGE_PROCESSING_PROVIDER`/`REMOVE_BG_API_KEY` for
+  processing) — never hardcoded, never logged (all in `SECRET_ENV_KEYS`
+  where applicable).
 - Never called from an automated test with real credentials or a real
   network request — see each domain's own double-gated deterministic
   test provider.
 
-## Not yet designed (future phases)
+## Not yet designed / explicitly deferred
 
-- Which vendor(s) to integrate for image *generation* (still entirely
-  unimplemented) or for `upscale`/`generateShadow`/`crop`
-- Prompt/config construction beyond `PRODUCT_CLEANUP` (see
-  docs/generation.md "Generation types" for which of the nine taxonomy
-  values have dedicated plan-building logic today)
-- Batch generation (batch *processing* exists — see
-  docs/image-processing.md), additional aspect ratios beyond the three
-  processing presets, generation/processing presets
-- Cost/usage accounting per call (ties into the future `UsageRecord`
-  model — see docs/database.md); Phase 3/4 record the structured
-  metadata (provider, duration, output count, ...) a future phase would
-  need, but compute no cost themselves
+- **No specific commercial vendor is named or credentialed anywhere in
+  this repository.** `ProductionImageGenerationProvider`/
+  `ProductionIntentParsingProvider` are real, working HTTP clients
+  against documented, vendor-agnostic JSON contracts — a merchant with
+  an endpoint speaking either contract gets a genuinely working
+  integration with zero code changes — but no live vendor account exists
+  in this environment, so every generation/intent-parse in this
+  environment still runs through the deterministic/heuristic providers
+  in practice. A vendor with a materially different wire shape needs its
+  own adapter file behind the same interface.
+- `upscale`/`generateShadow`/`crop` (`ImageProcessingProvider`) remain
+  unimplemented.
+- Cost/usage accounting per call is now real — see docs/usage.md's
+  credit-cost rule and docs/billing.md's plan catalog — but the
+  PER-PLAN resolution/output-count/batch-size LIMITS in
+  `services/billing/plans.ts` are stated policy, not yet enforced by any
+  request-side clamp (see docs/billing.md "Known limitations").
 - Validating a generated/processed result against its identity anchors —
   both `identityAnchors` propagate all the way to the provider input
   specifically so a future phase can do this; nothing inspects output
-  content against them yet
+  content against them yet (`services/generation/identity-validation.server.ts`
+  returns an honest "not yet possible" result — see docs/creative-studio.md
+  "Identity preservation").

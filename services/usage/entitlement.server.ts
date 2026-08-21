@@ -1,8 +1,11 @@
 /**
- * Generation credit entitlement — the reserve/settle/refund lifecycle
- * Part 9 asks for, layered on top of `CreditReservation`
- * (db/repositories/credit-reservation.repository.ts). See
- * docs/creative-studio.md "Credit lifecycle" for the full reasoning.
+ * Entitlement — the single place that answers "is shop X allowed to do
+ * operation Y right now, and what does it cost." Built on two things:
+ * `ShopSubscription` (which plan a shop is on — db/repositories/shop-
+ * subscription.repository.ts) and `CreditReservation` (the reserve/
+ * settle/refund credit-hold ledger — db/repositories/credit-reservation.
+ * repository.ts). See docs/usage.md "Entitlement" for the full reasoning
+ * and docs/billing.md "Plan catalog" for what each plan allows.
  *
  * Deliberately separate from services/usage/usage-accounting.server.ts's
  * `recordUsageEvent` — that module is an audit ledger of what already
@@ -11,21 +14,25 @@
  * the same job (both keyed by the job's own id), not in place of one
  * another.
  *
- * Only the Creative Studio's own generation path calls this — every
- * pre-existing generationType (PRODUCT_CLEANUP, LIFESTYLE, ...) is
- * completely unaffected; retrofitting credit enforcement onto those
- * would be scope creep beyond what this pass's instructions ask for
- * ("make the Creative Studio generation path credit-aware," not every
- * generation path).
+ * Covers every billable operation type (PRODUCT_ANALYSIS, IMAGE_GENERATION,
+ * IMAGE_PROCESSING, STORE_VISUAL_GENERATION) — not just Creative Studio.
+ * Each domain's job.server.ts calls this with its own `UsageOperationType`
+ * before enqueueing, using the exact same `beforeEnqueue`-hook pattern
+ * services/generation/job.server.ts already proved for Creative Studio.
  *
- * Intended lifecycle (enforced by
- * services/creative-studio/session.server.ts's `requestCreativeGeneration`,
- * never scattered across routes — see Part 9): validate entitlement →
- * reserve credits → create the job → worker generates → settle on
- * success / refund on failure.
+ * Standard lifecycle: check entitlement → reserve credits → create the
+ * job → worker runs → settle on success / refund on failure. A retried
+ * job never double-charges (`createReservation`'s upsert is keyed on the
+ * job's own id); a failed job's hold is always given back
+ * (`refundReservation`); a regeneration is a brand-new job id, so it is
+ * always a new, separately-billed reservation — see docs/usage.md
+ * "Credit cost rule".
  */
+import type { PlanId, UsageOperationType } from "@prisma/client";
 import { getEnv } from "../../lib/validation/env.server";
 import type { AuthContext } from "../../lib/auth/types";
+import { PLANS, DEFAULT_PLAN_ID, type PlanDefinition } from "../billing/plans";
+import { getShopSubscription } from "../../db/repositories/shop-subscription.repository";
 import {
   createReservation,
   settleReservation,
@@ -35,49 +42,51 @@ import {
   type CreditReservationRow,
 } from "../../db/repositories/credit-reservation.repository";
 
-export interface EntitlementProvider {
-  readonly name: string;
-  getMonthlyAllowance(shop: string): Promise<number>;
+function currentMonthStart(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
-const DEFAULT_MONTHLY_CREDITS = 200;
+/** A subscription only grants its plan while ACTIVE — PENDING (checkout
+ * not yet confirmed), CANCELLED, DECLINED, EXPIRED, and FROZEN (payment
+ * failure) all fall back to FREE. This is a deliberate simplification
+ * (a real merchant is typically entitled through the end of an already
+ * -paid period even after cancelling) documented explicitly in
+ * docs/billing.md "Known limitations" rather than silently assumed. */
+async function resolvePlanId(shop: string): Promise<PlanId> {
+  const subscription = await getShopSubscription(shop);
+  if (!subscription || subscription.status !== "ACTIVE") return DEFAULT_PLAN_ID;
+  return subscription.planId;
+}
 
 /**
- * The only `EntitlementProvider` implementation today — no
- * subscription/billing plan exists yet (explicitly out of scope this
- * pass; see CLAUDE.md), so every shop gets one clearly-labeled,
- * generous, isolated development allowance rather than being blocked
- * outright. "Development" is in the name deliberately — never presented
- * to a merchant as a real plan (the UI labels this "development credit
- * allowance," never invented currency/pricing — see Part 7). A future
- * billing phase replaces this with a real per-plan `EntitlementProvider`
- * behind the exact same interface; nothing calling
- * `getConfiguredEntitlementProvider()` needs to change.
+ * Resolves the shop's current plan definition. `CREATIVE_STUDIO_MONTHLY_CREDITS`
+ * (if set) overrides the resolved plan's `monthlyCredits` — a development
+ * /test convenience for exercising a specific limit without seeding a
+ * `ShopSubscription` row, never a second source of truth for the plan
+ * itself (allowed operations, resolution/output limits, and every other
+ * field still come from the real plan).
  */
-export class DevelopmentEntitlementProvider implements EntitlementProvider {
-  readonly name = "development";
-
-  // `shop` is part of the `EntitlementProvider` interface (a future
-  // per-plan implementation needs it to look up that shop's actual plan)
-  // but this development default is the same flat allowance for every
-  // shop, so it goes unused here.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async getMonthlyAllowance(shop: string): Promise<number> {
-    return getEnv().CREATIVE_STUDIO_MONTHLY_CREDITS ?? DEFAULT_MONTHLY_CREDITS;
-  }
+export async function getPlan(shop: string): Promise<PlanDefinition> {
+  const planId = await resolvePlanId(shop);
+  const plan = PLANS[planId];
+  const override = getEnv().CREATIVE_STUDIO_MONTHLY_CREDITS;
+  return override != null ? { ...plan, monthlyCredits: override } : plan;
 }
 
-let cachedProvider: EntitlementProvider | undefined;
-
-export function getConfiguredEntitlementProvider(): EntitlementProvider {
-  if (!cachedProvider) cachedProvider = new DevelopmentEntitlementProvider();
-  return cachedProvider;
+export async function getMonthlyAllowance(shop: string): Promise<number> {
+  return (await getPlan(shop)).monthlyCredits;
 }
 
-/** Test-only: forces a fresh instance so a test's env override
- * (CREATIVE_STUDIO_MONTHLY_CREDITS) is actually picked up. */
-export function resetConfiguredEntitlementProviderForTests(): void {
-  cachedProvider = undefined;
+export async function canUseOperation(shop: string, operation: UsageOperationType): Promise<boolean> {
+  const plan = await getPlan(shop);
+  return plan.allowedOperations.includes(operation);
+}
+
+export async function getRemainingCredits(shop: string): Promise<number> {
+  const plan = await getPlan(shop);
+  const used = await getMonthlyCreditsUsed(shop, currentMonthStart());
+  return Math.max(0, plan.monthlyCredits - used);
 }
 
 export interface EntitlementCheck {
@@ -86,47 +95,67 @@ export interface EntitlementCheck {
   used: number;
   available: number;
   required: number;
-}
-
-function currentMonthStart(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-}
-
-/** Checks whether `shop` has enough remaining monthly allowance for a
- * request needing `requiredCredits` — read-only, does NOT reserve
- * anything (see `reserveGenerationCredits` for that). Currently-
- * outstanding RESERVED holds count against the limit already (see
- * getMonthlyCreditsUsed's doc comment), so a merchant can't submit two
- * requests that individually fit but together exceed the allowance and
- * have both silently succeed. */
-export async function checkGenerationEntitlement(context: AuthContext, requiredCredits: number): Promise<EntitlementCheck> {
-  const provider = getConfiguredEntitlementProvider();
-  const limit = await provider.getMonthlyAllowance(context.shop);
-  const used = await getMonthlyCreditsUsed(context.shop, currentMonthStart());
-  const available = Math.max(0, limit - used);
-  return { allowed: available >= requiredCredits, limit, used, available, required: requiredCredits };
+  operationType: UsageOperationType;
+  /** Why `allowed` is false — absent when `allowed` is true. Lets the
+   * route layer distinguish "upgrade your plan" from "wait until next
+   * month / buy more credits" (Part 9's two distinct UI treatments). */
+  reason?: "OPERATION_NOT_ON_PLAN" | "INSUFFICIENT_CREDITS";
 }
 
 export class InsufficientCreditsError extends Error {
   readonly check: EntitlementCheck;
 
   constructor(check: EntitlementCheck) {
-    super(`Not enough credits available (${check.available} available, ${check.required} required).`);
+    super(
+      check.reason === "OPERATION_NOT_ON_PLAN"
+        ? "This feature isn't included on your current plan."
+        : `Not enough credits available (${check.available} available, ${check.required} required).`,
+    );
     this.name = "InsufficientCreditsError";
     this.check = check;
   }
 }
 
+/** Checks whether `shop` may perform `operationType` at all (plan gate)
+ * and, if so, whether it has enough remaining monthly allowance for a
+ * request needing `requiredCredits` — read-only, does NOT reserve
+ * anything (see `reserveCredits` for that). Currently-outstanding
+ * RESERVED holds count against the limit already (see
+ * getMonthlyCreditsUsed's doc comment), so a merchant can't submit two
+ * requests that individually fit but together exceed the allowance and
+ * have both silently succeed. */
+export async function checkEntitlement(context: AuthContext, operationType: UsageOperationType, requiredCredits: number): Promise<EntitlementCheck> {
+  const plan = await getPlan(context.shop);
+  const used = await getMonthlyCreditsUsed(context.shop, currentMonthStart());
+  const available = Math.max(0, plan.monthlyCredits - used);
+
+  if (!plan.allowedOperations.includes(operationType)) {
+    return { allowed: false, limit: plan.monthlyCredits, used, available, required: requiredCredits, operationType, reason: "OPERATION_NOT_ON_PLAN" };
+  }
+
+  const allowed = available >= requiredCredits;
+  return { allowed, limit: plan.monthlyCredits, used, available, required: requiredCredits, operationType, reason: allowed ? undefined : "INSUFFICIENT_CREDITS" };
+}
+
+/** Creative Studio's own entry point — a thin `checkEntitlement` wrapper
+ * fixed to IMAGE_GENERATION, kept so the existing call sites/tests don't
+ * need to name the operation on every call. */
+export async function checkGenerationEntitlement(context: AuthContext, requiredCredits: number): Promise<EntitlementCheck> {
+  return checkEntitlement(context, "IMAGE_GENERATION", requiredCredits);
+}
+
 /** Idempotent — see `createReservation`'s doc comment. Always call after
- * `checkGenerationEntitlement` has already confirmed `allowed: true` for
- * this same request; this function itself doesn't re-check the limit
- * (see module doc comment — check and reserve are two distinct,
- * sequential steps, not one atomic operation; a narrow race between them
- * is an accepted limitation of the development entitlement provider —
- * see docs/creative-studio.md "Known limitations"). */
+ * `checkEntitlement`/`checkGenerationEntitlement` has already confirmed
+ * `allowed: true` for this same request; this function itself doesn't
+ * re-check the limit (check and reserve are two distinct, sequential
+ * steps, not one atomic operation; a narrow race between them is an
+ * accepted limitation — see docs/usage.md "Known limitations"). */
+export async function reserveCredits(context: AuthContext, jobId: string, operationType: UsageOperationType, amount: number): Promise<CreditReservationRow> {
+  return createReservation(context.shop, jobId, operationType, amount);
+}
+
 export async function reserveGenerationCredits(context: AuthContext, jobId: string, amount: number): Promise<CreditReservationRow> {
-  return createReservation(context.shop, jobId, amount);
+  return reserveCredits(context, jobId, "IMAGE_GENERATION", amount);
 }
 
 export async function settleGenerationCredits(context: AuthContext, jobId: string): Promise<void> {

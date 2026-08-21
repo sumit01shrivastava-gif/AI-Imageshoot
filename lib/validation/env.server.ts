@@ -84,8 +84,22 @@ const envSchema = z.object({
   // Model/version identifier forwarded to the provider — purely a passed
   // -through string (this app never interprets it), recorded onto each
   // GenerationResult's metadata for traceability. Optional; the provider
-  // contract's own default applies when unset.
+  // contract's own default applies when unset. Used as the fallback for
+  // BOTH of the mode-specific vars below when they're unset — a merchant
+  // running one vendor/model for everything only needs to set this one.
   AI_PROVIDER_MODEL: z.string().optional(),
+  // Model identifier for a fresh text-to-image request (GenerationMode
+  // "TEXT_TO_IMAGE"/absent — every pre-existing generationType). Falls
+  // back to AI_PROVIDER_MODEL when unset. See
+  // services/ai/production-image-generation-provider.server.ts.
+  AI_IMAGE_GENERATION_MODEL: z.string().optional(),
+  // Model identifier for an image-editing request (GenerationMode
+  // "IMAGE_TO_IMAGE"/"IMAGE_EDIT"/"VARIATION" — the Creative Studio's
+  // conversational edits). Many vendors run editing on a materially
+  // different model than fresh generation; kept as its own var rather
+  // than overloading AI_IMAGE_GENERATION_MODEL. Falls back to
+  // AI_PROVIDER_MODEL when unset.
+  AI_IMAGE_EDIT_MODEL: z.string().optional(),
   // Per-request timeout, in milliseconds, for
   // production-image-generation-provider.server.ts's outbound calls.
   // Optional — defaults to that file's own DEFAULT_REQUEST_TIMEOUT_MS
@@ -101,12 +115,13 @@ const envSchema = z.object({
   IMAGE_PROCESSING_PROVIDER: z.string().optional(),
   REMOVE_BG_API_KEY: z.string().optional(),
 
-  // --- Creative Studio credit entitlement (development default) ----------
-  // No subscription/billing plan exists yet (see CLAUDE.md) — every shop
-  // gets this one clearly-labeled, generous monthly allowance instead of
-  // being blocked outright. See services/usage/entitlement.server.ts's
-  // `DevelopmentEntitlementProvider` and docs/creative-studio.md "Credit
-  // lifecycle". Never presented to a merchant as a real plan.
+  // --- Credit entitlement override (development/test only) ---------------
+  // A real per-shop plan/subscription system exists (services/billing/plans.ts,
+  // ShopSubscription) — this var, when set, overrides the resolved plan's
+  // `monthlyCredits` only, so a specific limit can be exercised locally or
+  // in a test without seeding a ShopSubscription row. See
+  // services/usage/entitlement.server.ts's `getPlan` and docs/usage.md
+  // "Entitlement". Never presented to a merchant as a real plan.
   CREATIVE_STUDIO_MONTHLY_CREDITS: z.coerce.number().int().positive().optional(),
 
   PORT: z.coerce.number().int().positive().optional(),

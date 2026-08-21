@@ -30,6 +30,7 @@ import { parseProcessingOptions, assertValidProcessingOutput, InvalidProcessingO
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { ImageProcessingOutput, ImageProcessingProvider, ProductImageReference } from "../ai/types";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
+import { settleReservation, refundReservation } from "../../db/repositories/credit-reservation.repository";
 
 function toImageReference(media: { id: string; originalUrl: string; altText: string | null; position: number }): ProductImageReference {
   return { mediaId: media.id, url: media.originalUrl, altText: media.altText, position: media.position };
@@ -153,6 +154,13 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
       // isFinalAttempt the way the catch block below is, since there IS
       // no further attempt coming for this specific failure.
       await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
+      await refundReservation(shop, processingJobId).catch((refundError: unknown) =>
+        logger.warn("processing.job.credit_resolution_failed", {
+          shop,
+          processingJobId,
+          detail: refundError instanceof Error ? refundError.message : "unknown error",
+        }),
+      );
       return;
     }
 
@@ -197,6 +205,13 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
     const durationMs = Date.now() - attemptStartedAt;
     await markSucceeded(shop, processingJobId, { providerName: provider.name, durationMs });
     await recordProcessingUsage(shop, processingJobId, "SUCCEEDED", { providerName: provider.name, durationMs });
+    await settleReservation(shop, processingJobId).catch((settleError: unknown) =>
+      logger.warn("processing.job.credit_resolution_failed", {
+        shop,
+        processingJobId,
+        detail: settleError instanceof Error ? settleError.message : "unknown error",
+      }),
+    );
 
     logger.info("processing.job.completed", {
       shop,
@@ -227,6 +242,13 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
             : GENERIC_FAILURE_MESSAGE;
       await markFailed(shop, processingJobId, { message, durationMs });
       await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
+      await refundReservation(shop, processingJobId).catch((refundError: unknown) =>
+        logger.warn("processing.job.credit_resolution_failed", {
+          shop,
+          processingJobId,
+          detail: refundError instanceof Error ? refundError.message : "unknown error",
+        }),
+      );
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

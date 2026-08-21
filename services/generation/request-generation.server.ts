@@ -30,6 +30,11 @@ import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
 import { GenerationTypeSchema, AspectRatioSchema, type GenerationPlan } from "./schema";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { getCreditCost } from "../usage/credit-costs";
+import type { GenerationMode } from "../ai/types";
+
+export { InsufficientCreditsError };
 
 /**
  * Deliberately the SAME error for "doesn't exist" and "belongs to another
@@ -191,6 +196,32 @@ export async function createAndEnqueueGenerationJob(
     });
   }
 
+  // Credit-gate every generationType EXCEPT Creative Studio, which
+  // already checks/reserves its own credits (services/creative-studio/session.server.ts,
+  // BEFORE this function is even called — it needs to fail fast without
+  // first writing chat messages) and passes its reservation through its
+  // own `beforeEnqueue` hook below. Reserving here too for a Creative
+  // Studio job would double-charge it. See docs/usage.md's domain table.
+  const isCreativeStudioManaged = Boolean(input.creativeSessionId);
+  let requiredCredits = 0;
+  if (!isCreativeStudioManaged) {
+    requiredCredits = getCreditCost({
+      operationType: "IMAGE_GENERATION",
+      // `plan.creativeIntent.mode` is typed as a plain string in
+      // services/generation/schema.ts (that module deliberately doesn't
+      // import Creative Studio's concrete GenerationModeValue enum — see
+      // its own domain-boundary comment) but is only ever populated from
+      // the validated enum in the first place (plan-builder.ts) — safe
+      // to narrow here, at this credit-cost-lookup boundary only.
+      mode: plan.creativeIntent?.mode as GenerationMode | undefined,
+      outputCount: plan.outputCount,
+    });
+    const entitlement = await checkEntitlement(context, "IMAGE_GENERATION", requiredCredits);
+    if (!entitlement.allowed) {
+      throw new InsufficientCreditsError(entitlement);
+    }
+  }
+
   const job = await createGenerationJob({
     shop: context.shop,
     productId: product.id,
@@ -200,6 +231,10 @@ export async function createAndEnqueueGenerationJob(
     batchId: input.batchId,
     creativeSessionId: input.creativeSessionId,
   });
+
+  if (!isCreativeStudioManaged) {
+    await reserveCredits(context, job.id, "IMAGE_GENERATION", requiredCredits);
+  }
 
   if (input.beforeEnqueue) {
     await input.beforeEnqueue(job.id);

@@ -83,6 +83,8 @@ function synthesizeCreativePrompt(
     colorDirection: string | null;
     addElements: string[];
     removeElements: string[];
+    colorOverride: string | null;
+    materialOverride: string | null;
   },
   identityInstruction: string,
 ): string {
@@ -97,6 +99,11 @@ function synthesizeCreativePrompt(
   if (creative.colorDirection) parts.push(`${creative.colorDirection} color palette`);
   if (creative.addElements.length > 0) parts.push(`with ${creative.addElements.join(", ")}`);
   if (creative.removeElements.length > 0) parts.push(`without ${creative.removeElements.join(", ")}`);
+  // The creative-override mechanism's effect on the prompt text itself
+  // (identityInstruction carries the corresponding "this is permitted"
+  // clause — see identity-constraints.ts).
+  if (creative.colorOverride) parts.push(`the ${subject} recolored to ${creative.colorOverride}`);
+  if (creative.materialOverride) parts.push(`the ${subject} rendered in ${creative.materialOverride}`);
 
   return `${parts.join(", ")}. ${identityInstruction}`;
 }
@@ -161,7 +168,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
   const identityAnchors = identityAnchorsResult.data;
 
   const category = intelligence.category ?? (product.productType || "product");
-  const identityConstraints = buildIdentityConstraints(identityAnchors, product.title);
+  const identityConstraints = buildIdentityConstraints(identityAnchors, product.title, parsedIntent.attributeOverrides);
 
   const creative = {
     scene: parsedIntent.scene,
@@ -172,6 +179,8 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     colorDirection: parsedIntent.colorDirection,
     addElements: parsedIntent.addElements,
     removeElements: parsedIntent.removeElements,
+    colorOverride: parsedIntent.attributeOverrides.color,
+    materialOverride: parsedIntent.attributeOverrides.material,
   };
 
   const prompt = synthesizeCreativePrompt(parsedIntent.intent, category, creative, identityConstraints.instruction);

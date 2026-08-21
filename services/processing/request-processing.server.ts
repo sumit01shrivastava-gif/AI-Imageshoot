@@ -29,6 +29,10 @@ import {
 } from "../../db/repositories/processing-job.repository";
 import { enqueueProcessingJob } from "./queue.server";
 import { ImageOperationSchema, parseProcessingOptions, type ProcessingOptions } from "./schema";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { getCreditCost } from "../usage/credit-costs";
+
+export { InsufficientCreditsError };
 
 /**
  * Deliberately the SAME error for "doesn't exist" and "belongs to another
@@ -97,6 +101,18 @@ export async function createAndEnqueueProcessingJob(
   const identityAnchors =
     intelligence && intelligence.status === "READY" ? (intelligence.identityAnchors as Record<string, unknown> | null) : null;
 
+  // Checked BEFORE creating the job row — a request that will be denied
+  // must never reach the queue at all (Part 9: "Do not allow a
+  // generation request to reach the queue if credit reservation
+  // fails."). One credit-worth per processing operation regardless of
+  // batch size — a batch of N images is N separate reservations, one per
+  // job, exactly mirroring how N separate ProcessingJob rows are created.
+  const requiredCredits = getCreditCost({ operationType: "IMAGE_PROCESSING" });
+  const entitlement = await checkEntitlement(context, "IMAGE_PROCESSING", requiredCredits);
+  if (!entitlement.allowed) {
+    throw new InsufficientCreditsError(entitlement);
+  }
+
   const job = await createProcessingJob({
     shop: context.shop,
     productId: product.id,
@@ -106,6 +122,12 @@ export async function createAndEnqueueProcessingJob(
     identityAnchors,
     batchId: input.batchId,
   });
+
+  // Reserved right after the row exists (its id is the reservation's
+  // idempotency key — see createReservation's doc comment) and BEFORE
+  // enqueueing, so a worker can never start processing a job with no
+  // corresponding hold.
+  await reserveCredits(context, job.id, "IMAGE_PROCESSING", requiredCredits);
 
   await markQueued(context.shop, job.id);
   await enqueueProcessingJob({ shop: context.shop, processingJobId: job.id });

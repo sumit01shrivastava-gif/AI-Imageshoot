@@ -1,28 +1,40 @@
 /**
  * Resolves which `IntentParsingProvider` the Creative Studio uses.
  *
- * Currently always `HeuristicIntentParser` — see that file's doc comment
- * for why it's a real, always-on default rather than gated to tests the
- * way every other provider in this codebase's deterministic-test seam
- * is. Kept as its own resolver function (not inlined at each call site)
- * so a future real NLU vendor slots in here later behind the same
- * `IntentParsingProvider` interface — mirroring
- * services/generation/provider.server.ts's exact shape — with zero
- * call-site changes across services/creative-studio/.
+ * `HeuristicIntentParser` (the real, always-on rule-based default — see
+ * that file's doc comment) when no real LLM provider is configured.
+ * When `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` ARE configured,
+ * wraps `ProductionIntentParsingProvider`
+ * (services/ai/production-intent-parser.server.ts) in a
+ * `FallbackIntentParser` that falls back to the heuristic parser on any
+ * failure — the conversational feature must stay usable even if the
+ * configured real-LLM endpoint is down. Tests never set those env vars,
+ * so they always exercise the deterministic heuristic parser — see
+ * CLAUDE.md "Never make a real AI API call from a test".
+ *
+ * Mirrors services/generation/provider.server.ts's exact resolver shape.
  */
+import { getEnv } from "../../lib/validation/env.server";
 import type { IntentParsingProvider } from "../ai/types";
 import { HeuristicIntentParser } from "../ai/heuristic-intent-parser";
+import { ProductionIntentParsingProvider, FallbackIntentParser } from "../ai/production-intent-parser.server";
 
 let cached: IntentParsingProvider | undefined;
 
 export function getConfiguredIntentParser(): IntentParsingProvider {
-  if (!cached) cached = new HeuristicIntentParser();
+  if (!cached) {
+    const env = getEnv();
+    const heuristic = new HeuristicIntentParser();
+    cached =
+      env.AI_PROVIDER_BASE_URL && env.AI_PROVIDER_API_KEY
+        ? new FallbackIntentParser(new ProductionIntentParsingProvider(), heuristic)
+        : heuristic;
+  }
   return cached;
 }
 
-/** Test-only: forces a fresh instance. The heuristic parser is stateless
- * (nothing to actually reset), kept purely for symmetry with every other
- * domain's provider.server.ts test-reset helper. */
+/** Test-only: forces a fresh instance so an env override
+ * (AI_PROVIDER_BASE_URL/AI_PROVIDER_API_KEY) is actually picked up. */
 export function resetConfiguredIntentParserForTests(): void {
   cached = undefined;
 }

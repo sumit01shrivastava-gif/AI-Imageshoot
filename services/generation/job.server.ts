@@ -79,20 +79,22 @@ async function recordGenerationUsage(
 }
 
 /** Settles or refunds this job's credit reservation, if it has one — see
- * services/usage/entitlement.server.ts. Only Creative Studio-originated
- * jobs (`creativeSessionId !== null`) ever have a reservation; every
- * other generationType's call here is a harmless no-op (settle/refund
- * are themselves conditional updates that affect zero rows when no
- * reservation exists — see credit-reservation.repository.ts). Never
- * allowed to fail the job itself, same reasoning as
- * `recordGenerationUsage`. */
+ * services/usage/entitlement.server.ts. Every generationType now reserves
+ * credits before enqueueing (request-generation.server.ts) EXCEPT that a
+ * Creative Studio job's reservation is made by
+ * services/creative-studio/session.server.ts itself, before this job even
+ * exists — either way, exactly one reservation exists per job by the
+ * time it runs, so this call always has something real to resolve.
+ * settle/refund are themselves conditional updates that affect zero rows
+ * when no reservation exists at all (e.g. a job created directly by a
+ * test without going through the request-side entry points) — a harmless
+ * no-op, not an error. Never allowed to fail the job itself, same
+ * reasoning as `recordGenerationUsage`. */
 async function resolveGenerationCredits(
   shop: string,
   generationJobId: string,
-  creativeSessionId: string | null,
   outcome: "SUCCEEDED" | "FAILED",
 ): Promise<void> {
-  if (!creativeSessionId) return;
   const context: AuthContext = { shop, sessionId: "worker:generation", isOnline: false };
   try {
     if (outcome === "SUCCEEDED") {
@@ -338,7 +340,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       outputCount: storedResults.length,
       durationMs,
     });
-    await resolveGenerationCredits(shop, generationJobId, creativeSessionId, "SUCCEEDED");
+    await resolveGenerationCredits(shop, generationJobId, "SUCCEEDED");
     if (creativeSessionId) {
       // A fresh read (rather than threading ids through `storedResults`,
       // which are pre-insert shapes with no DB-assigned id yet) — cheap,
@@ -389,7 +391,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       // has truly, terminally failed, never on an intermediate retry
       // attempt the queue may still recover from (see Part 11: "Failed
       // generation must not consume permanent credits").
-      await resolveGenerationCredits(shop, generationJobId, creativeSessionId, "FAILED");
+      await resolveGenerationCredits(shop, generationJobId, "FAILED");
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

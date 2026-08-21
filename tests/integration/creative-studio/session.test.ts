@@ -303,8 +303,11 @@ describe("credit reservation lifecycle", () => {
       await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
 
       const reservation = await prisma.creditReservation.findUniqueOrThrow({ where: { jobId: sent.generationJobId } });
-      expect(reservation.status).toBe("SETTLED");
-      expect(reservation.amount).toBe(1);
+      expect(reservation.status).toBe("CONSUMED");
+      // A fresh TEXT_TO_IMAGE, single-output request — see
+      // services/usage/credit-costs.ts's documented per-mode rate table.
+      expect(reservation.amount).toBe(2);
+      expect(reservation.operationType).toBe("IMAGE_GENERATION");
     },
     15000,
   );
@@ -376,10 +379,7 @@ describe("credit reservation lifecycle", () => {
   it("checkGenerationEntitlement denies a request once the shop's monthly allowance is exhausted", async () => {
     process.env.CREATIVE_STUDIO_MONTHLY_CREDITS = "1";
     resetEnvCacheForTests();
-    const { resetConfiguredEntitlementProviderForTests, checkGenerationEntitlement, reserveGenerationCredits } = await import(
-      "../../../services/usage/entitlement.server"
-    );
-    resetConfiguredEntitlementProviderForTests();
+    const { checkGenerationEntitlement, reserveGenerationCredits } = await import("../../../services/usage/entitlement.server");
 
     try {
       await reserveGenerationCredits(CONTEXT, "quota-test-job-1", 1);
@@ -389,7 +389,6 @@ describe("credit reservation lifecycle", () => {
     } finally {
       delete process.env.CREATIVE_STUDIO_MONTHLY_CREDITS;
       resetEnvCacheForTests();
-      resetConfiguredEntitlementProviderForTests();
     }
   });
 });

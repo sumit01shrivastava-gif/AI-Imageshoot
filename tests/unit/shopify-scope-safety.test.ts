@@ -80,10 +80,15 @@ describe("Shopify access scope (Phase 1 is read-only)", () => {
  * comment isn't a GraphQL document). */
 const GRAPHQL_MUTATION_PATTERN = /\bmutation\s*(\w+\s*)?[({]/;
 
-/** The one, single file allowed to define a GraphQL mutation — see this
- * file's module doc comment. Any mutation appearing in any OTHER file is
- * still a hard failure below. */
-const PUBLISHING_MUTATION_ALLOWLIST = ["services/shopify/publish-media.server.ts"];
+/** The files allowed to define a GraphQL mutation — see this file's
+ * module doc comment. Any mutation appearing in any OTHER file is still
+ * a hard failure below. The billing provider
+ * (services/billing/shopify-billing-provider.server.ts) is the second,
+ * deliberately-reviewed exception: `appSubscriptionCreate`/
+ * `appSubscriptionCancel` are gated by the app's Partners billing
+ * configuration, not by [access_scopes] — see that file's own doc
+ * comment for why this requests no new OAuth scope. */
+const PUBLISHING_MUTATION_ALLOWLIST = ["services/shopify/publish-media.server.ts", "services/billing/shopify-billing-provider.server.ts"];
 
 describe("Shopify GraphQL operations are read-only, except the one reviewed publishing exception", () => {
   it("services/products/shopify-queries.server.ts defines queries only, never a mutation", () => {
@@ -114,6 +119,14 @@ describe("Shopify GraphQL operations are read-only, except the one reviewed publ
     const matches = source.match(new RegExp(GRAPHQL_MUTATION_PATTERN, "g")) ?? [];
     expect(matches).toHaveLength(1);
     expect(source).toContain("productCreateMedia");
+  });
+
+  it("the allowlisted billing file defines exactly the two expected Shopify Billing mutations", () => {
+    const source = read(PUBLISHING_MUTATION_ALLOWLIST[1]);
+    const matches = source.match(new RegExp(GRAPHQL_MUTATION_PATTERN, "g")) ?? [];
+    expect(matches).toHaveLength(2);
+    expect(source).toContain("appSubscriptionCreate");
+    expect(source).toContain("appSubscriptionCancel");
   });
 
   it("the publishing mutation's own required scope (write_products) is still NOT actually requested", () => {

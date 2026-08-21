@@ -8,12 +8,13 @@
  * separate ownership check) — mirrors db/repositories/usage-event.repository.ts's
  * identical reasoning.
  */
-import type { CreditReservationStatus } from "@prisma/client";
+import type { CreditReservationStatus, UsageOperationType } from "@prisma/client";
 import prisma from "../client.server";
 
 export interface CreditReservationRow {
   id: string;
   jobId: string;
+  operationType: UsageOperationType;
   amount: number;
   status: CreditReservationStatus;
   createdAt: Date;
@@ -23,6 +24,7 @@ export interface CreditReservationRow {
 const RESERVATION_SELECT = {
   id: true,
   jobId: true,
+  operationType: true,
   amount: true,
   status: true,
   createdAt: true,
@@ -34,19 +36,23 @@ const RESERVATION_SELECT = {
  * reservation for this job already exists — `@unique` on `jobId` makes
  * this naturally idempotent (Prisma's `upsert` with an empty `update`):
  * a retried/duplicate reservation attempt for the same job is a safe
- * no-op, never a double hold. See docs/creative-studio.md "Credit
- * lifecycle".
+ * no-op, never a double hold. See docs/usage.md "Credit lifecycle".
  */
-export async function createReservation(shop: string, jobId: string, amount: number): Promise<CreditReservationRow> {
+export async function createReservation(
+  shop: string,
+  jobId: string,
+  operationType: UsageOperationType,
+  amount: number,
+): Promise<CreditReservationRow> {
   return prisma.creditReservation.upsert({
     where: { jobId },
-    create: { shop, jobId, amount, status: "RESERVED" },
+    create: { shop, jobId, operationType, amount, status: "RESERVED" },
     update: {},
     select: RESERVATION_SELECT,
   });
 }
 
-/** Moves a RESERVED hold to SETTLED (the generation succeeded — the
+/** Moves a RESERVED hold to CONSUMED (the operation succeeded — the
  * credit is genuinely spent). A conditional update (`status: "RESERVED"`
  * in the `where`) rather than read-then-write: calling this twice, or
  * calling it when no reservation exists at all (e.g. a job that was
@@ -55,14 +61,14 @@ export async function createReservation(shop: string, jobId: string, amount: num
 export async function settleReservation(shop: string, jobId: string): Promise<void> {
   await prisma.creditReservation.updateMany({
     where: { shop, jobId, status: "RESERVED" },
-    data: { status: "SETTLED", resolvedAt: new Date() },
+    data: { status: "CONSUMED", resolvedAt: new Date() },
   });
 }
 
-/** Moves a RESERVED hold to REFUNDED (the generation failed — the credit
+/** Moves a RESERVED hold to REFUNDED (the operation failed — the credit
  * must never be permanently consumed for a failed request; see
- * docs/creative-studio.md "Failure/refund behavior"). Same idempotent
- * conditional-update shape as `settleReservation`. */
+ * docs/usage.md "Failure/refund behavior"). Same idempotent conditional
+ * -update shape as `settleReservation`. */
 export async function refundReservation(shop: string, jobId: string): Promise<void> {
   await prisma.creditReservation.updateMany({
     where: { shop, jobId, status: "RESERVED" },
@@ -75,18 +81,28 @@ export async function getReservationForJob(shop: string, jobId: string): Promise
 }
 
 /** Sum of every credit currently counted against this shop's monthly
- * allowance since `monthStart` — both genuinely SETTLED holds (completed
- * generations) AND still-outstanding RESERVED holds (a request currently
- * in flight also counts against the limit immediately, so two concurrent
- * requests can't both squeeze through a nearly-exhausted allowance).
- * REFUNDED holds never count — a failed generation's credit was given
- * back. See services/usage/entitlement.server.ts's `checkGenerationEntitlement`. */
-export async function getMonthlyCreditsUsed(shop: string, monthStart: Date): Promise<number> {
+ * allowance since `monthStart` — both genuinely CONSUMED holds
+ * (completed operations) AND still-outstanding RESERVED holds (a
+ * request currently in flight also counts against the limit
+ * immediately, so two concurrent requests can't both squeeze through a
+ * nearly-exhausted allowance). REFUNDED holds never count — a failed
+ * operation's credit was given back. Optionally scoped to one
+ * `operationType` (e.g. "how many IMAGE_GENERATION credits has this shop
+ * used this month" for a per-operation breakdown) — omitted sums across
+ * every operation type, the shop's overall usage against its plan
+ * allowance. See services/usage/entitlement.server.ts's
+ * `checkGenerationEntitlement`. */
+export async function getMonthlyCreditsUsed(shop: string, monthStart: Date, operationType?: UsageOperationType): Promise<number> {
   const result = await prisma.creditReservation.aggregate({
-    where: { shop, createdAt: { gte: monthStart }, status: { in: ["SETTLED", "RESERVED"] } },
+    where: {
+      shop,
+      createdAt: { gte: monthStart },
+      status: { in: ["CONSUMED", "RESERVED"] },
+      ...(operationType ? { operationType } : {}),
+    },
     _sum: { amount: true },
   });
   return result._sum.amount ?? 0;
 }
 
-export type { CreditReservationStatus };
+export type { CreditReservationStatus, UsageOperationType };

@@ -67,4 +67,46 @@ describe("buildIdentityConstraints", () => {
     const result = buildIdentityConstraints(FULL_ANCHORS, "   ");
     expect(result.instruction).toContain("The product is the immutable subject");
   });
+
+  describe("creative overrides (Part 2)", () => {
+    it("excludes an overridden color from the immutable list", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote", { color: "black" });
+      expect(result.immutable).not.toContain("primary color: Brown");
+      expect(result.immutable).toContain("material: Leather");
+    });
+
+    it("excludes an overridden material from the immutable list", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote", { material: "canvas" });
+      expect(result.immutable).not.toContain("material: Leather");
+      expect(result.immutable).toContain("primary color: Brown");
+    });
+
+    it("records the override structurally on `overridden`", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote", { color: "black" });
+      expect(result.overridden).toEqual({ color: "black", material: null });
+    });
+
+    it("adds an explicit 'permitted change' clause naming the override, without dropping the rest of the instruction", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote", { color: "black" });
+      expect(result.instruction).toMatch(/explicitly requested/i);
+      expect(result.instruction).toMatch(/color.*black/i);
+      expect(result.instruction).toMatch(/permitted/i);
+      // Every other protected item is still asserted.
+      expect(result.instruction).toMatch(/shape and proportions/i);
+      expect(result.instruction).toMatch(/logos/i);
+    });
+
+    it("still preserves color/material when no override is given (unchanged default behavior)", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote");
+      expect(result.overridden).toEqual({ color: null, material: null });
+      expect(result.instruction).not.toMatch(/merchant has explicitly requested/i);
+    });
+
+    it("supports both overrides at once", () => {
+      const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote", { color: "black", material: "canvas" });
+      expect(result.immutable).not.toContain("primary color: Brown");
+      expect(result.immutable).not.toContain("material: Leather");
+      expect(result.instruction).toMatch(/changes, which are permitted/i);
+    });
+  });
 });

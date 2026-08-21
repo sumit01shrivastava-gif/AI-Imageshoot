@@ -1,10 +1,10 @@
 /**
- * Usage — a minimal, merchant-facing view of this shop's usage ledger
+ * Usage — a merchant-facing view of this shop's usage ledger
  * (services/usage/usage-accounting.server.ts, docs/usage.md). Shows
- * current-period activity counts and recent events. Deliberately NOT a
- * billing page: no monetary values are shown or invented (see CLAUDE.md
- * "Current phase" — no pricing/credits/billing exists yet), and the page
- * says so explicitly rather than implying one is coming.
+ * current-period activity counts and recent events — the raw operation
+ * log. Credit balances/plan/billing status live on the companion
+ * /app/billing page (services/billing/, services/usage/entitlement.server.ts)
+ * rather than being duplicated here; this page links there instead.
  */
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useSearchParams } from "react-router";
@@ -61,10 +61,10 @@ export default function Usage() {
     <s-page heading="Usage">
       <s-section heading={`This period — ${formatPeriodLabel(overview.since)}`}>
         <s-stack direction="block" gap="base">
-          <s-text color="subdued">
-            A record of AI operations this shop has run — not a bill. No charges are applied and no pricing is configured
-            yet.
-          </s-text>
+          <s-stack direction="inline" gap="small-200" alignItems="center">
+            <s-text color="subdued">A record of every AI operation this shop has run.</s-text>
+            <s-link href="/app/billing">View plan, credits &amp; billing</s-link>
+          </s-stack>
 
           <s-grid gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))" gap="base">
             {(Object.keys(OPERATION_LABEL) as UsageOperationType[]).map((type) => {

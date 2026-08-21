@@ -83,6 +83,34 @@ const PRESERVE_PATTERN = /\bdon'?t (change|alter|modify)\b.{0,15}\bproduct\b/i;
 
 const ORDINAL_PATTERN = /\b(first|second|third|fourth|last|previous)\b(?:\s+(?:one|version|option|result|variation))?/i;
 
+// Creative-override extraction (Part 2) — deliberately narrow, named
+// patterns, not a general free-text capture: "make the bottle black" /
+// "make it red" → color override; "make it out of/from/in wood" →
+// material override. See intent-schema.ts's `attributeOverrides` doc
+// comment for why this stays a small structured field set.
+const COLOR_WORDS = [
+  "black",
+  "white",
+  "red",
+  "blue",
+  "green",
+  "yellow",
+  "pink",
+  "purple",
+  "orange",
+  "brown",
+  "gray",
+  "grey",
+  "gold",
+  "silver",
+  "beige",
+  "navy",
+  "cream",
+  "ivory",
+];
+const COLOR_OVERRIDE_PATTERN = new RegExp(`\\bmake\\s+(?:it|the\\s+[a-z]+)\\s+(${COLOR_WORDS.join("|")})\\b`, "i");
+const MATERIAL_OVERRIDE_PATTERN = /\bmake\s+(?:it|the\s+[a-z]+)\s+(?:out of|from|in)\s+([a-z][a-z\s]{2,30}?)(?=[.,!]|$)/i;
+
 function extractVariationCount(message: string): number | null {
   const explicitDigit = message.match(/\b(\d+)\s+(?:variations?|options?|alternatives?|versions?)\b/i);
   if (explicitDigit) {
@@ -161,6 +189,15 @@ function extractTargetResultReference(message: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
+function extractAttributeOverrides(message: string): { color: string | null; material: string | null } {
+  const colorMatch = COLOR_OVERRIDE_PATTERN.exec(message);
+  const materialMatch = MATERIAL_OVERRIDE_PATTERN.exec(message);
+  return {
+    color: colorMatch ? colorMatch[1].toLowerCase() : null,
+    material: materialMatch ? materialMatch[1].trim().toLowerCase() : null,
+  };
+}
+
 /**
  * Scores every candidate intent against the message and picks the
  * highest-scoring one — a simple, transparent, and testable rule table
@@ -179,7 +216,7 @@ function classifyIntent(message: string, hasExplicitVariationCount: boolean, has
     ["CREATE_BANNER", /\bbanner\b/i.test(lower)],
     ["CREATE_SOCIAL", /\b(instagram|tiktok|social media|social post)\b/i.test(lower)],
     ["CREATE_MARKETPLACE", /\b(amazon|marketplace|white background|ecommerce listing|product listing)\b/i.test(lower)],
-    ["CHANGE_COLOR", /\bcolou?r\b/i.test(lower) && /\b(change|make it|different)\b/i.test(lower)],
+    ["CHANGE_COLOR", COLOR_OVERRIDE_PATTERN.test(message) || (/\bcolou?r\b/i.test(lower) && /\b(change|make it|different)\b/i.test(lower))],
     ["CHANGE_LIGHTING", LIGHTING_PATTERN.test(message) || BRIGHTER_PATTERN.test(message) || DARKER_PATTERN.test(message)],
     ["CHANGE_CAMERA", CAMERA_PATTERN.test(message) && /\b(angle|camera|shot|zoom)\b/i.test(lower)],
     ["CHANGE_COMPOSITION", /\b(composition|crop|frame|layout|centered)\b/i.test(lower)],
@@ -262,6 +299,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
     const removeElements = extractRemoveElements(message);
     const preserveHints = extractPreserveHints(message);
     const targetResultReference = extractTargetResultReference(message);
+    const attributeOverrides = extractAttributeOverrides(message);
 
     return {
       intent,
@@ -277,6 +315,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
       variationCount,
       targetResultReference,
       preserveHints,
+      attributeOverrides,
       changeSummary: buildChangeSummary(intent, { scene, style, lighting, addElements, removeElements, variationCount }),
       confidence: 1,
     };

@@ -138,10 +138,20 @@ test.beforeAll(async () => {
     new Promise<void>((resolve) => storeVisualWorker!.on("ready", () => resolve())),
     new Promise<void>((resolve) => publishingWorker!.on("ready", () => resolve())),
   ]);
+
+  // STORE_VISUAL_GENERATION is plan-gated (FREE doesn't include it —
+  // see services/billing/plans.ts); this spec exercises publishing, not
+  // billing, so the shop needs a plan that does.
+  await prisma.shopSubscription.upsert({
+    where: { shop: TEST_SHOP },
+    create: { shop: TEST_SHOP, planId: "STARTER", status: "ACTIVE" },
+    update: { planId: "STARTER", status: "ACTIVE" },
+  });
 });
 
 test.afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: TEST_SHOP } });
   await generationWorker?.close();
   await storeVisualWorker?.close();
   await publishingWorker?.close();

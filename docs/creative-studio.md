@@ -142,14 +142,32 @@ itself is unaffected by this — it still goes through the unchanged
 "Image generation isn't configured for this store yet" when no vendor is
 set, exactly like every other generationType already does.
 
-**Honest limitation**: this is not a real language model. It correctly
-categorizes common, plainly-worded ecommerce photography requests via
-keyword/pattern matching (see the classifier's rule table in that file);
-it does not understand novel phrasing, negation nuance, or genuinely
-ambiguous instructions the way a real LLM-backed `IntentParsingProvider`
-would. A future real implementation is a drop-in replacement
-(`services/creative-studio/provider.server.ts`'s resolver) — no call
-site elsewhere changes.
+**Honest limitation of the heuristic parser itself**: it is not a real
+language model. It correctly categorizes common, plainly-worded
+ecommerce photography requests via keyword/pattern matching (see the
+classifier's rule table in that file); it does not understand novel
+phrasing, negation nuance, or genuinely ambiguous instructions the way a
+real LLM-backed `IntentParsingProvider` does.
+
+**A real-LLM implementation now exists** —
+`services/ai/production-intent-parser.server.ts`'s
+`ProductionIntentParsingProvider`, following the same "no vendor SDK
+installed, a documented JSON contract instead" approach as
+`production-image-generation-provider.server.ts`
+(`POST {AI_PROVIDER_BASE_URL}/v1/intent/parse`, reusing the same
+`AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY`/`AI_PROVIDER_MODEL` env vars
+— intent parsing is a capability of the same configured provider, not a
+second vendor). `services/creative-studio/provider.server.ts`'s resolver
+selects it — wrapped in `FallbackIntentParser`, which falls back to the
+heuristic parser on ANY failure (network, timeout, malformed output) so
+the conversational feature never goes down because a real LLM endpoint
+is having a bad day — whenever those env vars are configured; the
+heuristic parser remains the deterministic default (and the only thing
+tests ever exercise, since tests never set those vars — see CLAUDE.md
+"Never make a real AI API call from a test"). This satisfies Part 3's
+"introduce a provider abstraction for intent understanding that can use
+a real LLM when configured, while retaining the deterministic/heuristic
+implementation as a fallback."
 
 ## Creative context (Part 8)
 
@@ -215,6 +233,35 @@ The synthesized prompt always appends `identityConstraints.instruction`
 shape/packaging/logos/labels/material/color..." sentence built from the
 real anchors, never invented.
 
+### Creative overrides — explicit, structured exceptions (Part 2)
+
+"Make the bottle black" is a deliberate exception to identity
+preservation, not a violation of it: the merchant explicitly asked for
+one specific, non-critical attribute (color, or material) to change.
+This is handled structurally, never by string-editing the
+`identityConstraints.instruction` sentence after the fact:
+
+- `ParsedIntent.attributeOverrides: { color, material }`
+  (`services/creative-studio/intent-schema.ts`) — a narrow, named field
+  set, populated by the intent parser (the heuristic parser recognizes
+  "make the X black"/"make it out of wood"-shaped phrasing;
+  `services/ai/heuristic-intent-parser.ts`'s `extractAttributeOverrides`).
+- `buildIdentityConstraints(anchors, productName, overrides)`
+  (`services/creative-studio/identity-constraints.ts`) EXCLUDES an
+  overridden attribute from the `immutable` list and appends an explicit
+  "The merchant has explicitly requested the following change, which is
+  permitted: color → black. Every other aspect of the product must
+  remain exactly as shown." clause — naming exactly what changed, never
+  silently dropping the color/material line and leaving the reader to
+  guess why.
+- `plan-builder.ts`'s `synthesizeCreativePrompt` also folds the override
+  into the visible prompt text itself ("...the handbag recolored to
+  black..."), not just the identity-constraints sentence.
+
+Every OTHER anchor (shape, construction, hardware, branding) stays fully
+immutable regardless of an override — only the two explicitly-named,
+explicitly-requested fields are ever exempted.
+
 ## Image-to-image flow (Part 5)
 
 `GenerateImageInput` (`services/ai/types.ts`) gained two small, additive
@@ -264,49 +311,54 @@ The one deliberate extension point in the shared primitive
   this to reserve credits; every other generationType passes nothing and
   is completely unaffected.
 
-## Credit lifecycle (Part 9)
+## Credit lifecycle (Part 9, superseded/completed — see docs/usage.md and docs/billing.md)
 
-`services/usage/entitlement.server.ts`, backed by a dedicated
-`CreditReservation` table — deliberately separate from
+**This section originally described a flat, plan-less "development
+credit allowance." A real plan/subscription/billing system now exists —
+see docs/usage.md (entitlement, credit costs, the reserve/settle/refund
+lifecycle in full detail) and docs/billing.md (plans, Shopify Billing
+integration, `/app/billing`).** What follows is a short pointer, kept
+here so this document's own "Credit lifecycle" heading still resolves to
+something useful.
+
+`services/usage/entitlement.server.ts`, backed by `CreditReservation`
+(now with an `operationType` column shared across all four billable
+domains, not Creative-Studio-specific) — deliberately separate from
 `services/usage/usage-accounting.server.ts`'s `UsageEvent` audit ledger
 (that's a record of what already happened; this is a live gate on what's
-allowed to happen next, with a genuine third, pre-resolution state
-`RESERVED` a request passes through before a job even exists).
+allowed to happen next):
 
 ```
-checkGenerationEntitlement(context, requiredCredits)
-  → { allowed, limit, used, available, required }
-      (limit: DevelopmentEntitlementProvider's flat monthly allowance —
-       CREATIVE_STUDIO_MONTHLY_CREDITS, default 200; used: SETTLED +
-       still-outstanding RESERVED holds this calendar month)
+checkGenerationEntitlement(context, requiredCredits)   — IMAGE_GENERATION-specific wrapper
+  → { allowed, limit, used, available, required, operationType, reason? }
+      (limit: the shop's real resolved plan — services/billing/plans.ts,
+       via ShopSubscription; used: CONSUMED + still-outstanding RESERVED
+       holds this calendar month)
 reserveGenerationCredits(context, jobId, amount)
   → idempotent upsert on jobId (CreditReservation.jobId is @unique) —
     a retried/duplicate reservation for the same job is a safe no-op
-settleGenerationCredits(context, jobId)   — called on SUCCEEDED
-refundGenerationCredits(context, jobId)   — called on FAILED (final attempt)
-    both: a conditional UPDATE (status: "RESERVED" in the WHERE) — calling
-    either twice, or when no reservation exists at all, safely affects
-    zero rows
+settleGenerationCredits(context, jobId)   — called on SUCCEEDED (RESERVED → CONSUMED)
+refundGenerationCredits(context, jobId)   — called on FAILED, final attempt (RESERVED → REFUNDED)
 ```
 
-**"Development" is in the name deliberately** — no subscription/billing
-plan exists yet (explicitly out of scope this pass; see CLAUDE.md), so
-every shop gets one clearly-labeled, generous flat allowance instead of
-being blocked outright. Never presented to a merchant as a real plan or
-invented currency (Part 7) — the UI shows "N of M credits available this
-month (development allowance)."
+Cost is now mode-aware — an IMAGE_TO_IMAGE/IMAGE_EDIT request costs more
+per output than a fresh TEXT_TO_IMAGE one (`services/usage/credit-costs.ts`,
+docs/usage.md "Credit cost rule") — rather than a flat 1 credit per
+request.
 
-Only Creative Studio's own generation path is credit-aware — every
-pre-existing generationType (PRODUCT_CLEANUP, LIFESTYLE, BANNER, ...)
-is completely unaffected; retrofitting credit enforcement onto those
-would be scope creep beyond what this pass asked for.
+**Every generationType is now credit-gated**, not just Creative Studio:
+`services/generation/request-generation.server.ts`'s shared
+`createAndEnqueueGenerationJob` primitive checks/reserves for every
+generationType EXCEPT when `creativeSessionId` is set (Creative Studio
+already reserved its own credits earlier, before writing any chat
+message — reserving again here would double-charge it). See docs/usage.md's
+domain table for the complete picture across all four operation types.
 
-**Known limitation**: `checkGenerationEntitlement` and
-`reserveGenerationCredits` are two distinct, sequential calls, not one
-atomic operation — a narrow race between them (two concurrent requests
-both passing the check before either reserves) is an accepted limitation
-of this development-only entitlement provider, not hardened against
-here.
+**Known limitation** (unchanged): `checkEntitlement`/`checkGenerationEntitlement`
+and `reserveCredits`/`reserveGenerationCredits` are two distinct,
+sequential calls, not one atomic operation — a narrow race between them
+is an accepted limitation, documented in docs/usage.md "Known
+limitations".
 
 ## Generation status (Part 10)
 
@@ -435,16 +487,17 @@ editing" absent for a fully generic store visual).
   runs through the deterministic test provider in this environment —
   the Creative Studio inherits this unchanged from every other
   generationType.
-- **Intent parsing is heuristic, not a real language model** — see
-  "Intent model"'s honest-limitation note above.
+- **Intent parsing defaults to heuristic** unless a real LLM endpoint is
+  configured (`AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY`) — see "Intent
+  model" above for the now-real `ProductionIntentParsingProvider`.
 - **Identity validation remains non-semantic** — `recordIdentityValidation`
   (reused unchanged from Phase 5) returns an honest "not yet possible
   without a vision-capable provider" result, not a real check.
-- **No real billing/subscription plan** — the credit allowance is one
-  flat, shop-independent development default; real per-plan enforcement
-  is explicitly future work.
-- **Entitlement check-then-reserve is not atomic** — see "Credit
-  lifecycle"'s known limitation.
+- **A real subscription/billing/credit-cost system now exists** — see
+  docs/usage.md and docs/billing.md; this document's "Credit lifecycle"
+  section above is a pointer to it, not a duplicate description.
+- **Entitlement check-then-reserve is not atomic** — see docs/usage.md's
+  "Known limitations".
 - **A job-row-read failure specifically (not a provider/upload/persist
   failure) can leave a credit reservation stuck RESERVED forever** — if
   `services/generation/job.server.ts` can't even read the job row it was
@@ -453,6 +506,13 @@ editing" absent for a fully generic store visual).
   future cleanup pass (a scheduled sweep of long-outstanding RESERVED
   rows) would close this; not built here since it wasn't observed as a
   real occurrence.
-- **No masks, no multiple simultaneous reference images beyond one prior
-  result** — `GenerateImageInput.referenceImages` supports the shape,
-  but nothing in this pass constructs more than one entry.
+- **No masks; only one reference image is actually constructed today**
+  — `production-image-generation-provider.server.ts` now genuinely
+  supports sending multiple reference images (`images[]` in the edits
+  contract — see docs/ai-pipeline.md), but
+  `services/creative-studio/plan-builder.ts` only ever populates
+  `referenceImages` with a single entry (the prior result being edited
+  forward from). Multi-reference conditioning (e.g. "use the second
+  image as reference" alongside the current one) is a real capability
+  the provider layer is ready for; the plan-building layer doesn't yet
+  construct that request.

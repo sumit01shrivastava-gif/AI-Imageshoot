@@ -1286,7 +1286,7 @@ model CreativeMessage {
 
 enum CreditReservationStatus {
   RESERVED
-  SETTLED
+  CONSUMED
   REFUNDED
 }
 
@@ -1315,6 +1315,11 @@ model CreditReservation {
   // lifecycle".
   jobId String @unique
 
+  // Which billable capability this hold is for — see
+  // services/usage/credit-costs.ts's `getCreditCost`. Reuses the exact
+  // same enum UsageEvent already uses (no parallel taxonomy).
+  operationType UsageOperationType
+
   amount Int                     @default(1)
   status CreditReservationStatus @default(RESERVED)
 
@@ -1323,4 +1328,106 @@ model CreditReservation {
 
   @@index([shop, status])
   @@index([shop, createdAt])
+  @@index([shop, operationType])
+}
+
+// ---------------------------------------------------------------------------
+// Billing / subscriptions — see services/billing/ and docs/billing.md.
+// ---------------------------------------------------------------------------
+
+// Plan DEFINITIONS (monthly credits, resolution/output limits, feature
+// gates) are code constants (services/billing/plans.ts), not rows — the
+// same "a small, versioned-in-code catalog, not merchant-editable data"
+// call this schema already made for the 6 built-in brand style presets
+// (services/generation/brand-style-presets.ts) and category
+// recommendations. This enum is just the stable identifier a
+// ShopSubscription points at.
+enum PlanId {
+  FREE
+  STARTER
+  PRO
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  // Shopify's own AppSubscription.status vocabulary
+  // (https://shopify.dev/docs/api/admin-graphql/latest/enums/AppSubscriptionStatus),
+  // reused directly rather than inventing a parallel one — see
+  // services/billing/shopify-billing-provider.server.ts.
+  PENDING
+  ACTIVE
+  CANCELLED
+  DECLINED
+  EXPIRED
+  FROZEN
+}
+
+// One row per shop — the shop's current plan/subscription state. Absence
+// of a row means FREE (services/billing/plans.ts's default) — no need to
+// backfill every shop with an explicit FREE row the moment it installs.
+model ShopSubscription {
+  id String @id @default(cuid())
+
+  shop String @unique
+
+  planId PlanId             @default(FREE)
+  status SubscriptionStatus @default(ACTIVE)
+
+  // Shopify's own AppSubscription GID
+  // ("gid://shopify/AppSubscription/...") — null until a real
+  // subscription is created via the Shopify Billing API (see
+  // docs/billing.md "Provider decision" for why Shopify Billing, not a
+  // third-party processor, is the correct mechanism for a Shopify
+  // embedded app).
+  shopifySubscriptionId String?
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([shopifySubscriptionId])
+}
+
+enum BillingEventType {
+  SUBSCRIPTION_REQUESTED
+  SUBSCRIPTION_ACTIVATED
+  SUBSCRIPTION_CANCELLED
+  SUBSCRIPTION_DECLINED
+  SUBSCRIPTION_EXPIRED
+  PLAN_CHANGED
+  WEBHOOK_RECEIVED
+}
+
+// Idempotent audit trail for every billing-related event — both
+// merchant-initiated actions (requesting/cancelling a subscription) and
+// Shopify webhook deliveries (`app_subscriptions/update`). See
+// docs/billing.md "Idempotency" — `idempotencyKey` is what makes a
+// redelivered webhook (or a merchant double-clicking "Upgrade") a safe
+// no-op rather than a duplicate plan change.
+model BillingEvent {
+  id String @id @default(cuid())
+
+  shop String
+
+  type                  BillingEventType
+  shopifySubscriptionId String?
+  fromPlanId            PlanId?
+  toPlanId              PlanId?
+
+  // "{type}:{shopifySubscriptionId or shop}:{a stable discriminator}" —
+  // see services/billing/subscription.server.ts for the exact
+  // construction per event type.
+  idempotencyKey String @unique
+
+  // Free-form, non-secret detail (e.g. the webhook's own reported
+  // status) — never raw request headers, signatures, or credentials.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, createdAt])
+  @@index([shop, type])
 }

@@ -29,6 +29,7 @@ import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { GeneratedImageOutput } from "../ai/types";
 import type { StoreVisualPlan } from "./schema";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
+import { settleReservation, refundReservation } from "../../db/repositories/credit-reservation.repository";
 
 /** See services/generation/job.server.ts's identical helper — records
  * this job's terminal outcome onto the usage ledger; a ledger write
@@ -248,6 +249,13 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
       outputCount: storedResults.length,
       durationMs,
     });
+    await settleReservation(shop, storeVisualJobId).catch((settleError: unknown) =>
+      logger.warn("store_visual.job.credit_resolution_failed", {
+        shop,
+        storeVisualJobId,
+        detail: settleError instanceof Error ? settleError.message : "unknown error",
+      }),
+    );
 
     logger.info("store_visual.job.completed", {
       shop,
@@ -278,6 +286,13 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
             : GENERIC_FAILURE_MESSAGE;
       await markFailed(shop, storeVisualJobId, { message, durationMs });
       await recordStoreVisualUsage(shop, storeVisualJobId, "FAILED", { durationMs });
+      await refundReservation(shop, storeVisualJobId).catch((refundError: unknown) =>
+        logger.warn("store_visual.job.credit_resolution_failed", {
+          shop,
+          storeVisualJobId,
+          detail: refundError instanceof Error ? refundError.message : "unknown error",
+        }),
+      );
     }
 
     throw error;

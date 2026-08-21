@@ -30,6 +30,10 @@ import { resolveBrandStylePreset } from "../generation/brand-style-preset.server
 import { enqueueStoreVisualJob } from "./queue.server";
 import { StoreVisualTypeSchema, AspectRatioSchema } from "./schema";
 import type { AspectRatioValue } from "./types";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { getCreditCost } from "../usage/credit-costs";
+
+export { InsufficientCreditsError };
 
 export class InvalidStoreVisualRequestError extends Error {
   constructor(message: string) {
@@ -126,12 +130,24 @@ export async function requestStoreVisual(
     aspectRatioOverride,
   });
 
+  // Checked BEFORE creating the job row — see
+  // services/processing/request-processing.server.ts's identical
+  // reasoning (Part 9: a request that will be denied must never reach
+  // the queue).
+  const requiredCredits = getCreditCost({ operationType: "STORE_VISUAL_GENERATION", outputCount: plan.outputCount });
+  const entitlement = await checkEntitlement(context, "STORE_VISUAL_GENERATION", requiredCredits);
+  if (!entitlement.allowed) {
+    throw new InsufficientCreditsError(entitlement);
+  }
+
   const job = await createStoreVisualJob({
     shop: context.shop,
     type: typeResult.data as StoreVisualType,
     plan,
     productIds: products.map((p) => p.product.id),
   });
+
+  await reserveCredits(context, job.id, "STORE_VISUAL_GENERATION", requiredCredits);
 
   await markQueued(context.shop, job.id);
   await enqueueStoreVisualJob({ shop: context.shop, storeVisualJobId: job.id });

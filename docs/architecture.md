@@ -94,11 +94,22 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   `GenerationPlan` with `generationType: "CREATIVE_STUDIO"` — the SAME
   `GenerationJob`/`GenerationResult` pipeline every other generationType
   already uses, not a second one. See docs/creative-studio.md.
-- **`services/usage/entitlement.server.ts`** (Creative Studio pass) — the
-  reserve/settle/refund generation-credit lifecycle
-  (`CreditReservation`), separate from `services/usage/usage-accounting.server.ts`'s
-  audit ledger. Only Creative Studio's own generation path is
-  credit-aware today.
+- **`services/usage/entitlement.server.ts`** — the reserve/settle/refund
+  credit lifecycle (`CreditReservation`, now `operationType`-aware),
+  separate from `services/usage/usage-accounting.server.ts`'s audit
+  ledger. Every billable operation across all four domains (product
+  analysis, image generation, image processing, store visual generation)
+  is credit-gated — see docs/usage.md. `getPlan`/`canUseOperation`/
+  `getRemainingCredits` resolve a shop's real plan via
+  `services/billing/`.
+- **`services/billing/`** (commercial-readiness pass) — the
+  subscription-plan domain: `plans.ts` (FREE/STARTER/PRO/BUSINESS code
+  -constant catalog), `shopify-billing-provider.server.ts` (the second
+  file in this codebase allowed to define a GraphQL mutation —
+  `appSubscriptionCreate`/`appSubscriptionCancel`, gated by Partners
+  billing config, not `access_scopes`), `subscription.server.ts`
+  (orchestration + `ShopSubscription`/`BillingEvent` persistence). See
+  docs/billing.md.
 - **`services/assets/`** (completion pass) — the shop-wide AI Assets
   library: merges `GenerationResult`/`ProcessingResult`/`StoreVisualResult`
   into one normalized, filterable, paginated, newest-first list. No new
@@ -215,9 +226,29 @@ conversational image creation/editing workspace
 structured intent by a real (heuristic, not-yet-AI) default parser, image
 -to-image follow-ups, multiple variations per turn, and a credit
 reserve/settle/refund foundation (`services/usage/entitlement.server.ts`).
-Generation itself still runs only through the deterministic test
+Generation itself still ran only through the deterministic test
 provider — no real image-generation vendor installed, and no real
-subscription/billing plan exists (the credit allowance is one flat,
-clearly-labeled development default). Still no homepage/collection
-banners or campaign generation, and still no credits/billing/subscription
-enforcement beyond that one development allowance.
+subscription/billing plan existed (the credit allowance was one flat,
+clearly-labeled development default).
+
+**The commercial-readiness pass** (see docs/usage.md, docs/billing.md)
+closed most of that gap: a real, testable
+`ProductionImageGenerationProvider` HTTP client (text-to-image AND
+image-to-image/editing, mode-aware model selection), a real-LLM
+`IntentParsingProvider` with heuristic fallback, a structured
+"creative-override" mechanism for explicit non-critical-attribute
+changes, a real per-operation credit-cost table replacing the flat
+1-credit guess, credit gating extended to ALL FOUR billable domains (not
+just Creative Studio), a real `services/billing/` subscription-plan
+domain (FREE/STARTER/PRO/BUSINESS) backed by the Shopify Billing API
+(`appSubscriptionCreate`/`appSubscriptionCancel`, no new OAuth scope),
+and `/app/billing`. No specific commercial AI vendor is still named or
+credentialed anywhere in this repository — the HTTP clients are real and
+working against documented, vendor-agnostic contracts, but no live
+vendor account exists in this environment, so generation/intent-parsing
+still run through the deterministic/heuristic providers in practice.
+Still no homepage/collection banners or campaign generation, still no
+Shopify product-media publishing (`write_products` deliberately not
+requested), and per-plan resolution/output-count/batch-size limits are
+cataloged policy not yet enforced by a request-side clamp (see
+docs/billing.md "Known limitations").

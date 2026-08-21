@@ -28,6 +28,7 @@ export default function App() {
         <s-link href="/app/presets">Brand Styles</s-link>
         <s-link href="/app/publishing">Publishing</s-link>
         <s-link href="/app/usage">Usage</s-link>
+        <s-link href="/app/billing">Billing</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

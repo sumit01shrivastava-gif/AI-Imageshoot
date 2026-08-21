@@ -76,6 +76,19 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => worker!.on("ready", () => resolve()));
 
   await cleanup();
+
+  // STORE_VISUAL_GENERATION is a plan-gated operation (FREE doesn't
+  // include it — see services/billing/plans.ts); both test shops need a
+  // real plan that does, since this suite exercises store visuals
+  // directly, not billing itself. Seeded once, outside `cleanup()`'s
+  // per-test deletions — removed in `afterAll` instead.
+  for (const shop of [SHOP, OTHER_SHOP]) {
+    await prisma.shopSubscription.upsert({
+      where: { shop },
+      create: { shop, planId: "STARTER", status: "ACTIVE" },
+      update: { planId: "STARTER", status: "ACTIVE" },
+    });
+  }
 });
 
 afterEach(async () => {
@@ -85,6 +98,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: { in: [SHOP, OTHER_SHOP] } } });
   await worker?.close();
   await closeRedisConnection();
   await prisma.$disconnect();

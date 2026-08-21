@@ -20,8 +20,92 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Creative Studio pass — complete** (see docs/creative-studio.md for
-full detail; this section summarizes the history leading up to it).
+**Commercial-readiness pass — complete** (see docs/usage.md and
+docs/billing.md for full detail; this section summarizes the history
+leading up to it, including the Creative Studio pass this one builds
+directly on). After this pass, what remains before commercial launch is
+narrowly: Shopify product-media publishing authorization
+(`write_products` scope — deliberately still not requested),
+billing-provider *final* configuration (real Partners/Dev Dashboard
+pricing setup — the Shopify Billing API integration itself is real and
+working), Shopify App Store submission, and production deployment — not
+another round of architectural foundations. **One new Prisma migration**
+(`add_billing_and_credit_costs` — `ShopSubscription`/`BillingEvent`
+models, two new enums (`PlanId`/`SubscriptionStatus`/`BillingEventType`),
+`CreditReservation.operationType` added, `CreditReservationStatus.SETTLED`
+renamed to `CONSUMED`; every other model unchanged):
+
+- **Real image generation provider, extended for editing** —
+  `services/ai/production-image-generation-provider.server.ts` (already
+  existed from the Creative Studio pass for text-to-image) now also
+  speaks an image-to-image/editing contract
+  (`POST {baseUrl}/v1/images/edits`, reference images fetched and
+  base64-encoded as `image`/`images[]`) selected automatically by
+  `GenerateImageInput.mode`, with mode-specific model selection
+  (`AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`, both falling back
+  to `AI_PROVIDER_MODEL`). Still no live vendor account configured in
+  this environment — see docs/ai-pipeline.md.
+- **Structured prompt composition + creative overrides** —
+  `services/creative-studio/plan-builder.ts` already separated product
+  facts / creative direction / identity constraints (built during the
+  Creative Studio pass); this pass added the explicit "creative
+  override" mechanism Part 2 asked for: `ParsedIntent.attributeOverrides`
+  (color/material), extracted by the heuristic parser, structurally
+  excluded from `identityConstraints.immutable` and called out in an
+  explicit "this change is permitted" clause — never fragile string
+  replacement. See docs/creative-studio.md "Creative overrides".
+- **Real-LLM intent parsing, heuristic as fallback** —
+  `services/ai/production-intent-parser.server.ts`'s
+  `ProductionIntentParsingProvider`, selected by
+  `services/creative-studio/provider.server.ts` whenever
+  `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` are configured, wrapped in
+  a `FallbackIntentParser` that falls back to the heuristic parser on any
+  failure. Tests never configure those vars, so they always exercise the
+  deterministic heuristic parser.
+- **Real credit-cost accounting** — `services/usage/credit-costs.ts`'s
+  `getCreditCost` (mode-aware for `IMAGE_GENERATION`, flat for the other
+  three operation types) replaces the flat 1-credit-per-request guess.
+  Credit gating now covers **every billable domain**, not just Creative
+  Studio: `services/generation/request-generation.server.ts` (every
+  generationType), `services/processing/request-processing.server.ts`,
+  `services/store-visuals/request-store-visual.server.ts`, and
+  `services/intelligence/product-intelligence.server.ts` (with a
+  synthetic per-request reservation id, since that domain's queue
+  collapses duplicate in-flight requests onto one deterministic job id —
+  see docs/usage.md "Idempotency"). See docs/usage.md.
+- **A real subscription-plan domain** — `services/billing/plans.ts`
+  (FREE/STARTER/PRO/BUSINESS, code constants, same "small
+  versioned-in-code catalog" call as brand style presets), backed by the
+  **Shopify Billing API** (`appSubscriptionCreate`/`appSubscriptionCancel`
+  via `services/billing/shopify-billing-provider.server.ts` — gated by
+  Partners billing config, not `access_scopes`, so this requests **no
+  new OAuth scope**), `ShopSubscription`/`BillingEvent` persistence with
+  idempotent webhook handling (`app/routes/webhooks.app_subscriptions.update.tsx`),
+  and a new `/app/billing` page (nav: **Billing**). See docs/billing.md
+  for the full provider-decision writeup.
+- **Every plan/credit number is resolved and enforced server-side** —
+  `services/usage/entitlement.server.ts`'s `getPlan`/`canUseOperation`/
+  `getRemainingCredits`/`checkEntitlement`/`reserveCredits` — never
+  trusted from client input.
+
+**No specific commercial AI vendor is installed or credentialed
+anywhere in this repository** — the HTTP clients built this pass
+(`ProductionImageGenerationProvider`'s editing support,
+`ProductionIntentParsingProvider`) are real and working against
+documented, vendor-agnostic JSON contracts, but with no live vendor
+account configured, generation and intent parsing still run through the
+deterministic/heuristic providers in practice; MODEL_SHOOT never
+produces a real depiction of a person. Identity validation remains
+non-semantic. No Shopify publishing beyond the existing, deliberately
+scope-gated foundation. Per-plan resolution/output-count/batch-size
+limits (`PlanDefinition`) are cataloged policy, not yet enforced by a
+request-side clamp — see docs/billing.md "Known limitations".
+`services/processing/` domain logic (Phase 4) was not modified beyond
+credit-gating its request entry point the same way every other domain
+was.
+
+### History leading up to this pass
+
 Phases 0–7
 (foundation; Shopify catalog sync; Product Intelligence; the
 image-generation foundation; production image processing; lifestyle
@@ -231,11 +315,19 @@ services/
                        success. See docs/publishing.md
   usage/              Usage/credit tracking — usage-accounting.server.ts
                        (an audit ledger, every domain's operations) and
-                       entitlement.server.ts (the Creative Studio's
-                       reserve/settle/refund credit lifecycle, one flat
-                       development allowance — no real billing plan
-                       exists yet). See docs/usage.md and
-                       docs/creative-studio.md "Credit lifecycle"
+                       entitlement.server.ts (the reserve/settle/refund
+                       credit lifecycle, now covering every billable
+                       domain, resolved against a shop's real plan via
+                       services/billing/). credit-costs.ts holds the
+                       per-operation-type/mode cost table. See
+                       docs/usage.md
+  billing/            Subscription-plan domain — plans.ts (FREE/STARTER/
+                       PRO/BUSINESS code constants), the Shopify Billing
+                       API integration (shopify-billing-provider.server.ts
+                       — appSubscriptionCreate/appSubscriptionCancel, no
+                       new OAuth scope), and subscription.server.ts
+                       (ShopSubscription/BillingEvent orchestration). See
+                       docs/billing.md
 
 db/
   client.server.ts    Prisma client singleton (canonical — app/db.server.ts re-exports it)
@@ -764,3 +856,77 @@ subscriptions/plan enforcement (the Creative Studio's credit reservation
 is real, but gates against one flat development allowance, not an
 actual paid plan). Publishing exists but is not live (`write_products`
 not requested). See docs/roadmap.md.
+
+Commercial-readiness pass — complete, **one new Prisma migration**
+(`add_billing_and_credit_costs`):
+
+- [x] `ProductionImageGenerationProvider` extended for image-to-image/
+      editing: a second request shape (`/v1/images/edits`, reference
+      images fetched and base64-encoded as `image`/`images[]`) selected
+      by `GenerateImageInput.mode`; mode-specific model selection
+      (`AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`, falling back to
+      `AI_PROVIDER_MODEL`)
+- [x] Structured creative-override mechanism (Part 2):
+      `ParsedIntent.attributeOverrides` (color/material), extracted by
+      the heuristic parser, structurally excluded from
+      `identityConstraints.immutable` with an explicit "this change is
+      permitted" clause — see docs/creative-studio.md "Creative
+      overrides"
+- [x] `services/ai/production-intent-parser.server.ts`'s
+      `ProductionIntentParsingProvider` — a real-LLM
+      `IntentParsingProvider`, selected when `AI_PROVIDER_BASE_URL`/
+      `AI_PROVIDER_API_KEY` are configured, wrapped in
+      `FallbackIntentParser` (falls back to the heuristic parser on any
+      failure); tests always exercise the heuristic parser
+- [x] `services/usage/credit-costs.ts`'s `getCreditCost` — a real,
+      documented per-operation-type/mode cost table (mode-aware for
+      IMAGE_GENERATION), replacing the flat 1-credit guess
+- [x] Credit gating extended from Creative-Studio-only to **every
+      billable domain** — generation (every generationType, via
+      `request-generation.server.ts`'s shared primitive), processing,
+      store visuals, and product analysis (with a synthetic per-request
+      reservation id for that domain's collapsed-duplicate queue
+      semantics) — see docs/usage.md
+- [x] `CreditReservation.operationType` added;
+      `CreditReservationStatus.SETTLED` renamed to `CONSUMED`
+      (documented REQUESTED/RESERVED/CONSUMED/REFUNDED/FAILED mapping —
+      docs/usage.md "Requested vocabulary vs. what's actually
+      persisted")
+- [x] `services/billing/` — `plans.ts` (FREE/STARTER/PRO/BUSINESS code
+      constants), `shopify-billing-provider.server.ts` (real
+      `appSubscriptionCreate`/`appSubscriptionCancel`/
+      `currentAppInstallation.activeSubscriptions` calls, no new OAuth
+      scope — see docs/billing.md "Provider decision"),
+      `subscription.server.ts` (orchestration, idempotent `BillingEvent`
+      recording); `ShopSubscription`/`BillingEvent` Prisma models;
+      `app_subscriptions/update` webhook
+      (`app/routes/webhooks.app_subscriptions.update.tsx`)
+- [x] `/app/billing` (nav: **Billing**) — current plan/status/credits/
+      renewal, Upgrade/Downgrade grid, Cancel-to-Free; every number
+      resolved server-side
+- [x] `tests/unit/shopify-scope-safety.test.ts` extended to allowlist
+      the billing provider's two mutations and confirm they still
+      request no new scope
+- [x] Full test coverage: unit (credit costs, plan catalog, entitlement
+      plan-gating, Shopify billing provider calls, intent-parser
+      fallback, creative-override extraction/application), integration
+      (real Postgres — subscription request/cancel/webhook-sync
+      idempotency, credit reservation across all four domains, tenant
+      isolation), route-level (`/app/billing` loader/action), and the
+      full existing E2E suite re-verified green under the new
+      credit-gating (test fixtures across generation/processing/store
+      -visuals/publishing specs seeded with a real `ShopSubscription`
+      where needed)
+- [x] docs/usage.md, docs/billing.md added; docs/creative-studio.md,
+      docs/ai-pipeline.md, docs/architecture.md, CLAUDE.md updated
+
+No specific commercial AI vendor is installed or credentialed anywhere
+in this repository — the HTTP clients built this pass are real and
+working against documented, vendor-agnostic contracts, but with no live
+vendor account configured, generation and intent parsing still run
+through the deterministic/heuristic providers in practice; MODEL_SHOOT
+never produces a real depiction of a person. Identity validation remains
+non-semantic. Publishing still not live (`write_products` not
+requested). Per-plan resolution/output-count/batch-size limits are
+cataloged policy, not yet enforced by a request-side clamp — see
+docs/billing.md "Known limitations". See docs/roadmap.md.

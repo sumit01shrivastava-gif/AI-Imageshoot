@@ -60,6 +60,11 @@ function product(shopifyProductId: string): SyncedProduct {
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: SHOP } });
   await prisma.generationBatch.deleteMany({ where: { shop: SHOP } });
+  // Every batch job now reserves real credits (services/usage/credit-costs.ts)
+  // — cleared between tests so this file's many batches within the same
+  // shop/calendar-month don't exhaust the FREE plan's monthly allowance
+  // and start failing later tests with InsufficientCreditsError.
+  await prisma.creditReservation.deleteMany({ where: { shop: SHOP } });
 }
 
 let worker: Worker | undefined;

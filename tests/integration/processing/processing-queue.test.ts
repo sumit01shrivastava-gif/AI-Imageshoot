@@ -64,6 +64,7 @@ function product(shopifyProductId: string, altText: string | null = null): Synce
 
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: SHOP } });
+  await prisma.creditReservation.deleteMany({ where: { shop: SHOP } });
 }
 
 let scratchDir: string;

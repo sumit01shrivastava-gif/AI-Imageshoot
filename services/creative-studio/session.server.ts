@@ -42,6 +42,7 @@ import { buildCreativeGenerationPlan, ProductNotAnalyzedError, MissingSourceImag
 import { createAndEnqueueGenerationJob, ProductNotFoundError, reviewGenerationResult, GenerationResultNotFoundError } from "../generation/request-generation.server";
 import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
 import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, type EntitlementCheck } from "../usage/entitlement.server";
+import { getCreditCost } from "../usage/credit-costs";
 
 export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError };
 
@@ -269,7 +270,15 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
   const effectiveIntent: ParsedIntent =
     parsedIntent.mode === "TEXT_TO_IMAGE" && previousResultUrl ? { ...parsedIntent, mode: "IMAGE_TO_IMAGE" } : parsedIntent;
 
-  const requiredCredits = effectiveIntent.variationCount;
+  // Cost is mode-aware (an edit/image-to-image request costs more per
+  // output than a fresh text-to-image one) — see
+  // services/usage/credit-costs.ts's documented rule, not a flat
+  // 1-credit-per-output guess.
+  const requiredCredits = getCreditCost({
+    operationType: "IMAGE_GENERATION",
+    mode: effectiveIntent.mode,
+    outputCount: effectiveIntent.variationCount,
+  });
   const entitlement = await checkGenerationEntitlement(context, requiredCredits);
   if (!entitlement.allowed) {
     throw new InsufficientCreditsError(entitlement);

@@ -63,6 +63,15 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => worker!.on("ready", () => resolve()));
 
   await cleanup();
+
+  // STORE_VISUAL_GENERATION is plan-gated (FREE doesn't include it —
+  // see services/billing/plans.ts); this suite exercises publishing, not
+  // billing, so the shop needs a plan that does.
+  await prisma.shopSubscription.upsert({
+    where: { shop: SHOP },
+    create: { shop: SHOP, planId: "STARTER", status: "ACTIVE" },
+    update: { planId: "STARTER", status: "ACTIVE" },
+  });
 });
 afterEach(async () => {
   await cleanup();
@@ -70,6 +79,7 @@ afterEach(async () => {
 });
 afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: SHOP } });
   await worker?.close();
   await closeRedisConnection();
   await prisma.$disconnect();

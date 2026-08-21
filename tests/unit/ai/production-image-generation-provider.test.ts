@@ -197,4 +197,153 @@ describe("ProductionImageGenerationProvider", () => {
 
     delete process.env.AI_PROVIDER_TIMEOUT_MS;
   });
+
+  afterEach(() => {
+    delete process.env.AI_IMAGE_GENERATION_MODEL;
+    delete process.env.AI_IMAGE_EDIT_MODEL;
+    resetEnvCacheForTests();
+  });
+
+  describe("image-to-image / edit requests", () => {
+    it("posts to /v1/images/edits, not /v1/images/generations, when mode is an editing mode", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        if (url.endsWith("/v1/images/edits")) {
+          return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+        }
+        return new Response(Buffer.from([1, 2, 3]), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/prior.png", role: "previous_result" }] }),
+      );
+
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/edits"))).toBe(true);
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/generations"))).toBe(false);
+    });
+
+    it("falls back to /v1/images/generations for a plain text-to-image request (no mode set)", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(baseInput());
+
+      expect(calledUrls[0]).toContain("/v1/images/generations");
+    });
+
+    it("fetches and base64-encodes a single reference image into the edits request body's `image` field", async () => {
+      const referenceBytes = Buffer.from([5, 6, 7]);
+      let editRequestBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://cdn.example.test/prior.png") {
+          return new Response(referenceBytes, { status: 200 });
+        }
+        editRequestBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(
+        baseInput({ mode: "IMAGE_EDIT", referenceImages: [{ url: "https://cdn.example.test/prior.png", role: "previous_result" }] }),
+      );
+
+      expect(editRequestBody?.image).toBe(referenceBytes.toString("base64"));
+      expect(editRequestBody?.images).toBeUndefined();
+    });
+
+    it("sends multiple references as `images[]`, not `image`", async () => {
+      let editRequestBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith("https://cdn.example.test/")) {
+          return new Response(Buffer.from([1]), { status: 200 });
+        }
+        editRequestBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(
+        baseInput({
+          mode: "IMAGE_TO_IMAGE",
+          referenceImages: [
+            { url: "https://cdn.example.test/a.png", role: "product_original" },
+            { url: "https://cdn.example.test/b.png", role: "previous_result" },
+          ],
+        }),
+      );
+
+      expect(Array.isArray(editRequestBody?.images)).toBe(true);
+      expect((editRequestBody?.images as string[]).length).toBe(2);
+      expect(editRequestBody?.image).toBeUndefined();
+    });
+
+    it("falls back to sourceImages when an editing mode has no explicit referenceImages", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        if (url === "https://cdn.example.test/source.png") {
+          return new Response(Buffer.from([1]), { status: 200 });
+        }
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(
+        baseInput({ mode: "VARIATION", sourceImages: [{ mediaId: "m1", url: "https://cdn.example.test/source.png", altText: null, position: 0 }] }),
+      );
+
+      expect(calledUrls).toContain("https://cdn.example.test/source.png");
+    });
+
+    it("uses AI_IMAGE_EDIT_MODEL for an edit request and AI_IMAGE_GENERATION_MODEL for a plain request", async () => {
+      process.env.AI_IMAGE_EDIT_MODEL = "edit-model-v1";
+      process.env.AI_IMAGE_GENERATION_MODEL = "gen-model-v1";
+      resetEnvCacheForTests();
+
+      let lastBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.startsWith("https://cdn.example.test/")) return new Response(Buffer.from([1]), { status: 200 });
+        lastBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+
+      await provider.generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/prior.png", role: "previous_result" }] }),
+      );
+      expect(lastBody?.model).toBe("edit-model-v1");
+
+      await provider.generateImage(baseInput());
+      expect(lastBody?.model).toBe("gen-model-v1");
+    });
+
+    it("throws a ProviderResponseError (not a raw fetch error) when a reference image fails to fetch", async () => {
+      global.fetch = vi.fn(async (url: string) => {
+        if (url.startsWith("https://cdn.example.test/")) return new Response("not found", { status: 404 });
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+
+      await expect(
+        provider.generateImage(
+          baseInput({ mode: "IMAGE_EDIT", referenceImages: [{ url: "https://cdn.example.test/missing.png", role: "previous_result" }] }),
+        ),
+      ).rejects.toBeInstanceOf(ProviderResponseError);
+    });
+  });
 });
