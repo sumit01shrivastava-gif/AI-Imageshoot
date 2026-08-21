@@ -26,6 +26,12 @@ const GENERATION_TYPE_LABEL: Record<GenerationTypeValue, string> = {
   CATEGORY_BANNER: "Category banner",
   CTA: "Call-to-action",
   CAMPAIGN: "Campaign",
+  // Never actually reached — build-plan.ts's `buildGenerationPlan` isn't
+  // used for CREATIVE_STUDIO requests (see
+  // services/creative-studio/plan-builder.ts's own, separate plan
+  // builder); kept here only so this lookup table stays a total
+  // function over every GenerationType value.
+  CREATIVE_STUDIO: "Creative Studio",
 };
 
 const DEFAULT_ASPECT_RATIO: AspectRatioValue = "1:1";
@@ -218,7 +224,10 @@ function synthesizePrompt(input: {
 // (BrandStyleContextSchema) actually accepts — see that schema's own doc
 // comment for why BrandStylePresetAttributesSchema is deliberately a
 // superset (it also carries scene defaults BrandStyleContext doesn't).
-function toBrandStyleContext(attributes: BrandStylePresetAttributes) {
+// Exported for services/creative-studio/plan-builder.ts's reuse — the
+// Creative Studio applies the SAME brand style presets LIFESTYLE/
+// MODEL_SHOOT/BANNER/CTA already do, not a separate preset concept.
+export function toBrandStyleContext(attributes: BrandStylePresetAttributes) {
   const { visualTone, colorPalette, photographyStyle, backgroundStyle, lightingStyle, compositionStyle, luxuryLevel, modelStyle } =
     attributes;
   const context = { visualTone, colorPalette, photographyStyle, backgroundStyle, lightingStyle, compositionStyle, luxuryLevel, modelStyle };

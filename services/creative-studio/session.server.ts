@@ -1,0 +1,358 @@
+/**
+ * Creative Studio — service entry point used by routes. Orchestrates the
+ * full conversational flow: parse intent → build creative context →
+ * check/reserve entitlement → build a `GenerationPlan` → create + enqueue
+ * a `GenerationJob` (via services/generation/request-generation.server.ts's
+ * shared `createAndEnqueueGenerationJob` primitive) → persist the
+ * conversation turn. See docs/creative-studio.md "Architecture".
+ *
+ * Every entry point takes an `AuthContext` and re-verifies shop
+ * ownership — never trusts a client-supplied session/product/result id
+ * (see CLAUDE.md "Security requirements").
+ */
+import type { AuthContext } from "../../lib/auth/types";
+import { TenantMismatchError } from "../../lib/auth/tenant.server";
+import { findProductForShop } from "../../db/repositories/shopify-product.repository";
+import { getProductIntelligence } from "../intelligence/product-intelligence.server";
+import {
+  getCreativeSession,
+  createCreativeSession,
+  setCurrentResult,
+  listCreativeSessionsForProduct,
+  type CreativeSessionRow,
+  type CreativeSourceType,
+} from "../../db/repositories/creative-session.repository";
+import {
+  createCreativeMessage,
+  listCreativeMessages,
+  type CreativeMessageRow,
+} from "../../db/repositories/creative-message.repository";
+import {
+  listGenerationJobsForCreativeSession,
+  getGenerationResultForPublishing,
+  type GenerationJobRow,
+} from "../../db/repositories/generation-job.repository";
+import { getProcessingResultForPublishing } from "../../db/repositories/processing-job.repository";
+import { getStoreVisualResultForPublishing } from "../../db/repositories/store-visual-job.repository";
+import { resignResultUrls, getConfiguredStorageProvider } from "../../lib/storage";
+import { getConfiguredIntentParser } from "./provider.server";
+import { parseParsedIntent, type ParsedIntent } from "./intent-schema";
+import { buildCreativeContext, resolveTargetResult, type CreativeContext } from "./creative-context";
+import { buildCreativeGenerationPlan, ProductNotAnalyzedError, MissingSourceImagesError } from "./plan-builder";
+import { createAndEnqueueGenerationJob, ProductNotFoundError, reviewGenerationResult, GenerationResultNotFoundError } from "../generation/request-generation.server";
+import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
+import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, type EntitlementCheck } from "../usage/entitlement.server";
+
+export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError };
+
+/** Deliberately the same "not found" shape a missing/foreign-shop
+ * session gets — see ProductNotFoundError's own doc comment
+ * (existence-oracle prevention), applied here identically. */
+export class CreativeSessionNotFoundError extends Error {
+  constructor() {
+    super("Creative session not found");
+    this.name = "CreativeSessionNotFoundError";
+  }
+}
+
+export class EmptyMessageError extends Error {
+  constructor() {
+    super("Message cannot be empty.");
+    this.name = "EmptyMessageError";
+  }
+}
+
+export interface StartCreativeSessionInput {
+  productId: string;
+  sourceType?: CreativeSourceType;
+  /** A specific GenerationResult/ProcessingResult/StoreVisualResult id
+   * this session continues from ("Continue editing") — required when
+   * `sourceType` isn't `"PRODUCT_IMAGE"`. Not verified against the
+   * result's own review status here (a session can be opened from any
+   * existing result, approved or not — publishing, not session
+   * creation, is where approval actually matters). */
+  sourceResultId?: string;
+  /** A specific `ShopifyProductMedia` id to start from — only meaningful
+   * for `sourceType: "PRODUCT_IMAGE"`; omitted defaults to every one of
+   * the product's current images (see plan-builder.ts's fallback). */
+  sourceMediaId?: string;
+}
+
+/** Opens a new Creative Session for one product. Deliberately does NOT
+ * create one session per message (see prisma/schema.prisma's
+ * CreativeSession model comment) — this is called once, from a "Create
+ * with AI" / "Edit with AI" / "Continue editing" / "Open in Creative
+ * Studio" entry point (see docs/creative-studio.md "Routing"); every
+ * subsequent instruction goes through `sendCreativeMessage` against the
+ * SAME session id. */
+export async function startCreativeSession(context: AuthContext, input: StartCreativeSessionInput): Promise<{ id: string }> {
+  const product = await loadOwnedProduct(context, input.productId);
+
+  return createCreativeSession({
+    shop: context.shop,
+    productId: product.id,
+    sourceType: input.sourceType ?? "PRODUCT_IMAGE",
+    sourceResultId: input.sourceResultId ?? null,
+    sourceMediaId: input.sourceMediaId ?? null,
+  });
+}
+
+async function loadOwnedProduct(context: AuthContext, productId: string) {
+  try {
+    const product = await findProductForShop(context, productId);
+    if (!product) throw new ProductNotFoundError();
+    return product;
+  } catch (error) {
+    if (error instanceof TenantMismatchError) throw new ProductNotFoundError();
+    throw error;
+  }
+}
+
+export interface CreativeSessionDetail {
+  session: CreativeSessionRow;
+  messages: CreativeMessageRow[];
+  jobs: GenerationJobRow[];
+  creativeContext: CreativeContext;
+  entitlement: EntitlementCheck;
+}
+
+/** Everything the Creative Studio route's loader needs in one call —
+ * session, full message history, every generation job this session has
+ * produced (most-recent-first — the "grid of generated variations" the
+ * UI renders is `jobs[0].results`), the derived creative context, and
+ * the current entitlement snapshot (so the UI can show available
+ * credits before the merchant even sends a message — see Part 9). */
+export async function getCreativeSessionDetail(context: AuthContext, sessionId: string): Promise<CreativeSessionDetail> {
+  const session = await getCreativeSession(context, sessionId);
+  if (!session) throw new CreativeSessionNotFoundError();
+
+  const [messages, jobsRaw, entitlement] = await Promise.all([
+    listCreativeMessages(context.shop, session.id),
+    listGenerationJobsForCreativeSession(context.shop, session.id),
+    checkGenerationEntitlement(context, 1),
+  ]);
+
+  const jobs = await Promise.all(jobsRaw.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
+
+  const creativeContext = buildSessionCreativeContext(session, jobs, messages);
+
+  return { session, messages, jobs, creativeContext, entitlement };
+}
+
+function buildSessionCreativeContext(
+  session: CreativeSessionRow,
+  jobs: GenerationJobRow[],
+  messages: CreativeMessageRow[],
+): CreativeContext {
+  const latestJob = jobs[0] ?? null;
+  const currentResultRow = session.currentResultId
+    ? jobs.flatMap((job) => job.results.map((result) => ({ result, job }))).find(({ result }) => result.id === session.currentResultId)
+    : undefined;
+
+  let currentResultCreativeIntent: GenerationPlan["creativeIntent"] = null;
+  if (currentResultRow && currentResultRow.job.type === "CREATIVE_STUDIO") {
+    try {
+      currentResultCreativeIntent = parseGenerationPlan(currentResultRow.job.plan).creativeIntent;
+    } catch {
+      // A malformed/legacy plan shouldn't break context building — just
+      // means no "active" creative state to carry forward this turn.
+      currentResultCreativeIntent = null;
+    }
+  }
+
+  return buildCreativeContext({
+    currentResult: currentResultRow ? { id: currentResultRow.result.id, url: currentResultRow.result.url } : null,
+    currentResultCreativeIntent,
+    latestJobResults: latestJob ? latestJob.results.map((r) => ({ id: r.id, url: r.url })) : [],
+    recentInstructions: messages.filter((m) => m.role === "USER").map((m) => m.content),
+  });
+}
+
+/**
+ * Resolves the starting image for a session opened via "Continue
+ * editing" (`sourceType !== "PRODUCT_IMAGE"`) — reuses each domain's own
+ * `get*ResultForPublishing` accessor (a shop-scoped, tenant-safe lookup
+ * that already exists for services/publishing/) rather than writing a
+ * near-duplicate one here; it happens to return exactly what's needed
+ * (`storageKey`, checked for shop ownership). Returns `null` once this
+ * session has produced its own result (there's a real current result to
+ * use instead by then) or if the referenced result has since vanished
+ * (shop redaction, product deletion) — never throws; a session that
+ * loses its starting point mid-conversation should just fall back to
+ * TEXT_TO_IMAGE, not break.
+ */
+async function resolveSessionStartingImage(shop: string, session: CreativeSessionRow): Promise<string | null> {
+  if (session.sourceType === "PRODUCT_IMAGE" || !session.sourceResultId || session.currentResultId) {
+    return null;
+  }
+
+  let storageKey: string | null = null;
+  if (session.sourceType === "GENERATION_RESULT") {
+    storageKey = (await getGenerationResultForPublishing(shop, session.sourceResultId))?.storageKey ?? null;
+  } else if (session.sourceType === "PROCESSING_RESULT") {
+    storageKey = (await getProcessingResultForPublishing(shop, session.sourceResultId))?.storageKey ?? null;
+  } else if (session.sourceType === "STORE_VISUAL_RESULT") {
+    storageKey = (await getStoreVisualResultForPublishing(shop, session.sourceResultId))?.storageKey ?? null;
+  }
+  if (!storageKey) return null;
+
+  return getConfiguredStorageProvider().getSignedUrl({ key: storageKey, expiresInSeconds: 3600, operation: "get" });
+}
+
+export interface SendCreativeMessageResult {
+  ok: true;
+  generationJobId: string;
+  parsedIntent: ParsedIntent;
+}
+
+/**
+ * The core conversational entry point — one merchant message in, one new
+ * `GenerationJob` enqueued (never overwriting a prior result; see
+ * docs/creative-studio.md "Image-to-image flow"). Throws
+ * `InsufficientCreditsError`/`ProductNotAnalyzedError`/
+ * `MissingSourceImagesError`/`EmptyMessageError` for the merchant-facing
+ * preconditions a route action maps to safe messages — see Part 11.
+ */
+export async function sendCreativeMessage(context: AuthContext, sessionId: string, message: string): Promise<SendCreativeMessageResult> {
+  const trimmed = message.trim();
+  if (trimmed.length === 0) throw new EmptyMessageError();
+
+  const session = await getCreativeSession(context, sessionId);
+  if (!session) throw new CreativeSessionNotFoundError();
+
+  const product = await loadOwnedProduct(context, session.productId);
+  const intelligence = await getProductIntelligence(context, product.id);
+
+  const [jobsRaw, messages] = await Promise.all([
+    listGenerationJobsForCreativeSession(context.shop, session.id),
+    listCreativeMessages(context.shop, session.id),
+  ]);
+  const jobs = await Promise.all(jobsRaw.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
+  const creativeContext = buildSessionCreativeContext(session, jobs, messages);
+
+  // A session opened via "Continue editing" (Part 13) has no result of
+  // its OWN yet on its first turn — its starting point is a foreign
+  // result outside this session's own jobs (see `session.sourceResultId`).
+  // Resolve that BEFORE parsing, since it changes how many "candidates"
+  // genuinely exist to interpret a follow-up against.
+  const startingImageUrl = await resolveSessionStartingImage(context.shop, session);
+  const effectiveCandidateCount = creativeContext.candidateResults.length > 0 ? creativeContext.candidateResults.length : startingImageUrl ? 1 : 0;
+
+  // Parse the raw message → structured intent. See
+  // services/ai/heuristic-intent-parser.ts's doc comment for why this
+  // always succeeds today (a real, non-AI default, not gated to tests).
+  const parser = getConfiguredIntentParser();
+  const rawOutput = await parser.parseIntent({
+    message: trimmed,
+    creativeContext: creativeContext as unknown as Record<string, unknown>,
+    candidateResultCount: effectiveCandidateCount,
+  });
+  const parsedIntent = parseParsedIntent(rawOutput);
+
+  // Resolve an explicit "use the second one"-style reference against the
+  // session's actual candidate results — see creative-context.ts's
+  // `resolveTargetResult`. When it resolves, that becomes both the image
+  // this turn edits forward from AND the session's new current result
+  // (the merchant explicitly picked it).
+  const resolvedTargetId = resolveTargetResult(creativeContext, parsedIntent.targetResultReference);
+  let editSourceResult = creativeContext.candidateResults.find((r) => r.id === creativeContext.selectedResultId) ?? null;
+  if (resolvedTargetId) {
+    const resolved = creativeContext.candidateResults.find((r) => r.id === resolvedTargetId);
+    if (resolved) editSourceResult = resolved;
+  }
+
+  const previousResultUrl = editSourceResult?.url ?? startingImageUrl;
+  // The parser may have guessed TEXT_TO_IMAGE (nothing in THIS session's
+  // own history yet), but a "Continue editing" session genuinely does
+  // have something to edit forward from — correct that here rather than
+  // inside the parser, which has no notion of a foreign starting result.
+  const effectiveIntent: ParsedIntent =
+    parsedIntent.mode === "TEXT_TO_IMAGE" && previousResultUrl ? { ...parsedIntent, mode: "IMAGE_TO_IMAGE" } : parsedIntent;
+
+  const requiredCredits = effectiveIntent.variationCount;
+  const entitlement = await checkGenerationEntitlement(context, requiredCredits);
+  if (!entitlement.allowed) {
+    throw new InsufficientCreditsError(entitlement);
+  }
+
+  const plan = buildCreativeGenerationPlan({
+    product,
+    intelligence,
+    sourceMediaIds: session.sourceMediaId ? [session.sourceMediaId] : [],
+    parsedIntent: effectiveIntent,
+    previousResultUrl,
+    brandStylePreset: null,
+    creativeSessionId: session.id,
+    rawInstruction: trimmed,
+  });
+
+  const job = await createAndEnqueueGenerationJob(context, {
+    productId: product.id,
+    generationType: "CREATIVE_STUDIO",
+    sourceMediaIds: plan.sourceImages.map((image) => image.mediaId),
+    planOverride: plan,
+    creativeSessionId: session.id,
+    beforeEnqueue: async (jobId) => {
+      await reserveGenerationCredits(context, jobId, requiredCredits);
+    },
+  });
+
+  await createCreativeMessage({
+    shop: context.shop,
+    creativeSessionId: session.id,
+    role: "USER",
+    content: trimmed,
+    intent: effectiveIntent as unknown as Record<string, unknown>,
+    generationJobId: job.id,
+  });
+
+  await createCreativeMessage({
+    shop: context.shop,
+    creativeSessionId: session.id,
+    role: "ASSISTANT",
+    content: assistantAcknowledgement(effectiveIntent),
+    generationJobId: job.id,
+  });
+
+  if (editSourceResult && resolvedTargetId && resolvedTargetId !== session.currentResultId) {
+    // The merchant explicitly referenced a different prior result ("use
+    // the second one") — that becomes the new current selection even
+    // before this turn's own job resolves.
+    await setCurrentResult(context.shop, session.id, resolvedTargetId);
+  }
+
+  return { ok: true, generationJobId: job.id, parsedIntent: effectiveIntent };
+}
+
+function assistantAcknowledgement(intent: ParsedIntent): string {
+  if (intent.variationCount > 1) return `Creating ${intent.variationCount} variations…`;
+  return "Creating your image…";
+}
+
+/** "Use this" — the merchant explicitly picks one of the latest job's
+ * results to continue editing from. Verifies the result actually
+ * belongs to one of this session's own jobs (never trusts a
+ * client-supplied result id directly). */
+export async function selectCreativeResult(context: AuthContext, sessionId: string, resultId: string): Promise<void> {
+  const session = await getCreativeSession(context, sessionId);
+  if (!session) throw new CreativeSessionNotFoundError();
+
+  const jobs = await listGenerationJobsForCreativeSession(context.shop, session.id);
+  const belongsToSession = jobs.some((job) => job.results.some((result) => result.id === resultId));
+  if (!belongsToSession) throw new GenerationResultNotFoundError();
+
+  await setCurrentResult(context.shop, session.id, resultId);
+}
+
+/** Approve/reject one of this session's results — thin wrapper around
+ * services/generation/request-generation.server.ts's
+ * `reviewGenerationResult` (the SAME review lifecycle every other
+ * generationType uses; see docs/creative-studio.md "Review actions" —
+ * Creative Studio results are ordinary `GenerationResult` rows, not a
+ * parallel review concept). */
+export { reviewGenerationResult as reviewCreativeResult };
+
+export async function listSessionsForProduct(context: AuthContext, productId: string): Promise<CreativeSessionRow[]> {
+  await loadOwnedProduct(context, productId);
+  return listCreativeSessionsForProduct(context, productId);
+}

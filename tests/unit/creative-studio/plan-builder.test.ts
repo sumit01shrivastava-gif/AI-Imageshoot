@@ -1,0 +1,246 @@
+/**
+ * Unit tests: services/creative-studio/plan-builder.ts's
+ * `buildCreativeGenerationPlan` — the Creative Studio's own,
+ * conversational-instruction-driven counterpart to
+ * services/generation/build-plan.ts's `buildGenerationPlan`. Verifies it
+ * produces a valid `GenerationPlan` with `generationType:
+ * "CREATIVE_STUDIO"`, the structural creative/identityConstraints split
+ * (Part 4), and correct reference-image wiring for image-to-image edits.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  buildCreativeGenerationPlan,
+  MissingSourceImagesError,
+  ProductNotAnalyzedError,
+} from "../../../services/creative-studio/plan-builder";
+import { parseParsedIntent } from "../../../services/creative-studio/intent-schema";
+import type { ProductDetail } from "../../../db/repositories/shopify-product.repository";
+import type { ProductIntelligenceRow } from "../../../db/repositories/product-intelligence.repository";
+
+function product(overrides: Partial<ProductDetail> = {}): ProductDetail {
+  return {
+    id: "product-1",
+    shop: "test-shop.myshopify.com",
+    shopifyProductId: "gid://shopify/Product/1",
+    title: "Studio Tote",
+    handle: "studio-tote",
+    description: "A handcrafted leather tote.",
+    productType: "Handbags",
+    category: "Handbags",
+    vendor: "Acme",
+    tags: [],
+    status: "ACTIVE",
+    syncedAt: new Date(),
+    shopifyUpdatedAt: new Date(),
+    media: [
+      { id: "media-1", originalUrl: "https://cdn.shopify.com/tote-front.jpg", previewUrl: null, altText: "Front", width: 800, height: 600, position: 0 },
+      { id: "media-2", originalUrl: "https://cdn.shopify.com/tote-side.jpg", previewUrl: null, altText: "Side", width: 800, height: 600, position: 1 },
+    ],
+    ...overrides,
+  };
+}
+
+function intelligence(overrides: Partial<ProductIntelligenceRow> = {}): ProductIntelligenceRow {
+  return {
+    id: "intel-1",
+    shop: "test-shop.myshopify.com",
+    productId: "product-1",
+    status: "READY",
+    errorMessage: null,
+    category: "Handbags",
+    subcategory: null,
+    productType: null,
+    material: "Leather",
+    primaryColor: "Brown",
+    secondaryColors: [],
+    pattern: null,
+    texture: null,
+    style: null,
+    useCases: [],
+    targetAudience: null,
+    genderSuitability: null,
+    seasonality: [],
+    pricePositioning: null,
+    visualCharacteristics: null,
+    productDimensions: null,
+    packagingCharacteristics: null,
+    hardwareComponents: [],
+    modelSuitable: false,
+    recommendedModelAttributes: null,
+    recommendedPoseTypes: [],
+    recommendedEnvironments: ["studio"],
+    recommendedProps: [],
+    recommendedPhotographyStyles: [],
+    recommendedAssetTypes: ["product_studio"],
+    identityAnchors: {
+      category: "Handbags",
+      shape: "Rectangular",
+      material: "Leather",
+      primaryColor: "Brown",
+      constructionDetails: [],
+      distinctiveHardware: ["gold clasp"],
+      brandingVisible: false,
+      brandingDescription: null,
+    },
+    imageAnalyses: [],
+    analysisVersion: 1,
+    confidence: null,
+    providerName: "deterministic-test",
+    sourceShopifyUpdatedAt: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  } as ProductIntelligenceRow;
+}
+
+async function intent(message: string, candidateResultCount = 0) {
+  const { HeuristicIntentParser } = await import("../../../services/ai/heuristic-intent-parser");
+  const raw = await new HeuristicIntentParser().parseIntent({ message, creativeContext: {}, candidateResultCount });
+  return parseParsedIntent(raw);
+}
+
+describe("buildCreativeGenerationPlan", () => {
+  it("builds a valid CREATIVE_STUDIO plan with identity constraints structurally separate from creative direction", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+
+    expect(plan.generationType).toBe("CREATIVE_STUDIO");
+    expect(plan.creativeIntent).not.toBeNull();
+    expect(plan.creativeIntent!.creative.scene).toBe("premium lifestyle scene");
+    expect(plan.creativeIntent!.identityConstraints.immutable).toContain("material: Leather");
+    expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/immutable subject/i);
+    // The synthesized prompt always includes the identity instruction —
+    // never just the creative direction alone (Part 4).
+    expect(plan.creativeDirection.prompt).toContain(plan.creativeIntent!.identityConstraints.instruction);
+  });
+
+  it("never sends the merchant's raw message as the prompt verbatim", async () => {
+    const rawInstruction = "asdkjf make it look totally amazeballs pls!!1";
+    const parsedIntent = await intent(rawInstruction);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction,
+    });
+    expect(plan.creativeDirection.prompt).not.toContain(rawInstruction);
+    // The raw instruction is preserved elsewhere, for traceability only.
+    expect(plan.creativeIntent!.rawInstruction).toBe(rawInstruction);
+  });
+
+  it("includes a referenceImage with role 'previous_result' for an image-to-image follow-up", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/prior-result.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "Make it brighter",
+    });
+    expect(plan.referenceImages).toEqual([{ url: "https://signed.example.test/prior-result.png", role: "previous_result" }]);
+    // sourceImages (the ORIGINAL product images) are still present for
+    // identity grounding even on a follow-up edit.
+    expect(plan.sourceImages.length).toBeGreaterThan(0);
+  });
+
+  it("carries no reference image for a fresh TEXT_TO_IMAGE request", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+    expect(plan.referenceImages).toEqual([]);
+  });
+
+  it("requests outputCount matching the parsed variation count", async () => {
+    const parsedIntent = await intent("Create 3 variations");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create 3 variations",
+    });
+    expect(plan.outputCount).toBe(3);
+  });
+
+  it("restricts sourceImages to the requested media id when one is given", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: ["media-2"],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Make it brighter",
+    });
+    expect(plan.sourceImages).toHaveLength(1);
+    expect(plan.sourceImages[0].mediaId).toBe("media-2");
+  });
+
+  it("throws MissingSourceImagesError when the product has no media", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    expect(() =>
+      buildCreativeGenerationPlan({
+        product: product({ media: [] }),
+        intelligence: intelligence(),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction: "Make it brighter",
+      }),
+    ).toThrow(MissingSourceImagesError);
+  });
+
+  it("throws ProductNotAnalyzedError when Product Intelligence isn't READY", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    expect(() =>
+      buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence({ status: "PENDING" }),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction: "Make it brighter",
+      }),
+    ).toThrow(ProductNotAnalyzedError);
+  });
+
+  it("throws ProductNotAnalyzedError when there is no Product Intelligence profile at all", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    expect(() =>
+      buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: null,
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction: "Make it brighter",
+      }),
+    ).toThrow(ProductNotAnalyzedError);
+  });
+});

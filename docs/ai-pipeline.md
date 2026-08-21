@@ -15,7 +15,24 @@ didn't implement.
   vendor.
 - **`ImageGenerationProvider`** — generative image creation
   (`generateImage`). Called by Phase 3 (image generation foundation) —
-  see docs/generation.md. No real vendor.
+  see docs/generation.md. `ProductionImageGenerationProvider`
+  (`services/ai/production-image-generation-provider.server.ts`) is a
+  real, testable HTTP client against a vendor-agnostic, "OpenAI Images
+  API-compatible" contract — selected only when `AI_PROVIDER_BASE_URL`/
+  `AI_PROVIDER_API_KEY` are configured; `UnconfiguredImageGenerationProvider`
+  remains the default. No live vendor account is configured in this
+  environment, so every generation still runs through the deterministic
+  test provider in practice.
+- **`IntentParsingProvider`** (Creative Studio pass) — turns a merchant's
+  natural-language message into a structured instruction
+  (`parseIntent`). Called by `services/creative-studio/` — see
+  docs/creative-studio.md. Unlike every other provider here,
+  `HeuristicIntentParser` (`services/ai/heuristic-intent-parser.ts`) is a
+  real, rule-based, ALWAYS-ON default — not gated behind
+  `NODE_ENV==="test"` — since the Creative Studio needs a genuinely
+  working interpretation step even with no AI vendor configured; see that
+  file's own doc comment for the full reasoning and its honest
+  limitations.
 - **`ImageProcessingProvider`** — deterministic/transformative operations
   on an existing image (`removeBackground`, `enhance`, `upscale`,
   `generateShadow`, `crop`, `resize`). Established as an interface in

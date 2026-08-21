@@ -8,7 +8,7 @@
  */
 import { useEffect } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
+import { redirect, useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
@@ -21,6 +21,7 @@ import {
   requestStoreVisual,
   StoreVisualResultNotFoundError,
 } from "../../services/store-visuals/request-store-visual.server";
+import { startCreativeSession, ProductNotFoundError as CreativeStudioProductNotFoundError } from "../../services/creative-studio/session.server";
 import {
   requestPublish,
   getLatestPublishStatus,
@@ -108,6 +109,27 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "start-creative-session") {
+    const productId = formData.get("productId");
+    const sourceResultId = formData.get("sourceResultId");
+    if (typeof productId !== "string" || typeof sourceResultId !== "string") {
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+    try {
+      const session = await startCreativeSession(context, {
+        productId,
+        sourceType: "STORE_VISUAL_RESULT",
+        sourceResultId,
+      });
+      return redirect(`/app/creative/${session.id}`);
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof CreativeStudioProductNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+  }
+
   if (intent === "request-publish") {
     const sourceResultId = formData.get("sourceResultId");
     const targetProductId = formData.get("targetProductId");
@@ -168,6 +190,7 @@ export default function StoreVisualDetail() {
   const shopify = useAppBridge();
   const reviewFetcher = useFetcher<typeof action>();
   const regenerateFetcher = useFetcher<typeof action>();
+  const creativeStudioFetcher = useFetcher<typeof action>();
 
   const isTerminal = job.status === "SUCCEEDED" || job.status === "FAILED" || job.status === "CANCELLED";
 
@@ -194,9 +217,22 @@ export default function StoreVisualDetail() {
     }
   }, [regenerateFetcher.data, shopify, navigate]);
 
+  useEffect(() => {
+    if (creativeStudioFetcher.data && !creativeStudioFetcher.data.ok) {
+      shopify.toast.show(creativeStudioFetcher.data.error, { isError: true });
+    }
+  }, [creativeStudioFetcher.data, shopify]);
+
   const plan = job.plan as unknown as StoreVisualPlan;
   const latestResult: StoreVisualResultRow | undefined = job.results[job.results.length - 1];
   const isRegenerating = regenerateFetcher.state !== "idle";
+  // Creative Studio sessions are always product-scoped (see
+  // docs/creative-studio.md "Architecture") — a fully generic store
+  // visual with no featured product has nothing to continue editing
+  // against, so "Continue editing" isn't offered there (mirrors
+  // PublishControl's identical "no associated product" graceful
+  // degradation).
+  const firstFeaturedProductId = job.products[0]?.productId ?? null;
 
   return (
     <s-page heading={`${VISUAL_TYPE_LABEL[job.type] ?? job.type}`}>
@@ -266,6 +302,20 @@ export default function StoreVisualDetail() {
               >
                 Regenerate
               </s-button>
+              {firstFeaturedProductId && (
+                <s-button
+                  variant="tertiary"
+                  onClick={() =>
+                    creativeStudioFetcher.submit(
+                      { intent: "start-creative-session", productId: firstFeaturedProductId, sourceResultId: latestResult.id },
+                      { method: "POST" },
+                    )
+                  }
+                  {...(creativeStudioFetcher.state !== "idle" ? { loading: true } : {})}
+                >
+                  Continue editing
+                </s-button>
+              )}
             </s-stack>
 
             {latestResult.reviewStatus === "APPROVED" && (

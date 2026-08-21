@@ -24,6 +24,9 @@ export const GENERATION_TYPES = [
   "CATEGORY_BANNER",
   "CTA",
   "CAMPAIGN",
+  // Any generation/edit requested through the conversational Creative
+  // Studio — see services/creative-studio/ and docs/creative-studio.md.
+  "CREATIVE_STUDIO",
 ] as const;
 
 export type GenerationTypeValue = (typeof GENERATION_TYPES)[number];

@@ -67,6 +67,67 @@ export const LifestyleSceneSchema = z.object({
 export type LifestyleScene = z.infer<typeof LifestyleSceneSchema>;
 
 /**
+ * The Creative Studio-specific portion of a generation plan — populated
+ * only when `generationType === "CREATIVE_STUDIO"`, mirroring
+ * `lifestyleScene`'s exact placement pattern (a separate, optional nested
+ * field, not folded into `creativeDirection`, so every other
+ * generationType's tested shape/behavior stays untouched).
+ *
+ * `creative` (what MAY change) and `identityConstraints` (what must NOT
+ * change) are deliberately two separate sub-objects — see
+ * services/creative-studio/identity-constraints.ts's doc comment and
+ * docs/creative-studio.md "Identity preservation": Part 4's requirement
+ * that this distinction "exist structurally in the generation plan rather
+ * than only as prose."
+ *
+ * `intent`/`mode` are recorded as plain strings, not re-imported enums —
+ * services/creative-studio/intent-schema.ts's `CreativeIntentSchema`/
+ * `GenerationModeSchema` are the actual validation gate for these values
+ * (already validated by the time a plan is built); this file stays free
+ * of any dependency on services/creative-studio/, since generation is the
+ * lower-level, reusable building block and creative-studio is the
+ * higher-level orchestrator built on top of it — never the reverse (see
+ * CLAUDE.md's domain boundaries).
+ */
+export const CreativeStudioPlanSchema = z.object({
+  intent: z.string().min(1),
+  mode: z.string().min(1),
+
+  creative: z.object({
+    scene: z.string().min(1).nullable().default(null),
+    style: z.array(z.string()).default([]),
+    lighting: z.string().min(1).nullable().default(null),
+    composition: z.string().min(1).nullable().default(null),
+    camera: z.string().min(1).nullable().default(null),
+    colorDirection: z.string().min(1).nullable().default(null),
+    addElements: z.array(z.string()).default([]),
+    removeElements: z.array(z.string()).default([]),
+  }),
+
+  identityConstraints: z.object({
+    immutable: z.array(z.string()).default([]),
+    instruction: z.string().min(1),
+  }),
+
+  /** Kept for traceability/debugging/history display only — NEVER reused
+   * as prompt text (the prompt was already synthesized into
+   * `creativeDirection.prompt` by the time this plan exists). See
+   * docs/creative-studio.md "No arbitrary prompts". */
+  creativeSessionId: z.string().min(1),
+  rawInstruction: z.string().min(1),
+});
+
+export type CreativeStudioPlan = z.infer<typeof CreativeStudioPlanSchema>;
+
+/** One additional reference image beyond `sourceImages` — see
+ * services/ai/types.ts's `GenerationReferenceImage`, which this mirrors
+ * structurally at the persisted-plan layer. */
+export const ReferenceImageSchema = z.object({
+  url: z.string().min(1),
+  role: z.enum(["product_original", "previous_result", "style_reference"]),
+});
+
+/**
  * A merchant-saved OR built-in brand style preset's structured
  * attributes — see docs/lifestyle-generation.md "Brand style presets".
  * Deliberately a superset of `BrandStyleContextSchema` (the narrower
@@ -185,6 +246,17 @@ export const GenerationPlanSchema = z.object({
    * `LifestyleSceneSchema`'s doc comment for why this is a separate,
    * optional field rather than folded into `creativeDirection`. */
   lifestyleScene: LifestyleSceneSchema.nullable(),
+
+  /** Populated only when `generationType === "CREATIVE_STUDIO"` — see
+   * `CreativeStudioPlanSchema`'s doc comment. `null` for every other
+   * generationType. */
+  creativeIntent: CreativeStudioPlanSchema.nullable().default(null),
+
+  /** Additional reference images beyond `sourceImages` (e.g. the exact
+   * prior result a conversational follow-up edits forward from) — see
+   * `ReferenceImageSchema`'s doc comment. Empty for every generationType
+   * that isn't CREATIVE_STUDIO. */
+  referenceImages: z.array(ReferenceImageSchema).default([]),
 
   constraints: z.array(z.string()).default([]),
 });

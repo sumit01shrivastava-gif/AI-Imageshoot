@@ -20,7 +20,9 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Final productization / completion pass — complete.** Phases 0–7
+**Creative Studio pass — complete** (see docs/creative-studio.md for
+full detail; this section summarizes the history leading up to it).
+Phases 0–7
 (foundation; Shopify catalog sync; Product Intelligence; the
 image-generation foundation; production image processing; lifestyle
 imagery; model imagery + aspect ratio; product-scoped promotional
@@ -88,14 +90,34 @@ enums; every other model unchanged):
 
 **No real image-generation vendor is installed — every generation in
 this codebase still only ever runs through the deterministic test
-provider; MODEL_SHOOT never produces a real depiction of a person.** No
-publishing back to Shopify, no credits/billing/subscriptions/plan
-enforcement (existing job metadata — shop, type, provider, duration,
-output count, timestamps, success/failure — was reviewed and found
-already sufficient for a future billing phase to build on; nothing new
-was added since nothing was missing), and `services/processing/`
-(Phase 4) was not modified beyond the shared signed-URL/storage-key
-fixes above.
+provider; MODEL_SHOOT never produces a real depiction of a person.**
+`services/processing/` (Phase 4) was not modified beyond the shared
+signed-URL/storage-key fixes above.
+
+A follow-up pass (still no new numbered phase; see docs/publishing.md,
+docs/usage.md) added the pieces that paragraph originally called
+deferred: **`services/publishing/`** (a real, working
+`productCreateMedia` mutation — but `write_products` is deliberately
+**not** requested yet, so every publish attempt honestly fails rather
+than faking success — see that file's own doc comment) and
+**`services/usage/usage-accounting.server.ts`** (an idempotent,
+auditable `UsageEvent` ledger across every domain's operations — still
+no pricing/cost computed anywhere). No credits/billing/subscriptions/
+plan *enforcement* existed yet after that pass either.
+
+The **Creative Studio pass** (docs/creative-studio.md) then added the
+conversational image creation/editing workspace —
+`services/creative-studio/`, `/app/creative/:sessionId` — built entirely
+on the existing `GenerationJob`/`GenerationResult` pipeline (a
+conversational turn is a `GenerationType.CREATIVE_STUDIO` request, not a
+second generation system), a real (heuristic, not-yet-AI) natural
+-language intent parser, image-to-image follow-ups, multiple variations
+per turn, and — for the first time — an actual credit *enforcement*
+foundation: `services/usage/entitlement.server.ts`'s reserve/settle/
+refund lifecycle, gating only the Creative Studio's own generation path,
+against one flat, clearly-labeled **development** monthly allowance (no
+real subscription plan exists to enforce yet). Generation itself still
+only ever runs through the deterministic test provider.
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -193,12 +215,27 @@ services/
   processing/         Production image processing (Basic plan): operation
                        taxonomy, options schema, job/queue (single-image +
                        batch), review lifecycle (services/processing/README.md)
+  creative-studio/    Conversational AI image creation/editing —
+                       intent parsing, creative context, identity
+                       preservation, plan building, session
+                       orchestration; produces ordinary
+                       GenerationType.CREATIVE_STUDIO GenerationJob/
+                       GenerationResult rows through the existing
+                       generation/ pipeline, not a second one. See
+                       docs/creative-studio.md
   media/              Media library business logic (future)
-  publishing/         Publish-to-Shopify business logic (future)
-  usage/              Usage/credit tracking business logic (future) — see
-                       CLAUDE.md "Current phase" for why nothing new was
-                       built here this pass (existing job metadata was
-                       already sufficient)
+  publishing/         Publish-to-Shopify business logic — a real
+                       productCreateMedia mutation exists but
+                       write_products is deliberately not requested yet,
+                       so publishing honestly fails rather than faking
+                       success. See docs/publishing.md
+  usage/              Usage/credit tracking — usage-accounting.server.ts
+                       (an audit ledger, every domain's operations) and
+                       entitlement.server.ts (the Creative Studio's
+                       reserve/settle/refund credit lifecycle, one flat
+                       development allowance — no real billing plan
+                       exists yet). See docs/usage.md and
+                       docs/creative-studio.md "Credit lifecycle"
 
 db/
   client.server.ts    Prisma client singleton (canonical — app/db.server.ts re-exports it)
@@ -297,6 +334,14 @@ the owning domain directory above — see `app/shopify.server.ts` and
 - Never make a real AI API call from a test.
 - AI provider credentials are read only via `lib/validation/env.server.ts`
   (`AI_PROVIDER_API_KEY` etc.), never hardcoded.
+- One deliberate exception to "no real provider until a vendor is
+  configured": `IntentParsingProvider` (Creative Studio's natural
+  -language interpretation step) has a real, always-on, non-AI
+  (rule-based) default — `services/ai/heuristic-intent-parser.ts` — not
+  gated behind `NODE_ENV === "test"` like every other provider seam. See
+  that file's doc comment and docs/creative-studio.md "Intent model" for
+  why. Image *generation* itself is unaffected — it still only ever runs
+  through `getConfiguredImageGenerationProvider()`'s unchanged resolver.
 
 ## Storage rules
 
@@ -625,12 +670,97 @@ migration** (`add_store_visuals_and_shop_settings`):
       docs/lifestyle-generation.md, docs/architecture.md,
       docs/generation-pipeline.md updated
 
+`services/processing/` (Phase 4) was not modified beyond the shared
+signed-URL/storage-key fixes above. See docs/roadmap.md.
+
+Publishing/usage productization pass — complete (no new numbered phase),
+**two new Prisma models** (`UsageEvent`, `PublishingJob`):
+
+- [x] `services/publishing/` — a real, working `productCreateMedia`
+      mutation (`services/shopify/publish-media.server.ts`), the
+      `"publishing"` BullMQ queue/worker, `/app/publishing` history page,
+      `PublishControl` component (Approve/Reject stay separate from
+      Publish); `write_products` deliberately NOT requested yet — every
+      publish attempt honestly fails today rather than faking success.
+      See docs/publishing.md
+- [x] `services/usage/usage-accounting.server.ts` — an idempotent,
+      auditable `UsageEvent` ledger (upsert on `operationType:jobId`)
+      across PRODUCT_ANALYSIS/IMAGE_GENERATION/IMAGE_PROCESSING/
+      STORE_VISUAL_GENERATION; `/app/usage` merchant-facing summary. No
+      pricing/cost computed. See docs/usage.md
+- [x] Production AI provider architecture: `ProductionImageGenerationProvider`
+      (a vendor-agnostic, "OpenAI Images API-compatible" HTTP contract)
+      and `S3StorageProvider` (S3-compatible object storage) — both real,
+      testable implementations behind the existing provider interfaces;
+      neither has live credentials configured in this environment
+- [x] Hardening: idempotency-guard-ordering fix (`markProcessing`
+      previously ran before the guard could ever see "SUCCEEDED") across
+      generation/processing/store-visuals; orphaned-storage cleanup
+      extended to partial multi-output upload failure
+      (`Promise.allSettled`); `shop/redact` now also deletes every
+      referenced storage object, not just DB rows; logger redaction now
+      also scans string values (not just key names) for a currently
+      -configured secret
+
+Creative Studio pass — complete (see docs/creative-studio.md), **one new
+Prisma migration** (`add_creative_studio` — `CreativeSession`/
+`CreativeMessage`/`CreditReservation`, `GenerationType.CREATIVE_STUDIO`,
+`GenerationJob.creativeSessionId`):
+
+- [x] `services/creative-studio/` — session orchestration
+      (`session.server.ts`), a structured intent model
+      (`intent-schema.ts`, `services/ai/heuristic-intent-parser.ts` — a
+      real, always-on rule-based default, not gated to tests like every
+      other provider seam), a compact derived creative context
+      (`creative-context.ts`), structural identity preservation
+      (`identity-constraints.ts`), and a plan builder
+      (`plan-builder.ts`) producing ordinary
+      `GenerationType.CREATIVE_STUDIO` `GenerationJob`/`GenerationResult`
+      rows through the unchanged existing pipeline
+- [x] Image-to-image support: `GenerateImageInput` gained `mode`/
+      `referenceImages` (both optional, additive — every pre-existing
+      generationType unaffected); every conversational turn is a new,
+      independently-reviewable `GenerationJob`/`GenerationResult`, never
+      an overwrite
+- [x] `services/usage/entitlement.server.ts` — the reserve/settle/refund
+      credit lifecycle (`CreditReservation`, idempotent), gating only
+      the Creative Studio's own generation path, against one flat,
+      clearly-labeled development monthly allowance
+      (`CREATIVE_STUDIO_MONTHLY_CREDITS`) — no real subscription/billing
+      plan built
+- [x] `/app/creative/:sessionId` — the chat workspace (canvas + version
+      thumbnails + conversation), reachable from Product Detail ("Create
+      with AI" / "Continue editing"), AI Assets ("Open in Creative
+      Studio"), and Store Visual detail ("Continue editing")
+- [x] Real bugs found and fixed (via testing, not guessed at): a
+      double-article string-formatting bug in the identity instruction
+      ("The the product is..."); a `ProductNotFoundError` name collision
+      in `app.products.$id.tsx` (two same-named classes imported from
+      different domains, so the wrong one was checked in an
+      `instanceof`, silently swallowing a real 404 into a generic error);
+      a chat input whose Send button could never actually be clicked
+      (the underlying web component only fires a live-update event on
+      blur, not on every keystroke, and a disabled button can't itself
+      receive the focus-shifting click that would trigger that blur) —
+      fixed by switching to the live keystroke event
+- [x] Full test coverage: unit (intent parsing/schema, creative context,
+      identity constraints, plan building, entitlement logic),
+      integration (session creation, tenant isolation, conversation
+      persistence, real generation requests, multiple results,
+      regeneration, variation, credit reserve/settle/refund including a
+      forced failure, storage persistence, previous-result preservation,
+      route-layer wiring), and E2E (the full conversational flow through
+      the real queue/worker seam, tenant isolation)
+- [x] docs/creative-studio.md added; docs/architecture.md,
+      docs/ai-pipeline.md, CLAUDE.md updated
+
 No real image-generation vendor is installed — every generation in this
-codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT, BANNER, CTA) runs only
-through the deterministic test provider, never a live network call;
-MODEL_SHOOT never produces a real depiction of a person. Identity
-validation remains non-semantic (an honest "not yet possible" result,
-not a real check). No credits/billing/subscriptions/plan enforcement. No
-publishing back to Shopify. `services/processing/` (Phase 4) was not
-modified beyond the shared signed-URL/storage-key fixes above. See
-docs/roadmap.md.
+codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT, BANNER, CTA,
+CREATIVE_STUDIO) runs only through the deterministic test provider,
+never a live network call; MODEL_SHOOT never produces a real depiction
+of a person. Identity validation remains non-semantic (an honest "not
+yet possible" result, not a real check). No real credits/billing/
+subscriptions/plan enforcement (the Creative Studio's credit reservation
+is real, but gates against one flat development allowance, not an
+actual paid plan). Publishing exists but is not live (`write_products`
+not requested). See docs/roadmap.md.

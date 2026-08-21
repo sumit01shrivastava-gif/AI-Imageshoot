@@ -28,7 +28,7 @@ import {
 import { buildGenerationPlan, type BuildGenerationPlanInput } from "./build-plan";
 import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
-import { GenerationTypeSchema, AspectRatioSchema } from "./schema";
+import { GenerationTypeSchema, AspectRatioSchema, type GenerationPlan } from "./schema";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
 
 /**
@@ -103,6 +103,32 @@ export interface CreateAndEnqueueGenerationJobInput {
    * under the same shop in the same call (mirrors
    * createAndEnqueueProcessingJob's identical doc comment). */
   batchId?: string;
+  /** Set only by services/creative-studio/session.server.ts — groups the
+   * resulting `GenerationJob` under a `CreativeSession`. Not re-verified
+   * against `context.shop` here for the same reason `batchId` isn't (the
+   * caller already created/loaded it under the same shop). */
+  creativeSessionId?: string;
+  /** When provided, skips `buildGenerationPlan` (and the
+   * intelligence/preset lookups it needs) entirely and uses this
+   * already-built, already-validated plan as-is. Exists for
+   * services/creative-studio/plan-builder.ts, whose input shape (a
+   * conversational instruction + resolved session context) doesn't fit
+   * `buildGenerationPlan`'s per-generationType branches — but the
+   * resulting `GenerationJob`/queue/worker/storage pipeline is identical
+   * either way (see that file's doc comment for why this is "reuse the
+   * existing GenerationPlan architecture," not a second one). */
+  planOverride?: GenerationPlan;
+  /** Called after the `GenerationJob` row is created but BEFORE it's
+   * marked QUEUED/enqueued — the one safe window to do something keyed on
+   * the job's own id before a worker could possibly start processing it
+   * (mirrors why `markQueued` itself runs before `enqueueGenerationJob`
+   * returns control here). services/creative-studio/session.server.ts
+   * uses this to reserve generation credits
+   * (services/usage/entitlement.server.ts) against the real job id —
+   * never a generic "credit-aware generation" concept baked into this
+   * shared primitive itself, which every other generationType also goes
+   * through unchanged. */
+  beforeEnqueue?: (jobId: string) => Promise<void>;
 }
 
 /**
@@ -140,25 +166,30 @@ export async function createAndEnqueueGenerationJob(
     throw new ProductNotFoundError();
   }
 
-  const intelligence = await getProductIntelligence(context, product.id);
+  let plan: GenerationPlan;
+  if (input.planOverride) {
+    plan = input.planOverride;
+  } else {
+    const intelligence = await getProductIntelligence(context, product.id);
 
-  // Preset resolution only matters for LIFESTYLE (build-plan.ts ignores
-  // brandStylePreset for every other generationType) — but resolving it
-  // unconditionally here keeps this function simple; an id irrelevant to
-  // a non-LIFESTYLE request is just unused, never an error.
-  const brandStylePreset = input.presetId ? await resolveBrandStylePreset(context, input.presetId) : null;
+    // Preset resolution only matters for LIFESTYLE (build-plan.ts ignores
+    // brandStylePreset for every other generationType) — but resolving it
+    // unconditionally here keeps this function simple; an id irrelevant to
+    // a non-LIFESTYLE request is just unused, never an error.
+    const brandStylePreset = input.presetId ? await resolveBrandStylePreset(context, input.presetId) : null;
 
-  const plan = buildGenerationPlan({
-    product,
-    intelligence,
-    sourceMediaIds: input.sourceMediaIds,
-    generationType: input.generationType,
-    visualDirectionOverride: input.visualDirectionOverride,
-    outputCountOverride: input.outputCountOverride,
-    brandStylePreset,
-    lifestyleSceneOverride: input.lifestyleSceneOverride,
-    aspectRatioOverride: input.aspectRatioOverride,
-  });
+    plan = buildGenerationPlan({
+      product,
+      intelligence,
+      sourceMediaIds: input.sourceMediaIds,
+      generationType: input.generationType,
+      visualDirectionOverride: input.visualDirectionOverride,
+      outputCountOverride: input.outputCountOverride,
+      brandStylePreset,
+      lifestyleSceneOverride: input.lifestyleSceneOverride,
+      aspectRatioOverride: input.aspectRatioOverride,
+    });
+  }
 
   const job = await createGenerationJob({
     shop: context.shop,
@@ -167,7 +198,12 @@ export async function createAndEnqueueGenerationJob(
     sourceMediaIds: input.sourceMediaIds,
     plan,
     batchId: input.batchId,
+    creativeSessionId: input.creativeSessionId,
   });
+
+  if (input.beforeEnqueue) {
+    await input.beforeEnqueue(job.id);
+  }
 
   await markQueued(context.shop, job.id);
   await enqueueGenerationJob({ shop: context.shop, generationJobId: job.id });

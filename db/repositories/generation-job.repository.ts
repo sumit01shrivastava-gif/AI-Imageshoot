@@ -47,6 +47,7 @@ const JOB_SELECT = {
   completedAt: true,
   durationMs: true,
   batchId: true,
+  creativeSessionId: true,
   createdAt: true,
   updatedAt: true,
   results: { select: RESULT_SELECT, orderBy: { createdAt: "asc" } },
@@ -81,6 +82,9 @@ export interface CreateGenerationJobInput {
   sourceMediaIds: string[];
   plan: GenerationPlan;
   batchId?: string;
+  /** See prisma/schema.prisma's GenerationJob.creativeSessionId — only
+   * ever set by services/creative-studio/. */
+  creativeSessionId?: string;
 }
 
 /** Creates a new PENDING generation job row. Always a NEW row — unlike
@@ -98,6 +102,7 @@ export async function createGenerationJob(input: CreateGenerationJobInput): Prom
       plan: input.plan as unknown as Prisma.InputJsonValue,
       identityAnchors: input.plan.productFacts.identityAnchors as unknown as Prisma.InputJsonValue,
       ...(input.batchId ? { batchId: input.batchId } : {}),
+      ...(input.creativeSessionId ? { creativeSessionId: input.creativeSessionId } : {}),
     },
     select: { id: true },
   });
@@ -242,6 +247,20 @@ export async function listGenerationJobsForBatch(shop: string, batchId: string):
   return prisma.generationJob.findMany({
     where: { shop, batchId },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: JOB_SELECT,
+  });
+}
+
+/** All generation jobs belonging to one Creative Session, most recent
+ * first — see prisma/schema.prisma's GenerationJob.creativeSessionId and
+ * services/creative-studio/session.server.ts. Scoped directly by
+ * `[shop, creativeSessionId]`, so — like `listGenerationJobsForProduct` —
+ * no separate ownership check is needed here; the caller loads the
+ * owning `CreativeSession` (which does check) first. */
+export async function listGenerationJobsForCreativeSession(shop: string, creativeSessionId: string): Promise<GenerationJobRow[]> {
+  return prisma.generationJob.findMany({
+    where: { shop, creativeSessionId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: JOB_SELECT,
   });
 }

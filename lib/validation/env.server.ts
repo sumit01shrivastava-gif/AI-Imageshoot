@@ -101,6 +101,14 @@ const envSchema = z.object({
   IMAGE_PROCESSING_PROVIDER: z.string().optional(),
   REMOVE_BG_API_KEY: z.string().optional(),
 
+  // --- Creative Studio credit entitlement (development default) ----------
+  // No subscription/billing plan exists yet (see CLAUDE.md) — every shop
+  // gets this one clearly-labeled, generous monthly allowance instead of
+  // being blocked outright. See services/usage/entitlement.server.ts's
+  // `DevelopmentEntitlementProvider` and docs/creative-studio.md "Credit
+  // lifecycle". Never presented to a merchant as a real plan.
+  CREATIVE_STUDIO_MONTHLY_CREDITS: z.coerce.number().int().positive().optional(),
+
   PORT: z.coerce.number().int().positive().optional(),
 
   // --- Testing -------------------------------------------------------------

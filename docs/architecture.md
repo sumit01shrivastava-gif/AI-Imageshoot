@@ -85,6 +85,20 @@ service enqueues a job via `lib/queue` → a separate `workers/` process
   `GenerationPlanSchema`'s building blocks without inheriting its
   mandatory-one-product shape. Reuses the AI provider abstraction,
   storage, review lifecycle, and brand style presets unchanged.
+- **`services/creative-studio/`** (Creative Studio pass) — the
+  conversational image creation/editing workspace: turns a merchant's
+  natural-language message into a structured `ParsedIntent`
+  (`services/ai/heuristic-intent-parser.ts` — a real, rule-based default,
+  not gated to tests like every other provider seam), derives a compact
+  `CreativeContext` from a `CreativeSession`'s own history, and builds a
+  `GenerationPlan` with `generationType: "CREATIVE_STUDIO"` — the SAME
+  `GenerationJob`/`GenerationResult` pipeline every other generationType
+  already uses, not a second one. See docs/creative-studio.md.
+- **`services/usage/entitlement.server.ts`** (Creative Studio pass) — the
+  reserve/settle/refund generation-credit lifecycle
+  (`CreditReservation`), separate from `services/usage/usage-accounting.server.ts`'s
+  audit ledger. Only Creative Studio's own generation path is
+  credit-aware today.
 - **`services/assets/`** (completion pass) — the shop-wide AI Assets
   library: merges `GenerationResult`/`ProcessingResult`/`StoreVisualResult`
   into one normalized, filterable, paginated, newest-first list. No new
@@ -187,9 +201,23 @@ product-scoped subset — `GenerationType.BANNER`/`CTA`, reusing the same
 architecture, no text/logo rendering — while explicitly deferring
 homepage/collection-level generation (no single owning product; this app
 doesn't sync Shopify collections either) pending its own architectural
-decision. Zero new Prisma migrations across Phases 6–7. Every generation
-still runs only through the deterministic test provider, no real
-image-generation vendor installed. Still no homepage/collection banners
-or campaign generation, no publishing back to Shopify, and no
-credits/billing/subscriptions/plan enforcement anywhere in this
-codebase.
+decision. Zero new Prisma migrations across Phases 6–7. The productization pass
+added Store Visuals, brand style preset management, the AI Assets
+library, GDPR compliance webhooks, and a Shopify publishing foundation
+(`services/publishing/` — the real `productCreateMedia` mutation exists,
+but `write_products` is deliberately not requested yet, so publishing
+honestly fails rather than faking success; see docs/publishing.md).
+
+The Creative Studio pass (see docs/creative-studio.md) added the
+conversational image creation/editing workspace
+(`services/creative-studio/`, `/app/creative/:sessionId`) — one
+`CreativeSession` per ongoing conversation, natural language parsed into
+structured intent by a real (heuristic, not-yet-AI) default parser, image
+-to-image follow-ups, multiple variations per turn, and a credit
+reserve/settle/refund foundation (`services/usage/entitlement.server.ts`).
+Generation itself still runs only through the deterministic test
+provider — no real image-generation vendor installed, and no real
+subscription/billing plan exists (the credit allowance is one flat,
+clearly-labeled development default). Still no homepage/collection
+banners or campaign generation, and still no credits/billing/subscription
+enforcement beyond that one development allowance.

@@ -7,13 +7,17 @@
  * /app/store-visuals/:jobId for STORE_VISUAL) — this page links out to
  * those rather than duplicating review actions inline.
  */
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useSearchParams } from "react-router";
+import { useEffect } from "react";
+import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { redirect, useFetcher, useLoaderData, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { useAppBridge } from "@shopify/app-bridge-react";
 
 import { requireAdminContext } from "../../services/shopify";
+import { TenantMismatchError } from "../../lib/auth";
 import { listAssetLibrary } from "../../services/assets/asset-library.server";
 import { ASSET_KINDS, type AssetKind, type AssetItem } from "../../services/assets/types";
+import { startCreativeSession, ProductNotFoundError as CreativeStudioProductNotFoundError } from "../../services/creative-studio/session.server";
 
 const KIND_LABEL: Record<AssetKind, string> = {
   GENERATION: "Product generation",
@@ -56,6 +60,17 @@ const SUBTYPE_LABEL: Record<string, string> = {
   HOMEPAGE_HERO: "Homepage hero",
   COLLECTION_BANNER: "Collection banner",
   STORE_CTA: "Store call-to-action",
+  CREATIVE_STUDIO: "Creative Studio",
+};
+
+// AssetItem.kind → the Creative Studio's CreativeSourceType for that
+// result — STORE_VISUAL is deliberately absent (this merged view never
+// carries a per-item productId for a store visual — see
+// services/assets/types.ts's AssetItem.productId doc comment — so
+// "Open in Creative Studio" isn't offered for those rows).
+const CREATIVE_SOURCE_TYPE_BY_KIND: Partial<Record<AssetKind, "GENERATION_RESULT" | "PROCESSING_RESULT">> = {
+  GENERATION: "GENERATION_RESULT",
+  PROCESSING: "PROCESSING_RESULT",
 };
 
 function subtypeLabel(subtype: string): string {
@@ -66,6 +81,44 @@ function detailHref(item: AssetItem): string {
   if (item.kind === "STORE_VISUAL") return `/app/store-visuals/${item.jobId}`;
   return `/app/products/${item.productId}`;
 }
+
+const NOT_FOUND_RESPONSE = () => new Response("Product not found", { status: 404 });
+const GENERIC_ERROR = "Couldn't open the Creative Studio right now. Please try again.";
+
+// The one exception to this page's normal "read-only, links out to each
+// domain's own detail page" design (see module doc comment) — starting a
+// Creative Studio session creates a real row, which can't be a plain GET
+// link, but Part 13 explicitly asks for "AI Assets → Open in Creative
+// Studio" as a direct entry point.
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { context } = await requireAdminContext(request);
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "start-creative-session") {
+    const productId = formData.get("productId");
+    const sourceType = formData.get("sourceType");
+    const sourceResultId = formData.get("sourceResultId");
+    if (
+      typeof productId !== "string" ||
+      typeof sourceResultId !== "string" ||
+      (sourceType !== "GENERATION_RESULT" && sourceType !== "PROCESSING_RESULT")
+    ) {
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+    try {
+      const session = await startCreativeSession(context, { productId, sourceType, sourceResultId });
+      return redirect(`/app/creative/${session.id}`);
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof CreativeStudioProductNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+  }
+
+  return { ok: false as const, error: "Unknown action." };
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { context } = await requireAdminContext(request);
@@ -84,6 +137,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function AssetLibrary() {
   const { result, kind, status } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const creativeStudioFetcher = useFetcher<typeof action>();
+  const shopify = useAppBridge();
+
+  useEffect(() => {
+    if (creativeStudioFetcher.data && !creativeStudioFetcher.data.ok) {
+      shopify.toast.show(creativeStudioFetcher.data.error, { isError: true });
+    }
+  }, [creativeStudioFetcher.data, shopify]);
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
 
@@ -160,28 +221,47 @@ export default function AssetLibrary() {
                 <s-table-header listSlot="secondary">Source</s-table-header>
                 <s-table-header listSlot="secondary">Status</s-table-header>
                 <s-table-header listSlot="secondary">Created</s-table-header>
+                <s-table-header listSlot="secondary">Actions</s-table-header>
               </s-table-header-row>
               <s-table-body>
-                {result.items.map((item) => (
-                  <s-table-row key={item.id}>
-                    <s-table-cell>
-                      {item.url ? (
-                        <s-thumbnail src={item.url} alt={subtypeLabel(item.subtype)} size="small" />
-                      ) : (
-                        <s-text color="subdued">—</s-text>
-                      )}
-                    </s-table-cell>
-                    <s-table-cell>
-                      <s-link href={detailHref(item)}>{subtypeLabel(item.subtype)}</s-link>
-                      {item.productTitle && <s-text color="subdued"> · {item.productTitle}</s-text>}
-                    </s-table-cell>
-                    <s-table-cell>{KIND_LABEL[item.kind]}</s-table-cell>
-                    <s-table-cell>
-                      <s-badge tone={STATUS_TONE[item.reviewStatus]}>{STATUS_LABEL[item.reviewStatus]}</s-badge>
-                    </s-table-cell>
-                    <s-table-cell>{new Date(item.createdAt).toLocaleDateString()}</s-table-cell>
-                  </s-table-row>
-                ))}
+                {result.items.map((item) => {
+                  const creativeSourceType = CREATIVE_SOURCE_TYPE_BY_KIND[item.kind];
+                  return (
+                    <s-table-row key={item.id}>
+                      <s-table-cell>
+                        {item.url ? (
+                          <s-thumbnail src={item.url} alt={subtypeLabel(item.subtype)} size="small" />
+                        ) : (
+                          <s-text color="subdued">—</s-text>
+                        )}
+                      </s-table-cell>
+                      <s-table-cell>
+                        <s-link href={detailHref(item)}>{subtypeLabel(item.subtype)}</s-link>
+                        {item.productTitle && <s-text color="subdued"> · {item.productTitle}</s-text>}
+                      </s-table-cell>
+                      <s-table-cell>{KIND_LABEL[item.kind]}</s-table-cell>
+                      <s-table-cell>
+                        <s-badge tone={STATUS_TONE[item.reviewStatus]}>{STATUS_LABEL[item.reviewStatus]}</s-badge>
+                      </s-table-cell>
+                      <s-table-cell>{new Date(item.createdAt).toLocaleDateString()}</s-table-cell>
+                      <s-table-cell>
+                        {creativeSourceType && item.productId && (
+                          <s-button
+                            variant="tertiary"
+                            onClick={() =>
+                              creativeStudioFetcher.submit(
+                                { intent: "start-creative-session", productId: item.productId!, sourceType: creativeSourceType, sourceResultId: item.id },
+                                { method: "POST" },
+                              )
+                            }
+                          >
+                            Open in Creative Studio
+                          </s-button>
+                        )}
+                      </s-table-cell>
+                    </s-table-row>
+                  );
+                })}
               </s-table-body>
             </s-table>
           )}

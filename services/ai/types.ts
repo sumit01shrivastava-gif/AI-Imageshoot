@@ -137,6 +137,34 @@ export interface CreativeDirection {
 export type OutputFormat = "png" | "jpeg" | "webp";
 export type GenerationQuality = "draft" | "standard" | "high";
 
+/**
+ * How this request relates to a source image — see
+ * services/creative-studio/types.ts's `GenerationModeValue` (this type
+ * mirrors it structurally without importing it, per this file's own
+ * "no higher-domain import" rule). Optional and additive: every
+ * generationType that existed before the Creative Studio (PRODUCT_CLEANUP,
+ * LIFESTYLE, ...) never sets this, and a provider must treat its absence
+ * exactly as it always has — plain text-to-image grounded by
+ * `sourceImages`.
+ */
+export type GenerationMode = "TEXT_TO_IMAGE" | "IMAGE_TO_IMAGE" | "IMAGE_EDIT" | "VARIATION";
+
+/**
+ * One additional reference image beyond `sourceImages` — e.g. the exact
+ * prior generation result a conversational follow-up is editing forward
+ * from. `role` tells a provider capable of multi-reference conditioning
+ * which reference is "the ground-truth original product" vs. "the
+ * in-progress composition to edit," without this interface needing to
+ * know why (services/ai/ stays domain-agnostic — see CLAUDE.md's
+ * architecture principles). A provider that doesn't support multi
+ * -reference editing may ignore this and fall back to `sourceImages` +
+ * `creativeDirection.prompt` alone.
+ */
+export interface GenerationReferenceImage {
+  url: string;
+  role: "product_original" | "previous_result" | "style_reference";
+}
+
 export interface GenerateImageInput {
   /** The generation taxonomy value this request belongs to (e.g.
    * "PRODUCT_CLEANUP", "LIFESTYLE") — kept as a plain string here so this
@@ -169,6 +197,13 @@ export interface GenerateImageInput {
    * the vendor's API accepts them. `undefined`/absent for generation
    * types with no scene concept (e.g. PRODUCT_CLEANUP). */
   sceneDetails?: Record<string, unknown>;
+  /** See `GenerationMode`'s doc comment. Absent for every pre-existing
+   * generationType (unchanged behavior); the Creative Studio always sets
+   * one (services/creative-studio/build-input.ts). */
+  mode?: GenerationMode;
+  /** See `GenerationReferenceImage`'s doc comment. Absent for every
+   * pre-existing generationType. */
+  referenceImages?: GenerationReferenceImage[];
 }
 
 export interface GeneratedImageOutput {
@@ -198,6 +233,62 @@ export interface GenerateImageResult {
 export interface ImageGenerationProvider {
   readonly name: string;
   generateImage(input: GenerateImageInput): Promise<GenerateImageResult>;
+}
+
+// ---------------------------------------------------------------------------
+// IntentParsingProvider (Creative Studio) — turns a merchant's natural
+// -language message into a structured instruction. See
+// docs/creative-studio.md "Intent model" and Part 3's requirement: "Do
+// this through a provider-agnostic abstraction so a future/real AI model
+// can perform intent parsing without coupling the rest of the application
+// to one vendor." Deliberately its own interface, not folded into
+// `AIProvider`/`ImageGenerationProvider` — parsing a sentence into
+// structure and generating a photorealistic image are unrelated
+// capabilities that may end up backed by entirely different vendors (a
+// small/cheap language model for the former, a large image model for the
+// latter), mirroring this file's own module doc comment's reasoning for
+// why AIProvider/ImageGenerationProvider/ImageProcessingProvider are
+// three interfaces, not one.
+// ---------------------------------------------------------------------------
+
+/** Everything a parser needs to interpret one message — deliberately
+ * loose/generic (`Record<string, unknown>` for `creativeContext`) so this
+ * interface doesn't import services/creative-studio's concrete types
+ * (this file must stay the lowest-level, domain-agnostic layer — see
+ * CLAUDE.md's architecture principles). The caller
+ * (services/creative-studio/) is the one place that knows the concrete
+ * shape on both sides of this call. */
+export interface ParseIntentInput {
+  /** The merchant's own raw message — the ONLY place in the whole
+   * Creative Studio pipeline this raw text is allowed to reach; a parser
+   * implementation may read it, but nothing downstream of the parser's
+   * structured output ever sees it again (see docs/creative-studio.md "No
+   * arbitrary prompts"). */
+  message: string;
+  /** A compact summary of where the conversation currently stands (active
+   * scene/style, whether a current result exists, recent instructions,
+   * ...) — see services/creative-studio/creative-context.ts's
+   * `CreativeContext`, serialized to a plain object for this boundary.
+   * Lets a parser resolve short, context-dependent follow-ups
+   * ("brighter", "use the second one") without needing the full raw
+   * conversation history. */
+  creativeContext: Record<string, unknown>;
+  /** How many candidate prior results exist to reference by ordinal
+   * ("use the second one") — 0 when this is the session's first message. */
+  candidateResultCount: number;
+}
+
+/** Raw output from `IntentParsingProvider.parseIntent` — deliberately
+ * loose (`unknown`), validated by
+ * services/creative-studio/intent-schema.ts's `parseParsedIntent` before
+ * anything downstream trusts it (see CLAUDE.md "Reject malformed provider
+ * output"), the same pattern `ProductAnalysisRawOutput` already
+ * establishes for `AIProvider.analyzeProduct`. */
+export type ParsedIntentRawOutput = Record<string, unknown>;
+
+export interface IntentParsingProvider {
+  readonly name: string;
+  parseIntent(input: ParseIntentInput): Promise<ParsedIntentRawOutput>;
 }
 
 // ---------------------------------------------------------------------------

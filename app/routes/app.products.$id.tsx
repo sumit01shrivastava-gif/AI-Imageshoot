@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { redirect, useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
@@ -58,6 +58,11 @@ import {
   InvalidPublishRequestError,
   PublishSourceNotFoundError,
 } from "../../services/publishing/request-publish.server";
+import {
+  startCreativeSession,
+  listSessionsForProduct as listCreativeSessionsForProduct,
+  ProductNotFoundError as CreativeStudioProductNotFoundError,
+} from "../../services/creative-studio/session.server";
 import { useSelection } from "../components/selection-context";
 import { SelectionBar } from "../components/selection-bar";
 import { PublishControl, type PublishStatus } from "../components/publish-control";
@@ -155,6 +160,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       : Promise.resolve(null),
   ]);
 
+  // Most-recent-first — the product detail page's "AI Creative Studio"
+  // entry point offers "Create with AI" (always starts a fresh session)
+  // plus a short list of this product's own prior sessions to resume
+  // (see docs/creative-studio.md "Routing").
+  const creativeSessions = await listCreativeSessionsForProduct(context, product.id);
+
   return {
     product,
     variants,
@@ -169,6 +180,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     generationHistory: generationHistory.map(withResultsSanitizedForClient),
     availableBrandStylePresets,
     processingHistory: processingHistory.map(withResultsSanitizedForClient),
+    creativeSessions,
   };
 };
 
@@ -176,6 +188,29 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { context } = await requireAdminContext(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "start-creative-session") {
+    try {
+      const sourceType = formData.get("sourceType");
+      const sourceResultId = formData.get("sourceResultId");
+      const session = await startCreativeSession(context, {
+        productId: params.id!,
+        sourceType: sourceType === "GENERATION_RESULT" || sourceType === "PROCESSING_RESULT" ? sourceType : undefined,
+        sourceResultId: typeof sourceResultId === "string" && sourceResultId.length > 0 ? sourceResultId : undefined,
+      });
+      return redirect(`/app/creative/${session.id}`);
+    } catch (error) {
+      if (error instanceof TenantMismatchError || error instanceof CreativeStudioProductNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      logger.error("products.detail.start_creative_session_failed", {
+        shop: context.shop,
+        productId: params.id,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return { ok: false as const, error: "Couldn't open the Creative Studio right now. Please try again." };
+    }
+  }
 
   if (intent === "analyze") {
     try {
@@ -544,9 +579,11 @@ export default function ProductDetail() {
     processingHistory,
     productImageryPublishStatus,
     processingPublishStatus,
+    creativeSessions,
   } = useLoaderData<typeof loader>();
   const { isImageSelected, toggleImage, setProductImages, productSelectionState, selectedCountForProduct } =
     useSelection();
+  const creativeStudioFetcher = useFetcher<typeof action>();
   const analyzeFetcher = useFetcher<typeof action>();
   const generateFetcher = useFetcher<typeof action>();
   const lifestyleFetcher = useFetcher<typeof action>();
@@ -609,6 +646,15 @@ export default function ProductDetail() {
     const id = setInterval(() => revalidator.revalidate(), 3000);
     return () => clearInterval(id);
   }, [awaitingResult, intelligenceState, revalidator]);
+
+  useEffect(() => {
+    // A successful "start-creative-session" submission returns a redirect
+    // Response (see the action above), so `.data` never resolves to
+    // `{ ok: true }` for it — only the failure shape ever reaches here.
+    if (creativeStudioFetcher.data && !creativeStudioFetcher.data.ok) {
+      shopify.toast.show(creativeStudioFetcher.data.error, { isError: true });
+    }
+  }, [creativeStudioFetcher.data, shopify]);
 
   useEffect(() => {
     if (analyzeFetcher.data?.ok) {
@@ -992,6 +1038,35 @@ export default function ProductDetail() {
         </s-stack>
       </s-section>
 
+      <s-section heading="AI Creative Studio">
+        <s-stack direction="block" gap="base">
+          <s-text color="subdued">
+            A conversational workspace for creating and editing this product&rsquo;s imagery — describe what you
+            want in plain language and refine it turn by turn. The product itself is always preserved unless you
+            explicitly ask for a change.
+          </s-text>
+          <s-stack direction="inline" gap="base" alignItems="center">
+            <s-button
+              variant="primary"
+              onClick={() => creativeStudioFetcher.submit({ intent: "start-creative-session" }, { method: "POST" })}
+              {...(creativeStudioFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              Create with AI
+            </s-button>
+          </s-stack>
+          {creativeSessions.length > 0 && (
+            <s-stack direction="block" gap="small-200">
+              <s-text color="subdued">Continue a previous session:</s-text>
+              {creativeSessions.slice(0, 5).map((session) => (
+                <s-link key={session.id} href={`/app/creative/${session.id}`}>
+                  {new Date(session.createdAt).toLocaleString()}
+                </s-link>
+              ))}
+            </s-stack>
+          )}
+        </s-stack>
+      </s-section>
+
       <s-section heading="Image Generation">
         <s-stack direction="block" gap="base">
           <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
@@ -1165,6 +1240,12 @@ export default function ProductDetail() {
               job={latestProductImagery}
               onReview={reviewProductImageryResult}
               onRegenerate={() => regenerateProductImagery(latestProductImagery.id)}
+              onContinueEditing={(resultId) =>
+                creativeStudioFetcher.submit(
+                  { intent: "start-creative-session", sourceType: "GENERATION_RESULT", sourceResultId: resultId },
+                  { method: "POST" },
+                )
+              }
               isRegenerating={isGeneratingProductImagery}
               productId={product.id}
               productTitle={product.title}
@@ -1403,6 +1484,7 @@ function ProductImageryResultDetail({
   job,
   onReview,
   onRegenerate,
+  onContinueEditing,
   isRegenerating,
   productId,
   productTitle,
@@ -1411,6 +1493,7 @@ function ProductImageryResultDetail({
   job: GenerationJobRow;
   onReview: (resultId: string, decision: "APPROVED" | "REJECTED") => void;
   onRegenerate: () => void;
+  onContinueEditing: (resultId: string) => void;
   isRegenerating: boolean;
   productId: string;
   productTitle: string;
@@ -1474,6 +1557,9 @@ function ProductImageryResultDetail({
           </s-button>
           <s-button variant="tertiary" onClick={onRegenerate} {...(isRegenerating ? { loading: true } : {})}>
             Regenerate
+          </s-button>
+          <s-button variant="tertiary" onClick={() => onContinueEditing(result.id)}>
+            Continue editing
           </s-button>
         </s-stack>
 

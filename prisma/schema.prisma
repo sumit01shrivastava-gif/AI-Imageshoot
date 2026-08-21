@@ -136,13 +136,14 @@ model ShopifyProduct {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  media           ShopifyProductMedia[]
-  selectionItems  ImageSelectionItem[]
-  intelligence    ProductIntelligence?
-  generationJobs  GenerationJob[]
-  processingJobs  ProcessingJob[]
-  storeVisualRefs StoreVisualJobProduct[]
-  publishingJobs  PublishingJob[]
+  media            ShopifyProductMedia[]
+  selectionItems   ImageSelectionItem[]
+  intelligence     ProductIntelligence?
+  generationJobs   GenerationJob[]
+  processingJobs   ProcessingJob[]
+  storeVisualRefs  StoreVisualJobProduct[]
+  publishingJobs   PublishingJob[]
+  creativeSessions CreativeSession[]
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -195,8 +196,9 @@ model ShopifyProductMedia {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  selectionItems ImageSelectionItem[]
-  processingJobs ProcessingJob[]
+  selectionItems   ImageSelectionItem[]
+  processingJobs   ProcessingJob[]
+  creativeSessions CreativeSession[]
 
   @@unique([shop, shopifyMediaId])
   @@index([shop, productId, position])
@@ -412,6 +414,15 @@ enum GenerationType {
   CATEGORY_BANNER
   CTA
   CAMPAIGN
+  // Any generation/edit requested through the conversational Creative
+  // Studio (services/creative-studio/) — one GenerationType covering
+  // every fine-grained conversational intent (EDIT_BACKGROUND,
+  // ADD_MODEL, CHANGE_LIGHTING, ...), which lives instead in the plan's
+  // own `creativeIntent.intent` field (see
+  // services/creative-studio/types.ts's CREATIVE_INTENTS) — mirrors how
+  // LIFESTYLE's scene detail lives in `lifestyleScene`, not a proliferation
+  // of top-level GenerationType values. See docs/creative-studio.md.
+  CREATIVE_STUDIO
 }
 
 // PENDING: row created, not yet enqueued. QUEUED: enqueued onto BullMQ,
@@ -499,6 +510,14 @@ model GenerationJob {
   batchId String?
   batch   GenerationBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
+  // Which Creative Studio conversation this job belongs to, if any — null
+  // for every non-conversational generationType. SetNull (not Cascade):
+  // deleting a CreativeSession must never delete the generated images it
+  // produced (they may already be approved/published) — mirrors batchId's
+  // exact reasoning. See services/creative-studio/, docs/creative-studio.md.
+  creativeSessionId String?
+  creativeSession   CreativeSession? @relation(fields: [creativeSessionId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -508,6 +527,7 @@ model GenerationJob {
   @@index([shop, status])
   @@index([shop, createdAt])
   @@index([batchId])
+  @@index([creativeSessionId])
 }
 
 // One row per output image a GenerationJob produced — a single job may
@@ -1053,7 +1073,7 @@ model UsageEvent {
   // second time, never a double charge.
   idempotencyKey String @unique
 
-  providerName String?
+  providerName  String?
   // Defaulted to 1 — every operation counts as one unit today; a future
   // billing phase that prices operations differently (e.g. by output
   // count or provider cost) can start reading/writing a real value here
@@ -1137,6 +1157,170 @@ model PublishingJob {
 
   @@index([shop, targetProductId])
   @@index([shop, sourceType, sourceResultId])
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Creative Studio — conversational AI image creation/editing. See
+// services/creative-studio/ and docs/creative-studio.md.
+// ---------------------------------------------------------------------------
+
+enum CreativeSessionStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// What a CreativeSession started FROM. PRODUCT_IMAGE: a fresh session
+// opened from a product's own Shopify-hosted media (the common case —
+// "Create with AI" on the product detail page). The other three: opened
+// via "Continue editing" from an existing, already-generated result —
+// see CreativeSession.sourceResultId's comment for why that's a soft
+// reference, not a FK, mirroring PublishingSourceType/PublishingJob's
+// identical pattern.
+enum CreativeSourceType {
+  PRODUCT_IMAGE
+  GENERATION_RESULT
+  PROCESSING_RESULT
+  STORE_VISUAL_RESULT
+}
+
+enum CreativeMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+// One row per ongoing conversation about one product's imagery — NOT one
+// row per message (see docs/creative-studio.md "Session lifecycle"):
+// "Product → Creative Session → multiple instructions → multiple
+// generated versions" is the whole point of this model existing
+// separately from GenerationJob. A session accumulates GenerationJob
+// history exactly like a product accumulates generation history today
+// (every instruction creates a NEW GenerationJob/GenerationResult, never
+// overwrites a prior one — see GenerationJob.creativeSessionId) while
+// staying one coherent, continuable thread.
+model CreativeSession {
+  id String @id @default(cuid())
+
+  // Tenant. Every query against this model must be scoped by shop — see
+  // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
+  shop String
+
+  productId String
+  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sourceType     CreativeSourceType @default(PRODUCT_IMAGE)
+  // Soft reference into GenerationResult.id / ProcessingResult.id /
+  // StoreVisualResult.id, meaningful only when sourceType isn't
+  // PRODUCT_IMAGE — see CreativeSourceType's comment and
+  // services/publishing/'s PublishingJob.sourceResultId for the
+  // established "soft cross-domain reference, not a Prisma FK" pattern
+  // this mirrors (Prisma has no polymorphic relation).
+  sourceResultId String?
+
+  // The specific ShopifyProductMedia this session started from, when
+  // sourceType is PRODUCT_IMAGE. Null when starting from a prior result
+  // instead (that result's own originating GenerationJob.plan already
+  // carries its own source images).
+  sourceMediaId String?
+  sourceMedia   ShopifyProductMedia? @relation(fields: [sourceMediaId], references: [id], onDelete: Cascade)
+
+  // The GenerationResult currently considered "the working image" for
+  // this session (the canvas' current selection) — updated whenever a
+  // new result becomes current: the first successful generation, a
+  // follow-up edit's result, or the merchant explicitly picking a
+  // different variation to continue from. Soft reference (same reasoning
+  // as sourceResultId) — always a result of one of this session's own
+  // generationJobs, an invariant services/creative-studio/session.server.ts
+  // enforces, not the database.
+  currentResultId String?
+
+  status CreativeSessionStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages       CreativeMessage[]
+  generationJobs GenerationJob[]
+
+  @@index([shop, productId])
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+
+// One row per conversation turn (both the merchant's own message and the
+// assistant's reply) — see docs/creative-studio.md "Creative context".
+// Deliberately NOT the mechanism the provider itself reads from: a
+// generation request is built from a compact, derived
+// `services/creative-studio/creative-context.ts` structure, never the raw
+// message history (see that file's doc comment for why).
+model CreativeMessage {
+  id String @id @default(cuid())
+
+  shop String
+
+  creativeSessionId String
+  creativeSession   CreativeSession @relation(fields: [creativeSessionId], references: [id], onDelete: Cascade)
+
+  role    CreativeMessageRole
+  content String
+
+  // The structured, parsed intent this USER message resolved to (see
+  // services/creative-studio/intent-schema.ts's ParsedIntentSchema) —
+  // null for ASSISTANT/SYSTEM messages and for a USER message that
+  // failed to parse. Never a raw provider prompt — see
+  // docs/creative-studio.md "No arbitrary prompts".
+  intent Json?
+
+  // Soft reference to the GenerationJob this message triggered (a USER
+  // message that requested generation) or reports on (an ASSISTANT
+  // message once the job resolves) — null for a plain conversational
+  // message that didn't (yet) result in a job.
+  generationJobId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, creativeSessionId, createdAt])
+}
+
+enum CreditReservationStatus {
+  RESERVED
+  SETTLED
+  REFUNDED
+}
+
+// The Creative Studio credit entitlement ledger's reserve/settle/refund
+// lifecycle — see services/usage/entitlement.server.ts and
+// docs/creative-studio.md "Credit lifecycle". Deliberately separate from
+// UsageEvent (services/usage/usage-accounting.server.ts): UsageEvent is a
+// record-after-the-fact AUDIT ledger of completed operations (upsert on
+// idempotencyKey, only ever SUCCEEDED/FAILED); this is a live credit-HOLD
+// table with a genuine third, pre-resolution state (RESERVED) a request
+// must pass through before a job is even created — a different kind of
+// table for a different kind of question ("can this proceed, and is a
+// hold on it currently outstanding?" vs. "what happened, for the
+// record?"), the same "genuinely different kind of request gets its own
+// model" call this schema has made repeatedly (Processing vs. Generation,
+// StoreVisuals vs. Generation).
+model CreditReservation {
+  id String @id @default(cuid())
+
+  shop String
+
+  // The GenerationJob this reservation is for. @unique makes
+  // reserveGenerationCredits naturally idempotent: a retried/duplicate
+  // reservation attempt for the same job finds the existing row instead
+  // of creating a second hold — see docs/creative-studio.md "Credit
+  // lifecycle".
+  jobId String @unique
+
+  amount Int                     @default(1)
+  status CreditReservationStatus @default(RESERVED)
+
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
   @@index([shop, status])
   @@index([shop, createdAt])
 }

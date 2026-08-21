@@ -44,6 +44,8 @@ import { recordIdentityValidation, type IdentityValidationResult } from "./ident
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { GeneratedImageOutput } from "../ai/types";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
+import { settleGenerationCredits, refundGenerationCredits } from "../usage/entitlement.server";
+import { setCurrentResult } from "../../db/repositories/creative-session.repository";
 
 /** Records one usage-ledger event for this job's terminal outcome — see
  * services/usage/usage-accounting.server.ts's module doc comment for why
@@ -71,6 +73,67 @@ async function recordGenerationUsage(
     logger.warn("generation.job.usage_record_failed", {
       shop,
       generationJobId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
+
+/** Settles or refunds this job's credit reservation, if it has one — see
+ * services/usage/entitlement.server.ts. Only Creative Studio-originated
+ * jobs (`creativeSessionId !== null`) ever have a reservation; every
+ * other generationType's call here is a harmless no-op (settle/refund
+ * are themselves conditional updates that affect zero rows when no
+ * reservation exists — see credit-reservation.repository.ts). Never
+ * allowed to fail the job itself, same reasoning as
+ * `recordGenerationUsage`. */
+async function resolveGenerationCredits(
+  shop: string,
+  generationJobId: string,
+  creativeSessionId: string | null,
+  outcome: "SUCCEEDED" | "FAILED",
+): Promise<void> {
+  if (!creativeSessionId) return;
+  const context: AuthContext = { shop, sessionId: "worker:generation", isOnline: false };
+  try {
+    if (outcome === "SUCCEEDED") {
+      await settleGenerationCredits(context, generationJobId);
+    } else {
+      await refundGenerationCredits(context, generationJobId);
+    }
+  } catch (error) {
+    logger.warn("generation.job.credit_resolution_failed", {
+      shop,
+      generationJobId,
+      outcome,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
+
+/** For a Creative Studio-originated job that just SUCCEEDED, makes its
+ * first result the session's new "current working image" — without
+ * this, a session's canvas would stay empty until the merchant manually
+ * picked a variation (see docs/creative-studio.md "Session lifecycle").
+ * `resultIds` is oldest-first (the same order `persistOutput`/`createResults`
+ * wrote them in), so `[0]` is the primary result for a single-image
+ * request and a stable, deterministic default for a multi-variation one
+ * (the merchant can still switch via the version thumbnails). Never
+ * allowed to fail the job itself, same reasoning as
+ * `resolveGenerationCredits`. */
+async function setInitialCreativeSessionResult(
+  shop: string,
+  generationJobId: string,
+  creativeSessionId: string | null,
+  resultIds: string[],
+): Promise<void> {
+  if (!creativeSessionId || resultIds.length === 0) return;
+  try {
+    await setCurrentResult(shop, creativeSessionId, resultIds[0]);
+  } catch (error) {
+    logger.warn("generation.job.creative_session_result_link_failed", {
+      shop,
+      generationJobId,
+      creativeSessionId,
       detail: error instanceof Error ? error.message : "unknown error",
     });
   }
@@ -158,6 +221,12 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
   await markProcessing(shop, generationJobId, attempt);
 
   const attemptStartedAt = Date.now();
+  // Read once `jobRow` is fetched inside the `try` below, then reused in
+  // the `catch` block too (a plain outer-scoped variable, since `jobRow`
+  // itself is block-scoped to `try`) — see `resolveGenerationCredits`'s
+  // doc comment for why every generationType calls it unconditionally
+  // and only a Creative Studio job actually has anything to resolve.
+  let creativeSessionId: string | null = null;
 
   try {
     const jobRow = await getGenerationJob(context, generationJobId);
@@ -167,6 +236,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       logger.warn("generation.job.missing_row", { shop, generationJobId });
       return;
     }
+    creativeSessionId = jobRow.creativeSessionId;
 
     const plan = parseGenerationPlan(jobRow.plan);
     const input = buildGenerateImageInput(plan, attempt);
@@ -268,6 +338,19 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       outputCount: storedResults.length,
       durationMs,
     });
+    await resolveGenerationCredits(shop, generationJobId, creativeSessionId, "SUCCEEDED");
+    if (creativeSessionId) {
+      // A fresh read (rather than threading ids through `storedResults`,
+      // which are pre-insert shapes with no DB-assigned id yet) — cheap,
+      // and only ever happens for a Creative Studio job.
+      const freshJobRow = await getGenerationJob(context, generationJobId);
+      await setInitialCreativeSessionResult(
+        shop,
+        generationJobId,
+        creativeSessionId,
+        freshJobRow?.results.map((r) => r.id) ?? [],
+      );
+    }
 
     logger.info("generation.job.completed", {
       shop,
@@ -302,6 +385,11 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       // "failed operation", it's a step the queue's own retry may still
       // recover from.
       await recordGenerationUsage(shop, generationJobId, "FAILED", { durationMs });
+      // Same reasoning — a reserved credit is only refunded once the job
+      // has truly, terminally failed, never on an intermediate retry
+      // attempt the queue may still recover from (see Part 11: "Failed
+      // generation must not consume permanent credits").
+      await resolveGenerationCredits(shop, generationJobId, creativeSessionId, "FAILED");
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,
