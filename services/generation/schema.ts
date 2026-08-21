@@ -13,12 +13,13 @@
  *     persisted — see that file.
  */
 import { z } from "zod";
-import { GENERATION_TYPES, OUTPUT_FORMATS, GENERATION_QUALITIES } from "./types";
+import { GENERATION_TYPES, OUTPUT_FORMATS, GENERATION_QUALITIES, ASPECT_RATIOS } from "./types";
 import { IdentityAnchorsSchema } from "../intelligence/schema";
 
 export const GenerationTypeSchema = z.enum(GENERATION_TYPES);
 export const OutputFormatSchema = z.enum(OUTPUT_FORMATS);
 export const GenerationQualitySchema = z.enum(GENERATION_QUALITIES);
+export const AspectRatioSchema = z.enum(ASPECT_RATIOS);
 
 /** Mirrors `services/ai/types.ts`'s `BrandStyleContext` — see
  * docs/generation.md "Brand style". Every field optional: nothing
@@ -165,7 +166,7 @@ export const GenerationPlanSchema = z.object({
     composition: z.string().min(1).nullable().default(null),
   }),
 
-  aspectRatio: z.string().min(1),
+  aspectRatio: AspectRatioSchema,
   outputFormat: OutputFormatSchema,
   quality: GenerationQualitySchema,
   outputCount: z.number().int().min(1).max(4),

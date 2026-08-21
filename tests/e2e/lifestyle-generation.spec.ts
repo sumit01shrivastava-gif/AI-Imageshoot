@@ -1,10 +1,14 @@
 /**
- * E2E: AI Lifestyle Product Imagery (Phase 5).
+ * E2E: AI Product Imagery — lifestyle scenes (Phase 5) and model
+ * photography + aspect ratio selection (Phase 6).
  *
- * Single-product flow: Product detail → pick a brand style preset →
- * Generate Lifestyle Image → queued/processing → succeeded → result
- * visible → Approve → Regenerate → verify the previous (approved) result
- * remains in history.
+ * Single-product LIFESTYLE flow: Product detail → pick a brand style
+ * preset → Generate Lifestyle Image → queued/processing → succeeded →
+ * result visible → Approve → Regenerate → verify the previous (approved)
+ * result remains in history.
+ *
+ * Single-product MODEL_SHOOT flow: switch the Style picker to "Model
+ * photography", pick an aspect ratio, generate.
  *
  * Batch flow: Products → select multiple products → choose "Generate
  * lifestyle imagery" mode → pick a preset → start generating → batch
@@ -44,6 +48,7 @@ const HEADER = { "x-ai-imageshoot-e2e-shop": TEST_SHOP };
 const DETAIL_PRODUCT_ID = "gid://shopify/Product/9400000000001";
 const BAG_PRODUCT_ID = "gid://shopify/Product/9400000000002";
 const TOTE_PRODUCT_ID = "gid://shopify/Product/9400000000003";
+const MODEL_PRODUCT_ID = "gid://shopify/Product/9400000000004";
 
 const PLACEHOLDER_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -56,7 +61,7 @@ async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: TEST_SHOP } });
 }
 
-async function seedAnalyzedProduct(shopifyProductId: string, title: string) {
+async function seedAnalyzedProduct(shopifyProductId: string, title: string, { modelSuitable = false }: { modelSuitable?: boolean } = {}) {
   const product = await prisma.shopifyProduct.create({
     data: {
       shop: TEST_SHOP,
@@ -95,9 +100,10 @@ async function seedAnalyzedProduct(shopifyProductId: string, title: string) {
       category: "Handbags",
       material: "Leather",
       primaryColor: "Brown",
-      modelSuitable: false,
+      modelSuitable,
       recommendedAssetTypes: ["product_studio", "lifestyle"],
       recommendedEnvironments: ["studio", "upscale interior"],
+      recommendedPoseTypes: modelSuitable ? ["carried/worn detail"] : [],
       identityAnchors: {
         category: "Handbags",
         shape: "Rectangular",
@@ -137,7 +143,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test.describe("AI Lifestyle Imagery — product detail", () => {
+test.describe("AI Product Imagery — product detail (LIFESTYLE)", () => {
   test("pick a preset, generate, approve, regenerate, and verify the previous approved result remains", async ({
     page,
   }) => {
@@ -149,11 +155,11 @@ test.describe("AI Lifestyle Imagery — product detail", () => {
     // app.products.$id.tsx), so scope to this section specifically rather
     // than asserting the text page-wide.
     await page.goto(`/app/products/${product.id}`);
-    const lifestyleSection = page.locator("s-section", { has: page.getByRole("heading", { name: "AI Lifestyle Imagery" }) });
-    await expect(lifestyleSection).toBeVisible();
-    await expect(lifestyleSection.getByText("Not generated yet", { exact: true })).toBeVisible();
+    const productImagerySection = page.locator("s-section", { has: page.getByRole("heading", { name: "AI Product Imagery" }) });
+    await expect(productImagerySection).toBeVisible();
+    await expect(productImagerySection.getByText("Not generated yet", { exact: true })).toBeVisible();
 
-    // → pick a brand style preset.
+    // → Style defaults to "Lifestyle scene" — pick a brand style preset.
     await page.getByLabel("Brand style").selectOption({ label: "Luxury Editorial" });
 
     // → Generate Lifestyle Image.
@@ -172,7 +178,7 @@ test.describe("AI Lifestyle Imagery — product detail", () => {
     await expect(page.getByText(/Succeeded/).first()).toBeVisible({ timeout: 15_000 });
 
     // → result visible, original vs. generated side by side.
-    await expect(page.getByText("Lifestyle result", { exact: true })).toBeVisible();
+    await expect(page.getByText("Result", { exact: true })).toBeVisible();
     await expect(page.getByText("Not reviewed", { exact: false })).toBeVisible();
 
     // → verify original still exists — Shopify's own media row is
@@ -189,17 +195,52 @@ test.describe("AI Lifestyle Imagery — product detail", () => {
     // → Regenerate → a second, independent generation exists (history
     // preserved, not overwritten). Exactly one "Regenerate" control exists
     // once a result exists (the section's own top-level button is only
-    // offered pre-result — see app.products.$id.tsx's AI Lifestyle
-    // Imagery section).
+    // offered pre-result — see app.products.$id.tsx's AI Product Imagery
+    // section).
     await page.getByRole("button", { name: "Regenerate" }).click();
-    await expect(page.getByText("Lifestyle generation history", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Generation history", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Generation #2", { exact: false })).toBeVisible();
     await expect(page.getByText("Generation #1", { exact: false })).toBeVisible();
 
     // → the previous (approved) result remains — the history line for
-    // Generation #1 still reads Approved even though the "Lifestyle
-    // result" card up top now shows the fresh, unreviewed regeneration.
+    // Generation #1 still reads Approved even though the result card up
+    // top now shows the fresh, unreviewed regeneration.
     await expect(page.getByText(/Generation #1.*Approved/)).toBeVisible();
+  });
+});
+
+test.describe("AI Product Imagery — product detail (MODEL_SHOOT)", () => {
+  test("switch to Model photography, generate, and verify it's gated on modelSuitable", async ({ page }) => {
+    const product = await seedAnalyzedProduct(MODEL_PRODUCT_ID, "Model Detail Test Bag", { modelSuitable: true });
+
+    await page.goto(`/app/products/${product.id}`);
+    const productImagerySection = page.locator("s-section", { has: page.getByRole("heading", { name: "AI Product Imagery" }) });
+    await expect(productImagerySection).toBeVisible();
+
+    // → switch Style to Model photography. exact:true — "Style" would
+    // otherwise substring-match the "Brand style" select too (Playwright's
+    // getByLabel text matching is substring by default).
+    await page.getByLabel("Style", { exact: true }).selectOption({ label: "Model photography" });
+    await page.getByLabel("Aspect ratio").selectOption({ label: "Portrait (4:5)" });
+
+    // → Generate Model Image.
+    const generateButton = page.getByRole("button", { name: "Generate Model Image" });
+    await expect(generateButton).toBeVisible();
+    await expect(generateButton).toBeEnabled(); // this product IS model-suitable
+    await generateButton.click();
+
+    await expect(page.getByText(/Succeeded/).first()).toBeVisible({ timeout: 15_000 });
+
+    // "Model photography" legitimately appears several times in the DOM
+    // once a result exists (the Style select's own current value, the
+    // result card's type label) — verify the actually-persisted job
+    // directly instead of fighting UI text ambiguity.
+    const job = await prisma.generationJob.findFirstOrThrow({
+      where: { shop: TEST_SHOP, productId: product.id },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(job.type).toBe("MODEL_SHOOT");
+    expect(job.status).toBe("SUCCEEDED");
   });
 });
 

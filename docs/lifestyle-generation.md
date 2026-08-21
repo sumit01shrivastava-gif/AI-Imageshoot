@@ -1,4 +1,4 @@
-# AI Lifestyle Product Imagery (Phase 5)
+# AI Product Imagery — Lifestyle Scenes & Model Photography (Phases 5–6)
 
 ## Purpose
 
@@ -10,19 +10,24 @@ abstraction, the `"generation"` queue — proven only through
 transforms (background removal, enhance, resize) on a separate model
 family, `ProcessingJob`/`ProcessingResult`/`ProcessingBatch`.
 
-Phase 5 builds the first **creative** generation capability merchants
+Phase 5 built the first **creative** generation capability merchants
 actually use: placing a product in a photorealistic **lifestyle scene** —
 `GenerationType.LIFESTYLE` — selectable per-product or in batch, built
 from category-aware defaults and a merchant-chosen **brand style
 preset**, reviewable and regenerable exactly like every other generation.
-This is the core Pro-plan capability.
+Phase 6 completes the Pro-plan "Package 2" capability set: **model
+photography** (`GenerationType.MODEL_SHOOT`, gated on Product
+Intelligence's existing `modelSuitable` signal) and merchant-selectable
+**aspect ratio**, both sharing the same architecture, review flow, and —
+on the product detail page — the same unified "AI Product Imagery"
+section as lifestyle scenes.
 
-**No real image-generation vendor is installed.** Every lifestyle
-generation in this codebase, like `PRODUCT_CLEANUP` before it, runs only
-through the deterministic test provider — see "Provider strategy" below.
-No AI human models/poses/model shoots, banners, CTA imagery, campaign
-generation, Shopify publishing, billing, subscriptions, credits, or plan
-enforcement are implemented — see "Confirmations".
+**No real image-generation vendor is installed.** Every generation in
+this codebase, like `PRODUCT_CLEANUP` before it, runs only through the
+deterministic test provider — see "Provider strategy" below. No banners,
+CTA imagery, campaign generation, Shopify publishing, billing,
+subscriptions, credits, or plan enforcement are implemented — see
+"Confirmations".
 
 ## Why this extends `GenerationJob`, not a new model family
 
@@ -108,7 +113,7 @@ model BrandStylePreset {
 **`GenerationBatch` mirrors `ProcessingBatch` field-for-field rather than
 reusing it** — Prisma has no polymorphic relation, and `ProcessingBatch.operation`/
 `.jobs` are typed to Processing's own enum/model. This is the same
-"architectural consistency, not literal table reuse" call Phase 4already
+"architectural consistency, not literal table reuse" call Phase 4 already
 made for not reusing `GenerationJob` itself.
 
 **No `LifestyleScenePlan` table.** The scene plan lives inside the
@@ -126,6 +131,18 @@ exact mechanism this phase's regeneration reuses unchanged.
 named built-in presets are **code constants**
 (`services/generation/brand-style-presets.ts`), not seeded database rows
 — see "Brand style presets" below for why.
+
+**Phase 6 (model imagery + aspect ratio) required zero Prisma
+migrations.** `MODEL_SHOOT` reuses `GenerationJob`/`GenerationResult`/
+`BrandStylePreset`/`GenerationBatch` and Product Intelligence's existing
+`modelSuitable`/`recommendedPoseTypes`/`recommendedModelAttributes`
+columns (populated since Phase 2, never before consumed) exactly as-is;
+aspect ratio was already a plain string inside the `GenerationJob.plan`
+JSON snapshot (`DEFAULT_ASPECT_RATIO = "1:1"`, hardcoded) — making it
+merchant-selectable only tightened its Zod validation
+(`GenerationPlanSchema.aspectRatio`: `z.string().min(1)` →
+`AspectRatioSchema`, i.e. `z.enum(ASPECT_RATIOS)`), a schema-only change
+with no column of its own.
 
 ## Provider strategy
 
@@ -279,6 +296,67 @@ no preset at all. A bad or stale id must never block generation.
 model/repository/service are fully built and tested — adding that button
 later is additive, not a redesign.
 
+## Model imagery (Phase 6)
+
+`GenerationType.MODEL_SHOOT` — model photography featuring the product —
+completes Package 2 without any new data model. It reuses:
+
+- **The same `BrandStylePreset`** as LIFESTYLE, specifically its
+  `modelStyle` attribute (part of `BrandStylePresetAttributesSchema`
+  since Phase 3's original `BrandStyleContextSchema`, but unused by any
+  generationType until now). There is deliberately **no separate
+  "ModelPreset" model** — the instructions' own preset examples already
+  treat brand style and model styling as one reusable named thing, and
+  inventing a second, parallel preset concept would just fragment that.
+- **Product Intelligence's existing `modelSuitable`/`recommendedPoseTypes`/
+  `recommendedModelAttributes`** (Phase 2 fields, populated by
+  `category-recommendations.ts` since the very first `CATEGORY_PROFILES`
+  table but never consumed downstream until this phase).
+
+**Gated on `modelSuitable === true`.** `build-plan.ts` throws
+`ProductNotModelSuitableError` for any other value (`false` or `null`) —
+mirrors `ProductNotAnalyzedError`'s "require the real precondition, don't
+silently generate something meaningless" reasoning (jewelry/eyewear/
+handbags/shoes/clothing are model-suitable; furniture/appliances/
+electronics/food are not — see `category-recommendations.ts`'s
+`CATEGORY_PROFILES`). In a batch, one product failing this gate is
+skipped-and-logged exactly like `ProductNotAnalyzedError`/
+`MissingSourceImagesError` already were for LIFESTYLE — not a new failure
+mode, the same "one image failing to even be created must not abort the
+batch" handling.
+
+The synthesized prompt uses `recommendedPoseTypes[0]` (the category's
+top recommended pose) and deliberately generic language ("Model
+photography **featuring** the product," not "worn by") since
+`modelSuitable` spans categories that aren't all literally worn the same
+way. `lifestyleScene` stays `null` for MODEL_SHOOT (it's a LIFESTYLE-only
+concept); `brandStyle` is populated exactly as it is for LIFESTYLE.
+
+## Aspect ratio (Phase 6)
+
+Package 2 explicitly calls for "multiple aspect ratios." Rather than a
+second, parallel multi-output-per-ratio pipeline, this is satisfied the
+same way every other creative choice already works in this domain:
+**a curated aspect ratio picker** (`services/generation/types.ts`'s
+`ASPECT_RATIOS`: `1:1`, `4:5`, `9:16`, `16:9` — never a merchant-typed
+dimension string) applies to a single request, and "multiple aspect
+ratios" for one product is simply requesting generation again with a
+different ratio selected — each becomes its own new, independently
+preserved, independently reviewable `GenerationResult`, exactly like
+requesting a different preset or regenerating does. `GenerationPlanSchema.aspectRatio`
+was tightened from a free `z.string().min(1)` to `AspectRatioSchema`
+(`z.enum(ASPECT_RATIOS)`) now that it's genuinely merchant-controllable —
+consistent with every other structured, curated-only creative-direction
+field in this domain. Applies to every `GenerationType`, not only
+LIFESTYLE/MODEL_SHOOT (though `PRODUCT_CLEANUP`'s minimal UI still never
+exposes a picker — it keeps defaulting to `1:1`, unchanged).
+
+On a batch's own progress page, "Regenerate" preserves the **original
+job's own aspect ratio** (read back off its persisted `plan.aspectRatio`)
+rather than defaulting to `1:1` — a batch has no per-job aspect-ratio
+picker to re-select from, so silently reverting to the default on
+regenerate would have been a real, easy-to-miss regression.
+
 ## Identity validation — an explicit, honest boundary
 
 **Including `identityAnchors` in the prompt/`productFacts` sent to a
@@ -371,37 +449,51 @@ defaults), since a batch has no per-job preset picker.
 
 ## UI
 
-**Product detail** (`app/routes/app.products.$id.tsx`): a new "AI
-Lifestyle Imagery" section, alongside (not replacing) the existing
+**Product detail** (`app/routes/app.products.$id.tsx`): a single unified
+"AI Product Imagery" section, alongside (not replacing) the existing
 `PRODUCT_CLEANUP`-only "Image Generation" section — kept as a genuinely
-separate action (`generate-lifestyle` intent) rather than a
-generalization of the existing `generate` intent, so the already-shipped
-`PRODUCT_CLEANUP` path is at zero risk of regression. Contains: a brand
-style preset `<s-select>` (built-ins + this shop's saved custom presets,
-plus a "No preset — category defaults" option), a status badge, a
-Generate Lifestyle Image / Regenerate button (disabled until Product
-Intelligence is `READY`), a failure banner, an original-vs-generated
-result card with Approve/Reject/Regenerate once succeeded, and a compact
-lifestyle-only generation-history list (the same `generationHistory` list
-Phase 3 already loads, filtered by `type === "LIFESTYLE"` client-side —
-`PRODUCT_CLEANUP`'s own history is filtered the same way, so the two
-sections never show each other's jobs).
+separate action (`generate-product-imagery`/`regenerate-product-imagery`
+intents) rather than a generalization of the existing `generate` intent,
+so the already-shipped `PRODUCT_CLEANUP` path is at zero risk of
+regression. LIFESTYLE and MODEL_SHOOT share this one section rather than
+each getting their own (Phase 5 shipped a "AI Lifestyle Imagery"-only
+section; Phase 6 generalized it to "AI Product Imagery" once MODEL_SHOOT
+existed as a second, near-identical merchant-facing choice) — same
+status badge, Generate/Regenerate button, failure banner, review card,
+and history list, filtered to `type === "LIFESTYLE" || type === "MODEL_SHOOT"`
+(the same `generationHistory` list Phase 3 already loads;
+`PRODUCT_CLEANUP`'s own history is filtered separately, so the sections
+never show each other's jobs). Contains: a **Style** picker (Lifestyle
+scene / Model photography — the latter option disabled with an inline
+note when Product Intelligence says this product isn't model-suitable),
+a **Brand style** preset picker (built-ins + this shop's saved custom
+presets, plus a "No preset — category defaults" option, shared by both
+styles), an **Aspect ratio** picker (`1:1`/`4:5`/`9:16`/`16:9`), and the
+Generate/Regenerate button (disabled until Product Intelligence is
+`READY`, and additionally until model-suitable when Style is Model
+photography).
 
 **Batch flow** (`app/routes/app.products.selection.tsx`): the existing
-"Review selection" screen gained a **Mode** picker — "Process images" vs.
-"Generate lifestyle imagery" — the latter reveals the same brand style
-preset picker before "Start generating," which POSTs the new
-`start-lifestyle-batch` intent and redirects into a new
-`app/routes/app.generation.$batchId.tsx` (progress, per-job
+"Review selection" screen's **Mode** picker now has three options —
+"Process images," "Generate lifestyle imagery," "Generate model
+imagery" — the latter two reveal the same brand style preset picker
+before "Start generating," which POSTs the generalized
+`start-generation-batch` intent (`generationType` field; Phase 5's
+`start-lifestyle-batch` was renamed/broadened for this) and redirects
+into `app/routes/app.generation.$batchId.tsx` (progress, per-job
 original-vs-generated card, Approve/Reject/Regenerate) — a structural
-mirror of `app/routes/app.processing.$batchId.tsx`.
+mirror of `app/routes/app.processing.$batchId.tsx`. No batch-level aspect
+ratio picker (`1:1` default) — kept out for the same "curated, not a full
+studio UI" scope reasoning as the rest of this feature; a batch's own
+"Regenerate" preserves whichever aspect ratio the original job actually
+used (read back off its persisted plan), not the `1:1` default.
 
-**Not built this phase**: a UI to save a new custom preset, a full
-scene-control panel (environment/surface/props/camera/mood/colorDirection
-all individually editable — only the preset choice is merchant-facing),
-a per-image source picker for batch lifestyle generation (batch always
-uses the merchant's `ImageSelection`, same as Phase 4), aspect
-ratio/output-count pickers (sane defaults, same as `PRODUCT_CLEANUP`).
+**Not built yet**: a UI to save a new custom preset, a full scene-control
+panel (environment/surface/props/camera/mood/colorDirection all
+individually editable — only the preset choice is merchant-facing), a
+per-image source picker for batch generation (batch always uses the
+merchant's `ImageSelection`, same as Phase 4), an output-count picker,
+a batch-level aspect ratio picker.
 
 ## Security / tenant isolation
 
@@ -438,37 +530,52 @@ merchant-override-wins-over-both, unknown-category-never-throws),
 `identity-validation.test.ts` (the boundary function's honest
 not-validated result shape, which anchor fields get listed), extended
 `schema.test.ts`/`build-input.test.ts` (the new plan fields,
-`sceneDetails` flattening), extended `build-plan.test.ts` (real LIFESTYLE
-branch: preset resolution, category fallback, scene-override precedence,
-brandStyle/lifestyleScene stay null for every other generationType even
-if a preset is passed, the identity-preservation instruction is always
-present).
+`sceneDetails` flattening), extended `build-plan.test.ts` (LIFESTYLE
+branch: preset resolution, category fallback, scene-override precedence;
+MODEL_SHOOT branch (Phase 6): the `modelSuitable` gate — both `false` and
+`null` throw `ProductNotModelSuitableError` — pose/brandStyle resolution,
+`lifestyleScene` stays null; aspect ratio: defaults to `1:1`, an override
+is reflected on the plan; brandStyle/lifestyleScene stay null for every
+generationType outside LIFESTYLE/MODEL_SHOOT even if a preset is passed;
+the identity-preservation instruction is always present).
 
 Integration (real Postgres + Redis + an in-process BullMQ `Worker` + the
 real `processGenerationJob` — never mocked): repository lifecycle
 (`generation-batch.repository.test.ts`, `brand-style-preset.repository.test.ts`,
 extended `generation-job.repository.test.ts` for review/batch support),
-full single-request end-to-end
+full single-request end-to-end for LIFESTYLE
 (`lifestyle-generation-queue.test.ts` — category-aware scene plan,
 honest identity-validation metadata persisted, presetId resolution
 through the real preset service, an unknown presetId falling back
-safely, original product media never mutated, `reviewGenerationResult`),
-batch end-to-end (`batch-generation.test.ts` — all-succeeded, and a
-REAL (non-racy) partial-skip case: one selected product was never
-analyzed), and route-level tests for all three routes
-(`app.products.id-lifestyle-generation-action.test.ts`,
+safely, original product media never mutated, `reviewGenerationResult`)
+and for MODEL_SHOOT (`model-shoot-queue.test.ts` — pose/brandStyle
+resolution, the modelSuitable gate via `requestGeneration`, an unknown
+aspect ratio throwing `InvalidGenerationRequestError` rather than
+silently substituting a default, original media untouched), batch
+end-to-end (`batch-generation.test.ts` — LIFESTYLE all-succeeded and a
+REAL (non-racy) partial-skip case (one selected product was never
+analyzed); MODEL_SHOOT's own partial-skip case (one selected product
+isn't model-suitable); an aspect ratio applying to every job in a batch),
+and route-level tests for all four routes
+(`app.products.id-lifestyle-generation-action.test.ts` (LIFESTYLE),
+`app.products.id-model-shoot-action.test.ts` (MODEL_SHOOT, Phase 6),
 `app.generation.batch-action.test.ts`,
-`app.products.selection-start-lifestyle-batch.test.ts`).
+`app.products.selection-start-generation-batch.test.ts` (both
+generationTypes, Phase 6 — renamed/broadened from Phase 5's
+`...-start-lifestyle-batch.test.ts`)).
 
-E2E (`tests/e2e/lifestyle-generation.spec.ts`): a single-product scenario
-(pick a preset → generate → succeeded → original untouched → approve →
-regenerate → the previous approved result remains in history) and a
-batch scenario (select multiple products → choose "Generate lifestyle
-imagery" → pick a preset → start → batch progress → completed → review →
-approve → regenerate → the previous result remains) — mirroring
-`tests/e2e/processing.spec.ts`'s two-scenario structure, a real
-in-process `"generation"` worker, real deterministic provider, real
-queue — never mocked.
+E2E (`tests/e2e/lifestyle-generation.spec.ts`): a single-product LIFESTYLE
+scenario (pick a preset → generate → succeeded → original untouched →
+approve → regenerate → the previous approved result remains in history),
+a single-product MODEL_SHOOT scenario (Phase 6 — switch the Style picker,
+pick an aspect ratio, generate, verify the persisted job's type/status
+directly since "Model photography" legitimately appears several times in
+the DOM once a result exists), and a batch scenario (select multiple
+products → choose "Generate lifestyle imagery" → pick a preset → start →
+batch progress → completed → review → approve → regenerate → the
+previous result remains) — mirroring `tests/e2e/processing.spec.ts`'s
+multi-scenario structure, a real in-process `"generation"` worker, real
+deterministic provider, real queue — never mocked.
 
 ## Environment variables
 
@@ -479,23 +586,29 @@ generation) remain the intended future hook.
 
 ## Confirmations
 
-- **No real image-generation vendor was integrated.** Every lifestyle
-  generation in this codebase runs only through the deterministic test
-  provider, exactly like `PRODUCT_CLEANUP`. `services/generation/provider.server.ts`
+- **No real image-generation vendor was integrated.** Every generation in
+  this codebase runs only through the deterministic test provider,
+  exactly like `PRODUCT_CLEANUP`. `services/generation/provider.server.ts`
   is unchanged from Phase 3.
-- **Identity validation remains non-semantic this phase.** A documented,
-  honest "not yet possible without a vision-capable provider" result —
-  not a real check. See "Identity validation" above; do not mistake this
-  phase for "identity preservation is solved."
-- **No AI human models/poses/model shoots, banners, category banners, CTA
-  imagery, or campaign generation.** Only `LIFESTYLE`
-  (product-in-a-scene) is driven end to end; the other `GenerationType`
-  values remain schema-accepted, unimplemented taxonomy — same status as
-  Phase 3 left them.
+- **Identity validation remains non-semantic.** A documented, honest "not
+  yet possible without a vision-capable provider" result — not a real
+  check. See "Identity validation" above; do not mistake this for
+  "identity preservation is solved." Applies identically to MODEL_SHOOT.
+- **No banners, category banners, CTA imagery, or campaign generation.**
+  Only `LIFESTYLE` and, as of Phase 6, `MODEL_SHOOT` are driven end to
+  end; `BANNER`/`CATEGORY_BANNER`/`CTA`/`CAMPAIGN` remain schema-accepted,
+  unimplemented taxonomy — Package 3, not yet scoped.
+- **MODEL_SHOOT never generates a real depiction of a person.** The
+  deterministic test provider (the only one wired up) produces a
+  placeholder pixel with no relationship to a human model whatsoever —
+  see "Provider strategy." Selecting a real generative vendor for this
+  generationType, and any attendant representation/diversity/consent
+  policy, is future work requiring a product decision this phase doesn't
+  make.
 - **No billing/subscriptions/credits/plan enforcement.** Nothing in this
   phase gates a feature behind a plan tier at runtime — the Pro/Basic
   distinction is a product-positioning statement, not enforced code.
 - **No publishing back to Shopify.** Generated results stay in this app's
   own storage/database.
 - **`services/processing/` was not modified.** Phase 4 remains exactly as
-  committed (`b722bfc`).
+  committed (`b722bfc`), and Phase 6 did not touch it either.

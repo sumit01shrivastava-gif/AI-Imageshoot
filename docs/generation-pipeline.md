@@ -1,6 +1,6 @@
 # Generation pipeline
 
-## Current state (Phase 3; extended Phase 5)
+## Current state (Phase 3; extended Phases 5–6)
 
 The foundation described below is now implemented — see docs/generation.md
 for the actual, current design (data model, provider abstraction, queue
@@ -8,8 +8,11 @@ lifecycle, identity preservation). Phase 5 (docs/lifestyle-generation.md)
 built the first real creative capability on top of this foundation — AI
 lifestyle product imagery (`GenerationType.LIFESTYLE`): category-aware
 scene planning, brand style presets, batch generation, and review
-(Approve/Reject). This document now only tracks what's still ahead: the
-parts of the original sketch neither phase built.
+(Approve/Reject). Phase 6 completed the same capability set with
+`GenerationType.MODEL_SHOOT` (model photography, gated on Product
+Intelligence's `modelSuitable`) and merchant-selectable aspect ratio.
+This document now only tracks what's still ahead: the parts of the
+original sketch none of these phases built.
 
 ```
 Merchant selects a product (Phase 3: always every one of its own images —
@@ -25,10 +28,10 @@ no picker yet) in the UI
             referenced by a GenerationResult row — IMPLEMENTED, no real
             storage vendor selected
   → merchant reviews/approves in the UI — IMPLEMENTED as of Phase 5, for
-    LIFESTYLE results only (Approve/Reject via `GenerationResult.reviewStatus`
-    — see docs/lifestyle-generation.md "Review, regeneration, and
-    generation history"); PRODUCT_CLEANUP results still show raw metadata
-    only, no review state
+    LIFESTYLE and (Phase 6) MODEL_SHOOT results (Approve/Reject via
+    `GenerationResult.reviewStatus` — see docs/lifestyle-generation.md
+    "Review, regeneration, and generation history"); PRODUCT_CLEANUP
+    results still show raw metadata only, no review state
   → services/publishing: publishes approved assets back to Shopify —
     NOT BUILT
 ```
@@ -53,22 +56,23 @@ data flow, not a variant of this one.
 - How generation cost maps to usage/credit accounting (structured
   metadata a future phase would need — provider, duration, output count
   — is recorded, but no cost is computed and no plan/credit is enforced)
-- A real image-generation vendor (LIFESTYLE, like PRODUCT_CLEANUP, still
-  only runs through the deterministic test provider — see
-  docs/lifestyle-generation.md "Provider strategy") and genuine semantic
-  identity validation (Phase 5's `recordIdentityValidation` is an honest
-  "not yet possible" result, not a real check — see
+- A real image-generation vendor (every generationType, including
+  LIFESTYLE/MODEL_SHOOT, still only runs through the deterministic test
+  provider — see docs/lifestyle-generation.md "Provider strategy") and
+  genuine semantic identity validation (`recordIdentityValidation` is an
+  honest "not yet possible" result, not a real check — see
   docs/lifestyle-generation.md "Identity validation")
-- AI human models/model shoots/pose selection, website/category banners,
-  CTA imagery, campaign generation — `GenerationType` reserves the
-  taxonomy (`MODEL_SHOOT`, `BANNER`, `CATEGORY_BANNER`, `CTA`,
-  `CAMPAIGN`) but none has dedicated plan-building logic yet; only
-  `PRODUCT_CLEANUP` and `LIFESTYLE` are driven end to end
+- Website/category banners, CTA imagery, campaign generation (Package 3)
+  — `GenerationType` reserves the taxonomy (`BANNER`, `CATEGORY_BANNER`,
+  `CTA`, `CAMPAIGN`) but none has dedicated plan-building logic yet; only
+  `PRODUCT_CLEANUP`, `LIFESTYLE`, and (Phase 6) `MODEL_SHOOT` are driven
+  end to end
 - A source-image picker for generation, a free-text prompt editor, a full
   lifestyle scene-control panel beyond a brand style preset picker (see
   docs/lifestyle-generation.md "UI"), custom-preset-saving UI (the
   `BrandStylePreset` model/service are fully built; no UI action exists
-  to create one yet)
+  to create one yet), an output-count picker, a batch-level aspect ratio
+  picker
 - Real *upscale*/*shadow-generation*/*crop* infrastructure — the
   `ImageProcessingProvider` interface has these three methods, but only
   `removeBackground`/`enhance`/`resize` are implemented (Phase 4); see

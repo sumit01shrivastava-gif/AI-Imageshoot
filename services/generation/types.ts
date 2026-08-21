@@ -33,3 +33,14 @@ export type OutputFormatValue = (typeof OUTPUT_FORMATS)[number];
 
 export const GENERATION_QUALITIES = ["draft", "standard", "high"] as const;
 export type GenerationQualityValue = (typeof GENERATION_QUALITIES)[number];
+
+/** Curated aspect ratios only — like every other creative-direction field,
+ * never a merchant-typed dimension string (see docs/generation.md "No
+ * arbitrary prompts", applied here). "Multiple aspect ratios" (Package 2's
+ * requirement) is satisfied by requesting a new generation per ratio —
+ * each becomes its own preserved, independently reviewable result, the
+ * same "regeneration = a new row" mechanism every other creative choice
+ * already uses — not a second, parallel multi-output-per-ratio pipeline.
+ * See docs/lifestyle-generation.md "Aspect ratio". */
+export const ASPECT_RATIOS = ["1:1", "4:5", "9:16", "16:9"] as const;
+export type AspectRatioValue = (typeof ASPECT_RATIOS)[number];

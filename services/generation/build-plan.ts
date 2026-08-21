@@ -14,7 +14,7 @@ import type { ProductIntelligenceRow } from "../../db/repositories/product-intel
 import { IdentityAnchorsSchema } from "../intelligence/schema";
 import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes, type LifestyleScene } from "./schema";
 import { buildLifestyleScene, type LifestyleSceneOverride } from "./lifestyle-scene";
-import type { GenerationTypeValue } from "./types";
+import type { GenerationTypeValue, AspectRatioValue } from "./types";
 
 const GENERATION_TYPE_LABEL: Record<GenerationTypeValue, string> = {
   PRODUCT_CLEANUP: "Clean product",
@@ -71,6 +71,10 @@ export interface BuildGenerationPlanInput {
    * a free-text prompt — see docs/generation.md "No arbitrary prompts").
    * Ignored for every other generationType. */
   lifestyleSceneOverride?: LifestyleSceneOverride;
+  /** A curated aspect ratio (see types.ts's `ASPECT_RATIOS`) — applies to
+   * every generationType. Defaults to `DEFAULT_ASPECT_RATIO` when omitted
+   * (the original "Generate Test Image" button's behavior, unchanged). */
+  aspectRatioOverride?: AspectRatioValue;
 }
 
 export class MissingSourceImagesError extends Error {
@@ -84,6 +88,19 @@ export class ProductNotAnalyzedError extends Error {
   constructor() {
     super("This product must be analyzed (Product Intelligence) before generating images.");
     this.name = "ProductNotAnalyzedError";
+  }
+}
+
+/** MODEL_SHOOT only — thrown when Product Intelligence has determined this
+ * product isn't model-suitable (`modelSuitable !== true`; see
+ * services/intelligence/category-recommendations.ts — furniture/
+ * appliances/electronics/food are never model-suitable). Mirrors
+ * `ProductNotAnalyzedError`'s "require the precondition, don't silently
+ * generate something meaningless" reasoning. */
+export class ProductNotModelSuitableError extends Error {
+  constructor() {
+    super("This product isn't suited for model imagery (see its Product Intelligence profile).");
+    this.name = "ProductNotModelSuitableError";
   }
 }
 
@@ -103,6 +120,9 @@ function synthesizePrompt(input: {
   environment: string | null;
   photographyStyle: string | null;
   scene?: LifestyleScene;
+  /** MODEL_SHOOT only. */
+  pose?: string | null;
+  modelStyle?: string | null;
 }): string {
   const descriptor = [input.primaryColor, input.material, input.category].filter(Boolean).join(" ").trim();
   const subject = descriptor || "product";
@@ -123,6 +143,19 @@ function synthesizePrompt(input: {
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     if (input.scene?.mood) parts.push(`${input.scene.mood} mood`);
     if (input.scene?.colorDirection) parts.push(`${input.scene.colorDirection} color palette`);
+    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
+  }
+
+  if (input.generationType === "MODEL_SHOOT") {
+    // Deliberately generic ("featuring", not "worn by") — modelSuitable is
+    // true for a range of categories (jewelry, eyewear, handbags, shoes,
+    // clothing — see category-recommendations.ts), not all of which are
+    // literally "worn" the same way.
+    const parts = [`Model photography featuring the ${subject}`];
+    if (input.pose) parts.push(`${input.pose} pose`);
+    if (input.environment) parts.push(`set in ${input.environment}`);
+    if (input.modelStyle) parts.push(`${input.modelStyle} model styling`);
+    if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
   }
 
@@ -164,6 +197,7 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
     outputCountOverride,
     brandStylePreset,
     lifestyleSceneOverride,
+    aspectRatioOverride,
   } = input;
 
   const requestedIds = new Set(sourceMediaIds);
@@ -194,6 +228,14 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
     // profile was saved (services/intelligence/schema.ts) — this only
     // trips if the stored JSON was somehow corrupted after the fact.
     throw new ProductNotAnalyzedError();
+  }
+
+  // MODEL_SHOOT requires Product Intelligence to have determined this
+  // product is model-suitable — generating "model photography" of, say, a
+  // sofa would be meaningless (see ProductNotModelSuitableError's doc
+  // comment).
+  if (generationType === "MODEL_SHOOT" && intelligence.modelSuitable !== true) {
+    throw new ProductNotModelSuitableError();
   }
 
   const category = intelligence.category ?? (product.productType || "product");
@@ -228,6 +270,14 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
   const negativeConstraints =
     visualDirectionOverride?.negativeConstraints ?? sceneResolution?.negativeConstraints ?? [];
 
+  // MODEL_SHOOT-only: the pose Product Intelligence recommended for this
+  // category, and the resolved preset's own model-styling attribute (if
+  // any) — mirrors how LIFESTYLE resolves its scene, just simpler (no
+  // category-aware scene table for poses; recommendedPoseTypes IS already
+  // the category-aware source, populated since Phase 2).
+  const pose = generationType === "MODEL_SHOOT" ? (intelligence.recommendedPoseTypes[0] ?? null) : null;
+  const modelStyle = generationType === "MODEL_SHOOT" ? (brandStylePreset?.attributes.modelStyle ?? null) : null;
+
   const plan = {
     generationType,
     assetType: intelligence.recommendedAssetTypes[0] ?? null,
@@ -250,6 +300,8 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
         environment,
         photographyStyle,
         scene: sceneResolution?.scene,
+        pose,
+        modelStyle,
       }),
       negativeConstraints,
       environment,
@@ -257,7 +309,7 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
       composition,
     },
 
-    aspectRatio: DEFAULT_ASPECT_RATIO,
+    aspectRatio: aspectRatioOverride ?? DEFAULT_ASPECT_RATIO,
     outputFormat: "png",
     quality: "standard",
     outputCount: outputCountOverride ?? 1,
@@ -271,10 +323,17 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
             recommendedPoseTypes: intelligence.recommendedPoseTypes,
           },
 
-    // Both LIFESTYLE-only this phase — a preset/scene override passed for
-    // any other generationType is silently ignored rather than leaking
-    // into a plan it wasn't meant for.
-    brandStyle: generationType === "LIFESTYLE" && brandStylePreset ? toBrandStyleContext(brandStylePreset.attributes) : null,
+    // brandStyle applies to both LIFESTYLE and MODEL_SHOOT (the same
+    // BrandStylePreset — its `modelStyle` field, unused until this phase —
+    // is shared, not a separate "ModelPreset" concept; see
+    // docs/lifestyle-generation.md "Brand style presets" for why one
+    // preset schema deliberately covers both). A preset passed for any
+    // other generationType is silently ignored rather than leaking into a
+    // plan it wasn't meant for. lifestyleScene stays LIFESTYLE-only.
+    brandStyle:
+      (generationType === "LIFESTYLE" || generationType === "MODEL_SHOOT") && brandStylePreset
+        ? toBrandStyleContext(brandStylePreset.attributes)
+        : null,
     lifestyleScene: sceneResolution?.scene ?? null,
 
     constraints: [],

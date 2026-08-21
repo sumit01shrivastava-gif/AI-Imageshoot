@@ -3,6 +3,7 @@ import {
   buildGenerationPlan,
   MissingSourceImagesError,
   ProductNotAnalyzedError,
+  ProductNotModelSuitableError,
 } from "../../../services/generation/build-plan";
 import { getBuiltInPreset } from "../../../services/generation/brand-style-presets";
 import type { ProductDetail } from "../../../db/repositories/shopify-product.repository";
@@ -306,5 +307,83 @@ describe("LIFESTYLE generation type", () => {
       generationType: "LIFESTYLE",
     });
     expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+  });
+});
+
+describe("MODEL_SHOOT generation type", () => {
+  it("throws ProductNotModelSuitableError when Product Intelligence says this category isn't model-suitable", () => {
+    expect(() =>
+      buildGenerationPlan({
+        product: product(),
+        intelligence: readyIntelligence({ modelSuitable: false }),
+        sourceMediaIds: ["media-1"],
+        generationType: "MODEL_SHOOT",
+      }),
+    ).toThrow(ProductNotModelSuitableError);
+  });
+
+  it("throws ProductNotModelSuitableError when modelSuitable was never determined (null)", () => {
+    expect(() =>
+      buildGenerationPlan({
+        product: product(),
+        intelligence: readyIntelligence({ modelSuitable: null }),
+        sourceMediaIds: ["media-1"],
+        generationType: "MODEL_SHOOT",
+      }),
+    ).toThrow(ProductNotModelSuitableError);
+  });
+
+  it("builds a real plan when the product is model-suitable, using the recommended pose and a preset's modelStyle", () => {
+    const preset = getBuiltInPreset("premium-modern")!;
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence({ modelSuitable: true, recommendedPoseTypes: ["carried/worn detail"] }),
+      sourceMediaIds: ["media-1"],
+      generationType: "MODEL_SHOOT",
+      brandStylePreset: preset,
+    });
+
+    expect(plan.creativeDirection.prompt).toContain("Model photography");
+    expect(plan.creativeDirection.prompt).toContain("carried/worn detail pose");
+    expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+    // brandStyle is shared with LIFESTYLE — the same BrandStylePreset, not
+    // a separate "ModelPreset" concept (see build-plan.ts's brandStyle
+    // gate doc comment).
+    expect(plan.brandStyle).not.toBeNull();
+    // lifestyleScene is LIFESTYLE-only — never populated for MODEL_SHOOT.
+    expect(plan.lifestyleScene).toBeNull();
+  });
+
+  it("still works (falls back to no pose in the prompt) when Product Intelligence has no recommended pose types", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence({ modelSuitable: true, recommendedPoseTypes: [] }),
+      sourceMediaIds: ["media-1"],
+      generationType: "MODEL_SHOOT",
+    });
+    expect(plan.creativeDirection.prompt).toContain("Model photography");
+  });
+});
+
+describe("aspect ratio", () => {
+  it("defaults to 1:1 when no override is given", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "PRODUCT_CLEANUP",
+    });
+    expect(plan.aspectRatio).toBe("1:1");
+  });
+
+  it("an aspectRatioOverride is reflected on the plan", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+      aspectRatioOverride: "9:16",
+    });
+    expect(plan.aspectRatio).toBe("9:16");
   });
 });

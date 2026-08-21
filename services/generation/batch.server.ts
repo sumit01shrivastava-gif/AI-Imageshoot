@@ -18,7 +18,8 @@ import {
 } from "../../db/repositories/generation-batch.repository";
 import { listGenerationJobsForBatch, type GenerationJobRow } from "../../db/repositories/generation-job.repository";
 import { createAndEnqueueGenerationJob, ProductNotFoundError } from "./request-generation.server";
-import { GenerationTypeSchema } from "./schema";
+import { GenerationTypeSchema, AspectRatioSchema } from "./schema";
+import type { AspectRatioValue } from "./types";
 
 export class SelectionNotFoundError extends Error {
   constructor() {
@@ -37,10 +38,14 @@ export class InvalidBatchRequestError extends Error {
 export interface StartBatchGenerationInput {
   selectionId: string;
   generationType: string;
-  /** LIFESTYLE only — see request-generation.server.ts's
+  /** LIFESTYLE/MODEL_SHOOT only — see request-generation.server.ts's
    * `CreateAndEnqueueGenerationJobInput.presetId` doc comment. Applied to
    * every job in the batch. */
   presetId?: string;
+  /** A raw, client-supplied aspect ratio string — validated here, same as
+   * request-generation.server.ts's `requestGeneration`. Applied to every
+   * job in the batch; omitted defaults to "1:1". */
+  aspectRatio?: string;
 }
 
 /**
@@ -59,6 +64,15 @@ export async function startBatchGeneration(
   const typeResult = GenerationTypeSchema.safeParse(input.generationType);
   if (!typeResult.success) {
     throw new InvalidBatchRequestError(`Unknown generation type "${input.generationType}".`);
+  }
+
+  let aspectRatioOverride: AspectRatioValue | undefined;
+  if (input.aspectRatio !== undefined) {
+    const aspectRatioResult = AspectRatioSchema.safeParse(input.aspectRatio);
+    if (!aspectRatioResult.success) {
+      throw new InvalidBatchRequestError(`Unknown aspect ratio "${input.aspectRatio}".`);
+    }
+    aspectRatioOverride = aspectRatioResult.data;
   }
 
   const summary = await getImageSelectionSummary(context, input.selectionId);
@@ -84,6 +98,7 @@ export async function startBatchGeneration(
           generationType: typeResult.data,
           sourceMediaIds: [image.productMediaId],
           presetId: input.presetId,
+          aspectRatioOverride,
           batchId: batch.id,
         });
         jobCount += 1;

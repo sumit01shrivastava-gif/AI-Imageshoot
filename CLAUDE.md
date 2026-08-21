@@ -20,37 +20,54 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
-**Phase 5 — AI Lifestyle Product Imagery (Pro Plan Foundation) —
+**Phase 6 — Model Imagery + Aspect Ratio (Package 2 complete) —
 complete.** Phase 0 (foundation), Phase 1 (Shopify product catalog sync,
 search/detail, image selection), Phase 2 (Product Intelligence, no vendor
 wired up), Phase 3 (image-generation foundation — `GenerationJob`/
 `GenerationResult`, `ImageGenerationProvider`/`ImageProcessingProvider`
 abstractions, the `"generation"` queue, proven only via a deterministic
-test provider), and Phase 4 (production image processing — a real vendor
+test provider), Phase 4 (production image processing — a real vendor
 call, remove.bg, for background removal; local `sharp` for enhance/
 resize; `ProcessingJob`/`ProcessingResult`/`ProcessingBatch`; persistent
 `LocalFilesystemStorageProvider`; signed `/media/*` serving; a review
-lifecycle) are done. Phase 5 built the first real **creative** generation
-capability — `GenerationType.LIFESTYLE`, the core Pro-plan feature:
-category-aware lifestyle scene planning (`LifestyleScenePlan`, nested in
-the existing `GenerationPlan` — not a new table), brand style presets (6
-built-in code constants + shop-saved custom `BrandStylePreset` rows),
-batch lifestyle generation (`GenerationBatch`, mirroring
-`ProcessingBatch`), review (Approve/Reject via `GenerationResult.reviewStatus`,
-reusing Phase 4's `ReviewStatus` enum), regeneration/history (unchanged
-Phase 3 mechanism — every request is a new, never-overwritten
+lifecycle), and Phase 5 (the first real **creative** generation
+capability — `GenerationType.LIFESTYLE`: category-aware lifestyle scene
+planning (`LifestyleScenePlan`, nested in the existing `GenerationPlan`
+— not a new table), brand style presets (6 built-in code constants +
+shop-saved custom `BrandStylePreset` rows), batch lifestyle generation
+(`GenerationBatch`, mirroring `ProcessingBatch`), review (Approve/Reject
+via `GenerationResult.reviewStatus`, reusing Phase 4's `ReviewStatus`
+enum), regeneration/history (every request is a new, never-overwritten
 `GenerationJob` row), and an explicit, honest identity-validation
-boundary (`recordIdentityValidation` — records *what would need
-checking*, not a real semantic check; no vision-capable provider is
-configured). This deliberately **extends** `services/generation/`
-(same kind of request `PRODUCT_CLEANUP` already was) rather than
-duplicating Phase 4's separate-model-family pattern. See
-docs/lifestyle-generation.md. **No real image-generation vendor is
-installed — lifestyle generation, like `PRODUCT_CLEANUP`, only ever runs
-through the deterministic test provider. No AI human models/model
-shoots/poses, no banners/CTA/campaign imagery, no publishing back to
-Shopify, no credits/billing/subscriptions/plan enforcement, and
-`services/processing/` (Phase 4) was not modified.**
+boundary (`recordIdentityValidation`)) are done. Phase 6 completes the
+Pro-plan "Package 2" capability set — **zero new Prisma migrations**,
+entirely built on what Phases 2/3/5 already put in place:
+
+- `GenerationType.MODEL_SHOOT` — model photography featuring the
+  product, gated on Product Intelligence's existing `modelSuitable`
+  field (`ProductNotModelSuitableError` otherwise); shares the SAME
+  `BrandStylePreset` as LIFESTYLE (its `modelStyle` attribute, unused
+  until now) rather than a separate "ModelPreset" concept.
+- **Merchant-selectable aspect ratio** (`1:1`/`4:5`/`9:16`/`16:9`,
+  `services/generation/types.ts`'s `ASPECT_RATIOS`) — applies to every
+  `GenerationType`; "multiple aspect ratios" is satisfied the same way
+  every other creative choice works here: request again with a different
+  ratio, each its own new, independently preserved result.
+- Product detail page: the Phase 5 "AI Lifestyle Imagery" section was
+  generalized into one "AI Product Imagery" section (Style/Brand
+  style/Aspect ratio pickers, shared history/review) rather than a
+  second, near-duplicate section — `generate-lifestyle`/
+  `regenerate-lifestyle`/`start-lifestyle-batch` intents were
+  renamed/broadened to `generate-product-imagery`/
+  `regenerate-product-imagery`/`start-generation-batch`.
+
+See docs/lifestyle-generation.md (now covers both phases). **No real
+image-generation vendor is installed — every generation in this codebase
+still only ever runs through the deterministic test provider; MODEL_SHOOT
+never produces a real depiction of a person.** No banners/CTA/campaign
+imagery (Package 3, not yet scoped), no publishing back to Shopify, no
+credits/billing/subscriptions/plan enforcement, and
+`services/processing/` (Phase 4) was not modified.
 
 ## ⚠️ Incremental development — read this before doing anything
 
@@ -130,7 +147,9 @@ services/
                       queue, provider input, storage persistence. Phase 5
                       added lifestyle scene planning, brand style presets
                       (built-in + shop-saved custom), and batch lifestyle
-                      generation (services/generation/README.md)
+                      generation; Phase 6 added model imagery (shares
+                      brand style presets) and aspect ratio selection
+                      (services/generation/README.md)
   processing/         Production image processing (Basic plan): operation
                        taxonomy, options schema, job/queue (single-image +
                        batch), review lifecycle (services/processing/README.md)
@@ -460,11 +479,40 @@ Phase 5 (AI Lifestyle Product Imagery — Pro plan foundation) — complete:
       selection-review page (`app/routes/app.products.selection.tsx`)
 - [x] docs/lifestyle-generation.md
 
-No real image-generation vendor is installed — every LIFESTYLE (and
-PRODUCT_CLEANUP) generation in this codebase runs only through the
-deterministic test provider, never a live network call. Identity
-validation remains non-semantic (an honest "not yet possible" result, not
-a real check). No AI human models/model shoots/poses, banners, CTA
-imagery, or campaign generation. No credits/billing/subscriptions/plan
-enforcement. No publishing back to Shopify. `services/processing/`
-(Phase 4) was not modified. See docs/roadmap.md.
+Phase 6 (Model imagery + aspect ratio — Package 2 complete) — complete,
+**zero new Prisma migrations**:
+
+- [x] `GenerationType.MODEL_SHOOT` — `build-plan.ts` gained a MODEL_SHOOT
+      branch gated on `intelligence.modelSuitable === true`
+      (`ProductNotModelSuitableError` otherwise), resolving a pose from
+      Product Intelligence's existing `recommendedPoseTypes` and a model
+      style from the SAME `BrandStylePreset.attributes.modelStyle` field
+      LIFESTYLE uses (no separate "ModelPreset" model)
+- [x] `services/generation/types.ts`'s `ASPECT_RATIOS` (`1:1`/`4:5`/
+      `9:16`/`16:9`) + `AspectRatioSchema` — `GenerationPlanSchema.aspectRatio`
+      tightened from a free string to this enum now that it's genuinely
+      merchant-controllable; threaded through `requestGeneration`/
+      `startBatchGeneration`; a batch's own "Regenerate" preserves the
+      original job's aspect ratio (read back off its persisted plan)
+      rather than silently reverting to the `1:1` default
+- [x] Product detail page: the Phase 5 "AI Lifestyle Imagery" section
+      generalized into one "AI Product Imagery" section (Style picker —
+      Lifestyle scene/Model photography, disabled with an inline note
+      when not model-suitable — + Brand style + Aspect ratio pickers,
+      shared history/review for both generationTypes);
+      `generate-lifestyle`/`regenerate-lifestyle`/`start-lifestyle-batch`
+      intents renamed/broadened to `generate-product-imagery`/
+      `regenerate-product-imagery`/`start-generation-batch`; the
+      selection-review page's Mode picker gained "Generate model
+      imagery"
+- [x] docs/lifestyle-generation.md updated to cover both phases
+
+No real image-generation vendor is installed — every generation in this
+codebase (PRODUCT_CLEANUP, LIFESTYLE, MODEL_SHOOT) runs only through the
+deterministic test provider, never a live network call; MODEL_SHOOT never
+produces a real depiction of a person. Identity validation remains
+non-semantic (an honest "not yet possible" result, not a real check). No
+banners, CTA imagery, or campaign generation (Package 3, not yet
+scoped). No credits/billing/subscriptions/plan enforcement. No publishing
+back to Shopify. `services/processing/` (Phase 4) was not modified. See
+docs/roadmap.md.

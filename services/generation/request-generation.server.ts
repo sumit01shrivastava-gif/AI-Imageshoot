@@ -27,8 +27,8 @@ import {
 import { buildGenerationPlan, type BuildGenerationPlanInput } from "./build-plan";
 import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
-import { GenerationTypeSchema } from "./schema";
-import type { GenerationTypeValue } from "./types";
+import { GenerationTypeSchema, AspectRatioSchema } from "./schema";
+import type { GenerationTypeValue, AspectRatioValue } from "./types";
 
 /**
  * Deliberately the SAME error for "doesn't exist" and "belongs to another
@@ -60,7 +60,7 @@ export class GenerationResultNotFoundError extends Error {
   }
 }
 
-export { MissingSourceImagesError, ProductNotAnalyzedError } from "./build-plan";
+export { MissingSourceImagesError, ProductNotAnalyzedError, ProductNotModelSuitableError } from "./build-plan";
 
 export interface CreateAndEnqueueGenerationJobInput {
   productId: string;
@@ -78,18 +78,22 @@ export interface CreateAndEnqueueGenerationJobInput {
    * the merchant-facing route; exists so tests can exercise multi-result
    * storage/persistence through the real pipeline. */
   outputCountOverride?: number;
-  /** LIFESTYLE only — id of a brand style preset (built-in or this shop's
-   * own custom one) to resolve and apply. Ignored for every other
-   * generationType. An id that resolves to nothing (unknown, or another
-   * shop's custom preset) is NOT an error — it silently falls back to
-   * category-aware defaults (see build-plan.ts/lifestyle-scene.ts), the
-   * same as passing no preset at all; a bad/stale id should never block
-   * generation. */
+  /** LIFESTYLE/MODEL_SHOOT only — id of a brand style preset (built-in or
+   * this shop's own custom one) to resolve and apply. Ignored for every
+   * other generationType. An id that resolves to nothing (unknown, or
+   * another shop's custom preset) is NOT an error — it silently falls
+   * back to category-aware defaults (see build-plan.ts/lifestyle-scene.ts),
+   * the same as passing no preset at all; a bad/stale id should never
+   * block generation. */
   presetId?: string;
   /** LIFESTYLE only — structured merchant scene-control overrides (never
    * a free-text prompt — see docs/generation.md "No arbitrary prompts").
    * Ignored for every other generationType. */
   lifestyleSceneOverride?: BuildGenerationPlanInput["lifestyleSceneOverride"];
+  /** A curated aspect ratio (see build-plan.ts's `aspectRatioOverride` doc
+   * comment) — applies to every generationType. Defaults to "1:1" when
+   * omitted. */
+  aspectRatioOverride?: AspectRatioValue;
   /** Set only when this request is part of a batch (see
    * services/generation/batch.server.ts) — groups the resulting
    * `GenerationJob` under a `GenerationBatch` for progress tracking. Never
@@ -152,6 +156,7 @@ export async function createAndEnqueueGenerationJob(
     outputCountOverride: input.outputCountOverride,
     brandStylePreset,
     lifestyleSceneOverride: input.lifestyleSceneOverride,
+    aspectRatioOverride: input.aspectRatioOverride,
   });
 
   const job = await createGenerationJob({
@@ -181,15 +186,22 @@ export interface RequestGenerationInput {
   outputCountOverride?: number;
   presetId?: string;
   lifestyleSceneOverride?: BuildGenerationPlanInput["lifestyleSceneOverride"];
+  /** A raw, client-supplied aspect ratio string — validated against
+   * `ASPECT_RATIOS` here (never trusted/forwarded unchecked); an unknown
+   * value throws `InvalidGenerationRequestError` rather than silently
+   * falling back, since — unlike a stale presetId — a merchant selecting
+   * from a fixed dropdown should never actually be able to submit one. */
+  aspectRatio?: string;
   batchId?: string;
 }
 
 /** Requests generation for a single product (the product detail page's
- * Generate/Regenerate buttons). Validates `generationType`, then resolves
- * `sourceMediaIds` (never trusted directly — only ids that appear in the
- * shop-verified product's own media are kept; empty/omitted defaults to
- * every one of the product's current media) before delegating to the
- * shared `createAndEnqueueGenerationJob` primitive. */
+ * Generate/Regenerate buttons). Validates `generationType` and
+ * `aspectRatio`, then resolves `sourceMediaIds` (never trusted directly —
+ * only ids that appear in the shop-verified product's own media are kept;
+ * empty/omitted defaults to every one of the product's current media)
+ * before delegating to the shared `createAndEnqueueGenerationJob`
+ * primitive. */
 export async function requestGeneration(
   context: AuthContext,
   input: RequestGenerationInput,
@@ -197,6 +209,15 @@ export async function requestGeneration(
   const typeResult = GenerationTypeSchema.safeParse(input.generationType);
   if (!typeResult.success) {
     throw new InvalidGenerationRequestError(`Unknown generation type "${input.generationType}".`);
+  }
+
+  let aspectRatioOverride: AspectRatioValue | undefined;
+  if (input.aspectRatio !== undefined) {
+    const aspectRatioResult = AspectRatioSchema.safeParse(input.aspectRatio);
+    if (!aspectRatioResult.success) {
+      throw new InvalidGenerationRequestError(`Unknown aspect ratio "${input.aspectRatio}".`);
+    }
+    aspectRatioOverride = aspectRatioResult.data;
   }
 
   let product: Awaited<ReturnType<typeof findProductForShop>>;
@@ -225,6 +246,7 @@ export async function requestGeneration(
     outputCountOverride: input.outputCountOverride,
     presetId: input.presetId,
     lifestyleSceneOverride: input.lifestyleSceneOverride,
+    aspectRatioOverride,
     batchId: input.batchId,
   });
 }

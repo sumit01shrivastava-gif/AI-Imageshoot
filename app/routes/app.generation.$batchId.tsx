@@ -25,6 +25,7 @@ import {
 } from "../../services/generation/request-generation.server";
 import type { GenerationJobRow, GenerationResultRow } from "../../db/repositories/generation-job.repository";
 import type { GenerationPlan } from "../../services/generation/schema";
+import type { AspectRatioValue } from "../../services/generation/types";
 
 const NOT_FOUND_RESPONSE = () => new Response("Batch not found", { status: 404 });
 const GENERIC_ERROR = "Couldn't complete that action right now. Please try again.";
@@ -79,19 +80,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       // Looked up server-side (never trusting a client-supplied product/
       // media) — the new request mirrors the EXACT product/source images/
-      // generationType the original job used, with no preset re-applied
-      // (falls back to category-aware defaults — a batch has no per-job
-      // preset picker), and stays in the same batch (see
+      // generationType/aspect ratio the original job used, with no preset
+      // re-applied (falls back to category-aware defaults — a batch has
+      // no per-job preset picker), and stays in the same batch (see
       // services/generation/request-generation.server.ts's
       // `createAndEnqueueGenerationJob`, the shared primitive this reuses
       // directly).
       const original = await getGeneration(context, jobId);
       if (!original) throw NOT_FOUND_RESPONSE();
 
+      const originalPlan = original.plan as unknown as GenerationPlan;
       await createAndEnqueueGenerationJob(context, {
         productId: original.productId,
         generationType: original.type,
         sourceMediaIds: original.sourceMediaIds,
+        aspectRatioOverride: originalPlan.aspectRatio as AspectRatioValue,
         batchId: original.batchId ?? undefined,
       });
       return { ok: true as const };
@@ -127,6 +130,7 @@ const STATUS_TONE: Record<string, "info" | "success" | "warning" | "critical"> =
 const GENERATION_TYPE_LABEL: Record<string, string> = {
   PRODUCT_CLEANUP: "Product cleanup",
   LIFESTYLE: "Lifestyle",
+  MODEL_SHOOT: "Model photography",
 };
 
 export default function GenerationBatch() {

@@ -25,10 +25,12 @@ import {
   ProductNotFoundError as GenerationProductNotFoundError,
   MissingSourceImagesError,
   ProductNotAnalyzedError,
+  ProductNotModelSuitableError,
   InvalidGenerationRequestError,
   GenerationResultNotFoundError,
 } from "../../services/generation/request-generation.server";
 import { listAvailablePresets } from "../../services/generation/brand-style-preset.server";
+import { ASPECT_RATIOS, type AspectRatioValue } from "../../services/generation/types";
 import type { GenerationJobRow, GenerationResultRow } from "../../db/repositories/generation-job.repository";
 import type { GenerationPlan } from "../../services/generation/schema";
 import {
@@ -188,34 +190,41 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
-  if (intent === "generate-lifestyle") {
-    // Structured preset choice only — never a free-text prompt (see
+  if (intent === "generate-product-imagery") {
+    // Structured choices only — generationType (Lifestyle/Model) and
+    // preset come from fixed pickers, never a free-text prompt (see
     // docs/generation.md "No arbitrary prompts"). An unknown/empty
     // presetId is not an error: requestGeneration/resolveBrandStylePreset
     // silently falls back to category-aware defaults.
+    const generationType = formData.get("generationType");
     const presetId = formData.get("presetId");
+    const aspectRatio = formData.get("aspectRatio");
+    if (generationType !== "LIFESTYLE" && generationType !== "MODEL_SHOOT") {
+      return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
+    }
     try {
       await requestGeneration(context, {
         productId: params.id!,
-        generationType: "LIFESTYLE",
+        generationType,
         presetId: typeof presetId === "string" && presetId.length > 0 ? presetId : undefined,
+        aspectRatio: typeof aspectRatio === "string" && aspectRatio.length > 0 ? aspectRatio : undefined,
       });
       return { ok: true as const };
     } catch (error) {
       if (error instanceof TenantMismatchError || error instanceof GenerationProductNotFoundError) {
-        logger.warn("products.detail.generate_lifestyle_tenant_mismatch_or_missing", {
+        logger.warn("products.detail.generate_product_imagery_tenant_mismatch_or_missing", {
           shop: context.shop,
           requestedId: params.id,
         });
         throw NOT_FOUND_RESPONSE();
       }
-      if (error instanceof ProductNotAnalyzedError) {
+      if (error instanceof ProductNotAnalyzedError || error instanceof ProductNotModelSuitableError) {
         return { ok: false as const, error: error.message };
       }
       if (error instanceof MissingSourceImagesError || error instanceof InvalidGenerationRequestError) {
         return { ok: false as const, error: error.message };
       }
-      logger.error("products.detail.generate_lifestyle_request_failed", {
+      logger.error("products.detail.generate_product_imagery_request_failed", {
         shop: context.shop,
         productId: params.id,
         error: error instanceof Error ? error.message : "unknown error",
@@ -224,28 +233,33 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
-  if (intent === "regenerate-lifestyle") {
+  if (intent === "regenerate-product-imagery") {
     const jobId = formData.get("jobId");
     const presetId = formData.get("presetId");
+    const aspectRatio = formData.get("aspectRatio");
     if (typeof jobId !== "string") {
       return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
     }
     try {
       // Looked up server-side (never trusting a client-supplied product/
-      // media) — mirrors "regenerate-processing" below: the new request
-      // targets the SAME product/source images and stays in the same
-      // batch (if any) as the original job. The preset applied is
-      // whichever the merchant currently has selected in the picker (not
-      // necessarily the one the original request used) — see
-      // docs/lifestyle-generation.md "Regeneration".
+      // media/type) — mirrors "regenerate-processing" below: the new
+      // request targets the SAME product/source images/generationType and
+      // stays in the same batch (if any) as the original job. The preset/
+      // aspect ratio applied are whichever the merchant currently has
+      // selected in the picker (not necessarily what the original request
+      // used) — see docs/lifestyle-generation.md "Regeneration".
       const original = await getGeneration(context, jobId);
       if (!original) throw NOT_FOUND_RESPONSE();
 
       await createAndEnqueueGenerationJob(context, {
         productId: original.productId,
-        generationType: "LIFESTYLE",
+        generationType: original.type,
         sourceMediaIds: original.sourceMediaIds,
         presetId: typeof presetId === "string" && presetId.length > 0 ? presetId : undefined,
+        aspectRatioOverride:
+          typeof aspectRatio === "string" && (ASPECT_RATIOS as readonly string[]).includes(aspectRatio)
+            ? (aspectRatio as AspectRatioValue)
+            : undefined,
         batchId: original.batchId ?? undefined,
       });
       return { ok: true as const };
@@ -253,7 +267,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       if (error instanceof TenantMismatchError || error instanceof GenerationProductNotFoundError) {
         throw NOT_FOUND_RESPONSE();
       }
-      if (error instanceof ProductNotAnalyzedError || error instanceof MissingSourceImagesError) {
+      if (
+        error instanceof ProductNotAnalyzedError ||
+        error instanceof ProductNotModelSuitableError ||
+        error instanceof MissingSourceImagesError
+      ) {
         return { ok: false as const, error: error.message };
       }
       return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
@@ -412,6 +430,20 @@ const OPERATION_LABEL: Record<ImageOperationValue, string> = {
   CROP: "Crop",
 };
 
+// Only the two generationTypes the "AI Product Imagery" section actually
+// drives — see docs/lifestyle-generation.md.
+const GENERATION_TYPE_LABEL: Record<string, string> = {
+  LIFESTYLE: "Lifestyle scene",
+  MODEL_SHOOT: "Model photography",
+};
+
+const ASPECT_RATIO_LABEL: Record<AspectRatioValue, string> = {
+  "1:1": "Square (1:1)",
+  "4:5": "Portrait (4:5)",
+  "9:16": "Story (9:16)",
+  "16:9": "Landscape (16:9)",
+};
+
 export default function ProductDetail() {
   const {
     product,
@@ -559,45 +591,51 @@ export default function ProductDetail() {
     generateFetcher.submit({ intent: "generate" }, { method: "POST" });
   };
 
-  // --- AI Lifestyle Imagery (Phase 5) ------------------------------------
+  // --- AI Product Imagery (Phase 5 lifestyle scenes; Phase 6 adds model
+  // imagery + aspect ratio) -------------------------------------------
   // Same "each action creates a brand-new, independently-preserved row"
-  // shape as PRODUCT_CLEANUP above, scoped to this product's LIFESTYLE
-  // jobs only (see productCleanupHistory's doc comment for why the same
-  // `generationHistory` list needs splitting by type).
-  const lifestyleHistory = generationHistory.filter((job) => job.type === "LIFESTYLE");
-  const latestLifestyle = lifestyleHistory[0] ?? null;
-  const lifestyleStatus = latestLifestyle?.status;
-  const isTerminalLifestyleStatus =
-    lifestyleStatus === "SUCCEEDED" || lifestyleStatus === "FAILED" || lifestyleStatus === "CANCELLED";
+  // shape as PRODUCT_CLEANUP above, scoped to this product's LIFESTYLE/
+  // MODEL_SHOOT jobs only (see productCleanupHistory's doc comment for why
+  // the same `generationHistory` list needs splitting by type). Both
+  // generationTypes share one section/history/state, since they're the
+  // same merchant-facing feature (a preset + aspect ratio picker,
+  // Generate/Regenerate, Approve/Reject) with only the "what kind of
+  // imagery" choice differing.
+  const productImageryHistory = generationHistory.filter((job) => job.type === "LIFESTYLE" || job.type === "MODEL_SHOOT");
+  const latestProductImagery = productImageryHistory[0] ?? null;
+  const productImageryStatus = latestProductImagery?.status;
+  const isTerminalProductImageryStatus =
+    productImageryStatus === "SUCCEEDED" || productImageryStatus === "FAILED" || productImageryStatus === "CANCELLED";
 
-  const [awaitingLifestyle, setAwaitingLifestyle] = useState(false);
-  const isGeneratingLifestyle = awaitingLifestyle || (lifestyleStatus !== undefined && !isTerminalLifestyleStatus);
+  const [awaitingProductImagery, setAwaitingProductImagery] = useState(false);
+  const isGeneratingProductImagery =
+    awaitingProductImagery || (productImageryStatus !== undefined && !isTerminalProductImageryStatus);
 
-  const [prevLifestyleStatus, setPrevLifestyleStatus] = useState(lifestyleStatus);
-  if (lifestyleStatus !== prevLifestyleStatus) {
-    setPrevLifestyleStatus(lifestyleStatus);
-    if (isTerminalLifestyleStatus) {
-      setAwaitingLifestyle(false);
+  const [prevProductImageryStatus, setPrevProductImageryStatus] = useState(productImageryStatus);
+  if (productImageryStatus !== prevProductImageryStatus) {
+    setPrevProductImageryStatus(productImageryStatus);
+    if (isTerminalProductImageryStatus) {
+      setAwaitingProductImagery(false);
     }
   }
 
-  const [prevLifestyleFetcherData, setPrevLifestyleFetcherData] = useState(lifestyleFetcher.data);
-  if (lifestyleFetcher.data !== prevLifestyleFetcherData) {
-    setPrevLifestyleFetcherData(lifestyleFetcher.data);
+  const [prevProductImageryFetcherData, setPrevProductImageryFetcherData] = useState(lifestyleFetcher.data);
+  if (lifestyleFetcher.data !== prevProductImageryFetcherData) {
+    setPrevProductImageryFetcherData(lifestyleFetcher.data);
     if (lifestyleFetcher.data && !lifestyleFetcher.data.ok) {
-      setAwaitingLifestyle(false);
+      setAwaitingProductImagery(false);
     }
   }
 
   useEffect(() => {
-    if (!awaitingLifestyle || isTerminalLifestyleStatus) return;
+    if (!awaitingProductImagery || isTerminalProductImageryStatus) return;
     const id = setInterval(() => revalidator.revalidate(), 3000);
     return () => clearInterval(id);
-  }, [awaitingLifestyle, isTerminalLifestyleStatus, revalidator]);
+  }, [awaitingProductImagery, isTerminalProductImageryStatus, revalidator]);
 
   useEffect(() => {
     if (lifestyleFetcher.data?.ok) {
-      shopify.toast.show("Lifestyle generation started");
+      shopify.toast.show("Generation started");
     } else if (lifestyleFetcher.data && !lifestyleFetcher.data.ok) {
       shopify.toast.show(lifestyleFetcher.data.error, { isError: true });
     }
@@ -609,23 +647,33 @@ export default function ProductDetail() {
     }
   }, [lifestyleReviewFetcher.data, shopify]);
 
-  // Structured preset choice only — never a free-text prompt (see
-  // docs/generation.md "No arbitrary prompts"). Empty string = "no
+  // Structured choices only — never a free-text prompt (see
+  // docs/generation.md "No arbitrary prompts"). Empty presetId = "no
   // preset," which still produces a fully-formed scene via category-aware
   // defaults (see services/generation/lifestyle-scene.ts).
+  const [productImageryType, setProductImageryType] = useState<"LIFESTYLE" | "MODEL_SHOOT">("LIFESTYLE");
   const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [selectedAspectRatio, setSelectedAspectRatio] = useState<AspectRatioValue>("1:1");
 
-  const requestLifestyleClick = () => {
-    setAwaitingLifestyle(true);
-    lifestyleFetcher.submit({ intent: "generate-lifestyle", presetId: selectedPresetId }, { method: "POST" });
+  const canGenerateModelImagery = intelligence?.modelSuitable === true;
+
+  const requestProductImageryClick = () => {
+    setAwaitingProductImagery(true);
+    lifestyleFetcher.submit(
+      { intent: "generate-product-imagery", generationType: productImageryType, presetId: selectedPresetId, aspectRatio: selectedAspectRatio },
+      { method: "POST" },
+    );
   };
 
-  const regenerateLifestyle = (jobId: string) => {
-    setAwaitingLifestyle(true);
-    lifestyleFetcher.submit({ intent: "regenerate-lifestyle", jobId, presetId: selectedPresetId }, { method: "POST" });
+  const regenerateProductImagery = (jobId: string) => {
+    setAwaitingProductImagery(true);
+    lifestyleFetcher.submit(
+      { intent: "regenerate-product-imagery", jobId, presetId: selectedPresetId, aspectRatio: selectedAspectRatio },
+      { method: "POST" },
+    );
   };
 
-  const reviewLifestyleResult = (resultId: string, decision: "APPROVED" | "REJECTED") => {
+  const reviewProductImageryResult = (resultId: string, decision: "APPROVED" | "REJECTED") => {
     lifestyleReviewFetcher.submit({ intent: "review-generation-result", resultId, decision }, { method: "POST" });
   };
 
@@ -913,14 +961,28 @@ export default function ProductDetail() {
         </s-stack>
       </s-section>
 
-      <s-section heading="AI Lifestyle Imagery">
+      <s-section heading="AI Product Imagery">
         <s-stack direction="block" gap="base">
           <s-text color="subdued">
-            Places this product in a photorealistic lifestyle scene, built from its Product
-            Intelligence profile and a brand style preset — never a free-text prompt. The original
-            product image is never modified; every generation is a new, separately reviewable
-            result.
+            Places this product in a photorealistic lifestyle scene, or generates model photography
+            featuring it, built from its Product Intelligence profile and a brand style preset —
+            never a free-text prompt. The original product image is never modified; every
+            generation is a new, separately reviewable result.
           </s-text>
+
+          <s-select
+            label="Style"
+            labelAccessibilityVisibility="visible"
+            value={productImageryType}
+            onChange={(event: Event) =>
+              setProductImageryType((event.currentTarget as HTMLSelectElement).value as "LIFESTYLE" | "MODEL_SHOOT")
+            }
+          >
+            <s-option value="LIFESTYLE">Lifestyle scene</s-option>
+            <s-option value="MODEL_SHOOT" disabled={!canGenerateModelImagery}>
+              Model photography{!canGenerateModelImagery ? " (not suited to this product)" : ""}
+            </s-option>
+          </s-select>
 
           <s-select
             label="Brand style"
@@ -937,59 +999,85 @@ export default function ProductDetail() {
             ))}
           </s-select>
 
+          <s-select
+            label="Aspect ratio"
+            labelAccessibilityVisibility="visible"
+            value={selectedAspectRatio}
+            onChange={(event: Event) =>
+              setSelectedAspectRatio((event.currentTarget as HTMLSelectElement).value as AspectRatioValue)
+            }
+          >
+            {ASPECT_RATIOS.map((ratio) => (
+              <s-option key={ratio} value={ratio}>
+                {ASPECT_RATIO_LABEL[ratio]}
+              </s-option>
+            ))}
+          </s-select>
+
           <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
-            {lifestyleStatus ? (
-              <s-badge tone={GENERATION_STATUS_TONE[lifestyleStatus]}>{GENERATION_STATUS_LABEL[lifestyleStatus]}</s-badge>
+            {productImageryStatus ? (
+              <s-badge tone={GENERATION_STATUS_TONE[productImageryStatus]}>
+                {GENERATION_STATUS_LABEL[productImageryStatus]}
+              </s-badge>
             ) : (
               <s-badge tone="info">Not generated yet</s-badge>
             )}
             {/* Only offered while there's no succeeded result to regenerate
-                from yet — once one exists, LifestyleResultDetail's own
+                from yet — once one exists, ProductImageryResultDetail's own
                 "Regenerate" below is the single place that action lives
                 (avoids two controls both labeled "Regenerate" doing
                 near-identical things — see docs/lifestyle-generation.md
                 "Review, regeneration, and generation history"). */}
-            {lifestyleStatus !== "SUCCEEDED" && (
+            {productImageryStatus !== "SUCCEEDED" && (
               <s-button
                 variant="primary"
-                onClick={requestLifestyleClick}
-                disabled={isGeneratingLifestyle || !canGenerate}
-                {...(isGeneratingLifestyle ? { loading: true } : {})}
+                onClick={requestProductImageryClick}
+                disabled={
+                  isGeneratingProductImagery || !canGenerate || (productImageryType === "MODEL_SHOOT" && !canGenerateModelImagery)
+                }
+                {...(isGeneratingProductImagery ? { loading: true } : {})}
               >
-                Generate Lifestyle Image
+                {productImageryType === "MODEL_SHOOT" ? "Generate Model Image" : "Generate Lifestyle Image"}
               </s-button>
             )}
           </s-stack>
 
           {!canGenerate && (
             <s-paragraph color="subdued">
-              Analyze this product (see Product Intelligence above) before generating lifestyle
+              Analyze this product (see Product Intelligence above) before generating product
               imagery.
             </s-paragraph>
           )}
 
-          {lifestyleStatus === "FAILED" && (
+          {canGenerate && productImageryType === "MODEL_SHOOT" && !canGenerateModelImagery && (
+            <s-paragraph color="subdued">
+              This product&rsquo;s Product Intelligence profile doesn&rsquo;t recommend model
+              photography for it — try a lifestyle scene instead.
+            </s-paragraph>
+          )}
+
+          {productImageryStatus === "FAILED" && (
             <s-banner tone="critical">
-              <s-paragraph>{latestLifestyle?.errorMessage ?? "Generation failed."}</s-paragraph>
+              <s-paragraph>{latestProductImagery?.errorMessage ?? "Generation failed."}</s-paragraph>
             </s-banner>
           )}
 
-          {lifestyleStatus === "SUCCEEDED" && latestLifestyle && (
-            <LifestyleResultDetail
-              job={latestLifestyle}
-              onReview={reviewLifestyleResult}
-              onRegenerate={() => regenerateLifestyle(latestLifestyle.id)}
-              isRegenerating={isGeneratingLifestyle}
+          {productImageryStatus === "SUCCEEDED" && latestProductImagery && (
+            <ProductImageryResultDetail
+              job={latestProductImagery}
+              onReview={reviewProductImageryResult}
+              onRegenerate={() => regenerateProductImagery(latestProductImagery.id)}
+              isRegenerating={isGeneratingProductImagery}
             />
           )}
 
-          {lifestyleHistory.length > 1 && (
+          {productImageryHistory.length > 1 && (
             <s-stack direction="block" gap="small-200">
-              <s-text color="subdued">Lifestyle generation history</s-text>
+              <s-text color="subdued">Generation history</s-text>
               <s-stack direction="block" gap="small-200">
-                {lifestyleHistory.map((job, index) => (
+                {productImageryHistory.map((job, index) => (
                   <s-paragraph key={job.id}>
-                    Generation #{lifestyleHistory.length - index} —{" "}
+                    Generation #{productImageryHistory.length - index} — {GENERATION_TYPE_LABEL[job.type] ?? job.type}{" "}
                     <s-badge tone={GENERATION_STATUS_TONE[job.status]}>{GENERATION_STATUS_LABEL[job.status]}</s-badge>{" "}
                     {job.results[job.results.length - 1] && (
                       <>
@@ -1199,14 +1287,15 @@ function GenerationResultCard({ result, index }: { result: GenerationResultRow; 
 }
 
 /**
- * The detailed "latest result" card for AI Lifestyle Imagery — original
- * (from the plan's own `sourceImages` snapshot — GenerationJob has no
- * single `sourceMedia` relation the way ProcessingJob does, since a
- * generation's `sourceMediaIds` is an array; see prisma/schema.prisma's
- * model comment) vs. generated, with Approve/Reject/Regenerate. Mirrors
- * ProcessingResultDetail below field-for-field.
+ * The detailed "latest result" card for AI Product Imagery (LIFESTYLE or
+ * MODEL_SHOOT) — original (from the plan's own `sourceImages` snapshot —
+ * GenerationJob has no single `sourceMedia` relation the way ProcessingJob
+ * does, since a generation's `sourceMediaIds` is an array; see
+ * prisma/schema.prisma's model comment) vs. generated, with
+ * Approve/Reject/Regenerate. Mirrors ProcessingResultDetail below
+ * field-for-field.
  */
-function LifestyleResultDetail({
+function ProductImageryResultDetail({
   job,
   onReview,
   onRegenerate,
@@ -1227,6 +1316,7 @@ function LifestyleResultDetail({
       <s-stack direction="block" gap="base">
         <s-stack direction="inline" gap="base" alignItems="center">
           <s-badge tone={GENERATION_STATUS_TONE[job.status]}>{GENERATION_STATUS_LABEL[job.status]}</s-badge>
+          <s-text color="subdued">{GENERATION_TYPE_LABEL[job.type] ?? job.type}</s-text>
           <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
         </s-stack>
 
@@ -1240,9 +1330,9 @@ function LifestyleResultDetail({
             )}
           </s-stack>
           <s-stack direction="block" gap="small-200">
-            <s-text color="subdued">Lifestyle result</s-text>
+            <s-text color="subdued">Result</s-text>
             {result.url ? (
-              <s-image src={result.url} alt="Lifestyle generation result" />
+              <s-image src={result.url} alt="Generation result" />
             ) : (
               <s-paragraph color="subdued">Not available.</s-paragraph>
             )}

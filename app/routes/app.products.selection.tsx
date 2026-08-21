@@ -71,16 +71,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  if (intent === "start-lifestyle-batch") {
+  if (intent === "start-generation-batch") {
     const selectionId = formData.get("selectionId");
+    const generationType = formData.get("generationType");
     const presetId = formData.get("presetId");
-    if (typeof selectionId !== "string") {
+    if (typeof selectionId !== "string" || (generationType !== "LIFESTYLE" && generationType !== "MODEL_SHOOT")) {
       return { ok: false as const, error: GENERIC_START_GENERATION_ERROR };
     }
     try {
       const { batchId } = await startBatchGeneration(context, {
         selectionId,
-        generationType: "LIFESTYLE",
+        generationType,
         presetId: typeof presetId === "string" && presetId.length > 0 ? presetId : undefined,
       });
       return redirect(`/app/generation/${batchId}`);
@@ -135,7 +136,7 @@ export default function ProductsSelection() {
   const isSaving = fetcher.state !== "idle";
   const isStarting = startFetcher.state !== "idle";
   const confirmed = fetcher.data?.ok === true;
-  const [mode, setMode] = useState<"process" | "generate-lifestyle">("process");
+  const [mode, setMode] = useState<"process" | "LIFESTYLE" | "MODEL_SHOOT">("process");
   const [operation, setOperation] = useState<ImageOperationValue>("REMOVE_BACKGROUND");
   const [presetId, setPresetId] = useState("");
 
@@ -159,8 +160,8 @@ export default function ProductsSelection() {
     startFetcher.submit({ intent: "start-processing", selectionId, operation }, { method: "POST" });
   };
 
-  const handleStartLifestyleBatch = (selectionId: string) => {
-    startFetcher.submit({ intent: "start-lifestyle-batch", selectionId, presetId }, { method: "POST" });
+  const handleStartGenerationBatch = (selectionId: string, generationType: "LIFESTYLE" | "MODEL_SHOOT") => {
+    startFetcher.submit({ intent: "start-generation-batch", selectionId, generationType, presetId }, { method: "POST" });
   };
 
   if (confirmed && fetcher.data?.ok) {
@@ -183,11 +184,12 @@ export default function ProductsSelection() {
                 labelAccessibilityVisibility="visible"
                 value={mode}
                 onChange={(event: Event) =>
-                  setMode((event.currentTarget as HTMLSelectElement).value as "process" | "generate-lifestyle")
+                  setMode((event.currentTarget as HTMLSelectElement).value as "process" | "LIFESTYLE" | "MODEL_SHOOT")
                 }
               >
                 <s-option value="process">Process images (background removal, enhance, resize…)</s-option>
-                <s-option value="generate-lifestyle">Generate lifestyle imagery</s-option>
+                <s-option value="LIFESTYLE">Generate lifestyle imagery</s-option>
+                <s-option value="MODEL_SHOOT">Generate model imagery</s-option>
               </s-select>
 
               {mode === "process" ? (
@@ -222,13 +224,21 @@ export default function ProductsSelection() {
                 </s-select>
               )}
 
+              {mode === "MODEL_SHOOT" && (
+                <s-paragraph color="subdued">
+                  Any selected product Product Intelligence doesn&rsquo;t recommend for model
+                  photography is skipped automatically — its other images can still be processed or
+                  used for lifestyle imagery separately.
+                </s-paragraph>
+              )}
+
               <s-stack direction="inline" gap="base">
                 <s-button
                   variant="primary"
                   onClick={() =>
                     mode === "process"
                       ? handleStartProcessing(selectionId)
-                      : handleStartLifestyleBatch(selectionId)
+                      : handleStartGenerationBatch(selectionId, mode)
                   }
                   {...(isStarting ? { loading: true } : {})}
                 >

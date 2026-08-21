@@ -1,9 +1,10 @@
 /**
  * Integration test for app/routes/app.products.selection.tsx's
- * "start-lifestyle-batch" action — verifies it creates a `GenerationBatch`
- * from a saved `ImageSelection` and redirects into
- * app/routes/app.generation.$batchId.tsx. The batch/job/provider/storage
- * layers themselves are covered by
+ * "start-generation-batch" action (Phase 6 generalized this from Phase
+ * 5's LIFESTYLE-only "start-lifestyle-batch") — verifies it creates a
+ * `GenerationBatch` for either LIFESTYLE or MODEL_SHOOT from a saved
+ * `ImageSelection` and redirects into app/routes/app.generation.$batchId.tsx.
+ * The batch/job/provider/storage layers themselves are covered by
  * tests/integration/generation/batch-generation.test.ts; this file is
  * about the route wiring only. Mirrors
  * app.products.selection-start-processing.test.ts.
@@ -16,7 +17,7 @@ import { parseProductIntelligenceOutput } from "../../../services/intelligence/s
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
 import type { SyncedProduct } from "../../../services/products/types";
 
-const SHOP = "route-selection-lifestyle-start-test.myshopify.com";
+const SHOP = "route-selection-generation-start-test.myshopify.com";
 
 function product(id: string): SyncedProduct {
   return {
@@ -46,13 +47,14 @@ function product(id: string): SyncedProduct {
   };
 }
 
-async function seedAnalyzed(shop: string, shopifyProductId: string) {
+async function seedAnalyzed(shop: string, shopifyProductId: string, { modelSuitable = false }: { modelSuitable?: boolean } = {}) {
   await upsertSyncedProduct(shop, product(shopifyProductId));
   const row = await prisma.shopifyProduct.findFirstOrThrow({ where: { shop, shopifyProductId }, include: { media: true } });
   const data = parseProductIntelligenceOutput({
     category: "Handbags",
-    modelSuitable: false,
+    modelSuitable,
     recommendedAssetTypes: ["lifestyle"],
+    recommendedPoseTypes: modelSuitable ? ["carried/worn detail"] : [],
     identityAnchors: { category: "Handbags", material: "Leather" },
   });
   await saveIntelligenceResult(shop, row.id, data, {
@@ -100,7 +102,7 @@ async function callAction(request: Request) {
   return action({ request, params: {}, context: {} } as unknown as Parameters<typeof action>[0]);
 }
 
-describe("app.products.selection — 'start-lifestyle-batch' action", () => {
+describe("app.products.selection — 'start-generation-batch' action (LIFESTYLE)", () => {
   it("creates a GenerationBatch from a saved selection and redirects into the batch progress page", async () => {
     const row = await seedAnalyzed(SHOP, "gid://shopify/Product/1");
 
@@ -111,7 +113,7 @@ describe("app.products.selection — 'start-lifestyle-batch' action", () => {
     const selectionId = (confirmResult as { ok: true; selectionId: string }).selectionId;
 
     const startResult = await callAction(
-      requestFor(SHOP, { intent: "start-lifestyle-batch", selectionId, presetId: "warm-lifestyle" }),
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId, generationType: "LIFESTYLE", presetId: "warm-lifestyle" }),
     );
 
     expect(startResult).toBeInstanceOf(Response);
@@ -127,8 +129,36 @@ describe("app.products.selection — 'start-lifestyle-batch' action", () => {
 
   it("returns a safe error for a selection id that doesn't exist", async () => {
     const result = await callAction(
-      requestFor(SHOP, { intent: "start-lifestyle-batch", selectionId: "does-not-exist" }),
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId: "does-not-exist", generationType: "LIFESTYLE" }),
     );
     expect(result).toEqual({ ok: false, error: "Selection not found" });
+  });
+
+  it("returns a safe error for an unknown generationType", async () => {
+    const result = await callAction(
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId: "does-not-matter", generationType: "BOGUS" }),
+    );
+    expect(result).toEqual({ ok: false, error: "Couldn't start generation right now. Please try again." });
+  });
+});
+
+describe("app.products.selection — 'start-generation-batch' action (MODEL_SHOOT)", () => {
+  it("creates a MODEL_SHOOT GenerationBatch", async () => {
+    const row = await seedAnalyzed(SHOP, "gid://shopify/Product/2", { modelSuitable: true });
+
+    const confirmResult = await callAction(
+      requestFor(SHOP, { entries: JSON.stringify([{ productId: row.id, productMediaId: row.media[0].id }]) }),
+    );
+    const selectionId = (confirmResult as { ok: true; selectionId: string }).selectionId;
+
+    const startResult = await callAction(
+      requestFor(SHOP, { intent: "start-generation-batch", selectionId, generationType: "MODEL_SHOOT" }),
+    );
+
+    expect(startResult).toBeInstanceOf(Response);
+    const location = (startResult as Response).headers.get("Location");
+    const batchId = location!.replace("/app/generation/", "");
+    const batch = await prisma.generationBatch.findUniqueOrThrow({ where: { id: batchId } });
+    expect(batch.generationType).toBe("MODEL_SHOOT");
   });
 });

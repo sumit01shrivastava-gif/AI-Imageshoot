@@ -93,7 +93,10 @@ afterAll(async () => {
   delete process.env.AI_PROVIDER;
 });
 
-async function seedProduct(id: string, { analyzed = true }: { analyzed?: boolean } = {}) {
+async function seedProduct(
+  id: string,
+  { analyzed = true, modelSuitable = false }: { analyzed?: boolean; modelSuitable?: boolean } = {},
+) {
   await upsertSyncedProduct(SHOP, product(id));
   const row = await prisma.shopifyProduct.findFirstOrThrow({
     where: { shop: SHOP, shopifyProductId: id },
@@ -103,8 +106,9 @@ async function seedProduct(id: string, { analyzed = true }: { analyzed?: boolean
   if (analyzed) {
     const data = parseProductIntelligenceOutput({
       category: "Handbags",
-      modelSuitable: false,
+      modelSuitable,
       recommendedAssetTypes: ["lifestyle"],
+      recommendedPoseTypes: modelSuitable ? ["carried/worn detail"] : [],
       identityAnchors: { category: "Handbags", material: "Leather", primaryColor: "Brown" },
       material: "Leather",
       primaryColor: "Brown",
@@ -232,5 +236,49 @@ describe("batch generation: end-to-end", () => {
     await expect(getGenerationBatchSummary(otherContext, batchId)).rejects.toThrow(TenantMismatchError);
 
     await prisma.shopifyProduct.deleteMany({ where: { shop: otherShop } });
+  });
+});
+
+describe("MODEL_SHOOT batch generation", () => {
+  it(
+    "one product that isn't model-suitable is skipped (job creation fails), without blocking the others",
+    async () => {
+      const [suitable1, notSuitable, suitable2] = await Promise.all([
+        seedProduct("gid://shopify/Product/40", { modelSuitable: true }),
+        seedProduct("gid://shopify/Product/41", { modelSuitable: false }),
+        seedProduct("gid://shopify/Product/42", { modelSuitable: true }),
+      ]);
+      const selectionId = await createImageSelection(CONTEXT, [
+        { productId: suitable1.id, productMediaId: suitable1.media[0].id },
+        { productId: notSuitable.id, productMediaId: notSuitable.media[0].id },
+        { productId: suitable2.id, productMediaId: suitable2.media[0].id },
+      ]);
+
+      const { batchId, jobCount } = await startBatchGeneration(CONTEXT, {
+        selectionId,
+        generationType: "MODEL_SHOOT",
+      });
+      expect(jobCount).toBe(2); // the not-suitable product's job creation was skipped
+
+      const summary = await waitForTerminal(batchId, 2, 15000);
+      expect(summary!.progress.total).toBe(2);
+      expect(summary!.progress.succeeded).toBe(2);
+      expect(summary!.jobs.map((job) => job.productId).sort()).toEqual([suitable1.id, suitable2.id].sort());
+    },
+    20000,
+  );
+
+  it("an aspectRatio applies to every job in the batch", async () => {
+    const p1 = await seedProduct("gid://shopify/Product/50", { modelSuitable: true });
+    const selectionId = await createImageSelection(CONTEXT, [{ productId: p1.id, productMediaId: p1.media[0].id }]);
+
+    const { batchId } = await startBatchGeneration(CONTEXT, {
+      selectionId,
+      generationType: "MODEL_SHOOT",
+      aspectRatio: "16:9",
+    });
+    const summary = await waitForTerminal(batchId, 1, 15000);
+    const plan = summary!.jobs[0].plan as { aspectRatio: string };
+    expect(plan.aspectRatio).toBe("16:9");
   });
 });

@@ -1,9 +1,11 @@
 /**
- * Integration test for app/routes/app.products.$id.tsx's Phase 5
+ * Integration test for app/routes/app.products.$id.tsx's Phase 5/6
  * additions: `availableBrandStylePresets` loader data, and the
- * "generate-lifestyle" / "review-generation-result" / "regenerate-lifestyle"
- * actions. Mirrors app.products.id-generation-action.test.ts's pattern —
- * see that file's doc comment for the E2E auth-bypass seam reasoning.
+ * "generate-product-imagery" / "review-generation-result" /
+ * "regenerate-product-imagery" actions (LIFESTYLE case here — see
+ * app.products.id-model-shoot-action.test.ts for the MODEL_SHOOT case).
+ * Mirrors app.products.id-generation-action.test.ts's pattern — see that
+ * file's doc comment for the E2E auth-bypass seam reasoning.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Worker } from "bullmq";
@@ -151,14 +153,15 @@ describe("app.products.$id — availableBrandStylePresets loader data", () => {
   });
 });
 
-describe("app.products.$id — 'generate-lifestyle' action", () => {
+describe("app.products.$id — 'generate-product-imagery' action (LIFESTYLE)", () => {
   it(
     "queues a LIFESTYLE generation with a chosen preset, and the loader eventually reflects the completed result",
     async () => {
       const row = await seedAnalyzed(SHOP_A, "gid://shopify/Product/1");
 
       const actionResult = await callAction(SHOP_A, row.id, {
-        intent: "generate-lifestyle",
+        intent: "generate-product-imagery",
+        generationType: "LIFESTYLE",
         presetId: "luxury-editorial",
       });
       expect(actionResult).toEqual({ ok: true });
@@ -182,7 +185,11 @@ describe("app.products.$id — 'generate-lifestyle' action", () => {
 
   it("an unknown presetId is not an error — falls back to category defaults", async () => {
     const row = await seedAnalyzed(SHOP_A, "gid://shopify/Product/1");
-    const actionResult = await callAction(SHOP_A, row.id, { intent: "generate-lifestyle", presetId: "nope" });
+    const actionResult = await callAction(SHOP_A, row.id, {
+      intent: "generate-product-imagery",
+      generationType: "LIFESTYLE",
+      presetId: "nope",
+    });
     expect(actionResult).toEqual({ ok: true });
   });
 
@@ -190,7 +197,7 @@ describe("app.products.$id — 'generate-lifestyle' action", () => {
     await upsertSyncedProduct(SHOP_A, product("gid://shopify/Product/1"));
     const row = await prisma.shopifyProduct.findFirstOrThrow({ where: { shop: SHOP_A } });
 
-    const result = await callAction(SHOP_A, row.id, { intent: "generate-lifestyle" });
+    const result = await callAction(SHOP_A, row.id, { intent: "generate-product-imagery", generationType: "LIFESTYLE" });
     expect(result).toEqual({
       ok: false,
       error: "This product must be analyzed (Product Intelligence) before generating images.",
@@ -202,7 +209,7 @@ describe("app.products.$id — 'generate-lifestyle' action", () => {
 
     let caught: unknown;
     try {
-      await callAction(SHOP_A, otherRow.id, { intent: "generate-lifestyle" });
+      await callAction(SHOP_A, otherRow.id, { intent: "generate-product-imagery", generationType: "LIFESTYLE" });
     } catch (error) {
       caught = error;
     }
@@ -212,12 +219,12 @@ describe("app.products.$id — 'generate-lifestyle' action", () => {
   });
 });
 
-describe("app.products.$id — 'review-generation-result' and 'regenerate-lifestyle' actions", () => {
+describe("app.products.$id — 'review-generation-result' and 'regenerate-product-imagery' actions", () => {
   it(
     "approves a result, and regenerating creates a new job while preserving the approved one",
     async () => {
       const row = await seedAnalyzed(SHOP_A, "gid://shopify/Product/1");
-      await callAction(SHOP_A, row.id, { intent: "generate-lifestyle" });
+      await callAction(SHOP_A, row.id, { intent: "generate-product-imagery", generationType: "LIFESTYLE" });
       await waitForLifestyleStatus(SHOP_A, row.id, "SUCCEEDED");
 
       const first = await callLoader(SHOP_A, row.id);
@@ -232,7 +239,7 @@ describe("app.products.$id — 'review-generation-result' and 'regenerate-lifest
       expect(reviewResult).toEqual({ ok: true });
 
       const regenerateResult = await callAction(SHOP_A, row.id, {
-        intent: "regenerate-lifestyle",
+        intent: "regenerate-product-imagery",
         jobId: firstJob.id,
         presetId: "",
       });
