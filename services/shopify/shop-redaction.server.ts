@@ -33,20 +33,72 @@
  * harmless no-op, not a correctness requirement, and is done anyway so
  * this function is correct even if a future migration changes a cascade
  * rule out from under this assumption.
+ *
+ * Also deletes the underlying **object storage** for every one of this
+ * shop's generated/processed images before touching any DB row — a
+ * cascade only ever clears Postgres, and "every row this app holds" isn't
+ * actually true redaction if the image bytes those rows pointed at are
+ * left sitting in storage forever with nothing left to say they belong to
+ * a redacted shop (see docs/storage.md "Orphaned object prevention" /
+ * shop redaction). This is the one place in the codebase where deleting
+ * storage proactively is correct and intended, unlike routine
+ * cleanup/retention (deliberately NOT implemented elsewhere — see that
+ * doc — since this path only ever runs for a shop that has actually
+ * uninstalled and is not coming back). Best-effort per object: a storage
+ * failure is logged and never allowed to abort the DB redaction itself,
+ * which has its own Shopify-mandated deadline to meet regardless.
  */
 import prisma from "../../db/client.server";
 import { logger } from "../../lib/logging/logger.server";
+import { getConfiguredStorageProvider } from "../../lib/storage";
 
 export interface ShopRedactionSummary {
   shop: string;
   deletedCounts: Record<string, number>;
+  storageObjectsDeleted: number;
+  storageObjectsFailed: number;
 }
 
-/** Permanently deletes every row this app holds for `shop`. Idempotent —
- * safe to call more than once (e.g. a redelivered webhook): a table with
+async function deleteShopStorageObjects(shop: string): Promise<{ deleted: number; failed: number }> {
+  // Read the storage keys BEFORE any row is deleted — `deleteMany` doesn't
+  // return the rows it removed, so this is the only chance to know what
+  // to delete from storage.
+  const [generationResults, processingResults, storeVisualResults] = await Promise.all([
+    prisma.generationResult.findMany({ where: { shop }, select: { storageKey: true } }),
+    prisma.processingResult.findMany({ where: { shop }, select: { storageKey: true } }),
+    prisma.storeVisualResult.findMany({ where: { shop }, select: { storageKey: true } }),
+  ]);
+  const keys = [...generationResults, ...processingResults, ...storeVisualResults].map((r) => r.storageKey);
+
+  const storage = getConfiguredStorageProvider();
+  let deleted = 0;
+  let failed = 0;
+  await Promise.all(
+    keys.map(async (key) => {
+      try {
+        await storage.delete(key);
+        deleted += 1;
+      } catch (error) {
+        failed += 1;
+        logger.warn("shopify.shop_redact_storage_cleanup_failed", {
+          shop,
+          storageKey: key,
+          detail: error instanceof Error ? error.message : "unknown error",
+        });
+      }
+    }),
+  );
+  return { deleted, failed };
+}
+
+/** Permanently deletes every row this app holds for `shop`, and every
+ * storage object those rows referenced. Idempotent — safe to call more
+ * than once (e.g. a redelivered webhook): a table (or storage key) with
  * nothing left to delete just reports a 0 count. Never throws for "shop
  * already had no data" — only a genuine database error propagates. */
 export async function redactShopData(shop: string): Promise<ShopRedactionSummary> {
+  const { deleted: storageObjectsDeleted, failed: storageObjectsFailed } = await deleteShopStorageObjects(shop);
+
   const deletedCounts: Record<string, number> = {};
 
   const run = async (label: string, fn: () => Promise<{ count: number }>) => {
@@ -85,6 +137,6 @@ export async function redactShopData(shop: string): Promise<ShopRedactionSummary
   // shop/redact is correct even if that webhook was somehow missed.
   await run("session", () => prisma.session.deleteMany({ where: { shop } }));
 
-  logger.info("shopify.shop_redacted", { shop, deletedCounts });
-  return { shop, deletedCounts };
+  logger.info("shopify.shop_redacted", { shop, deletedCounts, storageObjectsDeleted, storageObjectsFailed });
+  return { shop, deletedCounts, storageObjectsDeleted, storageObjectsFailed };
 }

@@ -287,6 +287,28 @@ export async function countGenerationResultsForShop(shop: string, filters: Gener
   });
 }
 
+const PUBLISH_RESULT_SELECT = {
+  id: true,
+  shop: true,
+  storageKey: true,
+  reviewStatus: true,
+  generationJob: { select: { productId: true, product: { select: { shopifyProductId: true, title: true } } } },
+} satisfies Prisma.GenerationResultSelect;
+
+export type GenerationPublishSourceRow = Prisma.GenerationResultGetPayload<{ select: typeof PUBLISH_RESULT_SELECT }>;
+
+/** One result row, shaped for services/publishing/ — the source
+ * product's Shopify GraphQL id (needed for the publish mutation) rather
+ * than our internal cuid. Returns `null` (never throws) for a missing or
+ * cross-shop id — services/publishing/resolve-source.server.ts maps that
+ * to its own safe not-found error, the same "existence oracle" pattern
+ * every other domain in this codebase uses. */
+export async function getGenerationResultForPublishing(shop: string, resultId: string): Promise<GenerationPublishSourceRow | null> {
+  const row = await prisma.generationResult.findUnique({ where: { id: resultId }, select: PUBLISH_RESULT_SELECT });
+  if (!row || row.shop !== shop) return null;
+  return row;
+}
+
 /** Sets a specific result's review decision. Verifies the result belongs
  * to this shop (via its job) before updating — never trusts a
  * client-supplied result id directly. Returns `false` if not found for

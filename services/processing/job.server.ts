@@ -29,9 +29,38 @@ import { getConfiguredImageProcessingProvider } from "./provider.server";
 import { parseProcessingOptions, assertValidProcessingOutput, InvalidProcessingOutputError } from "./schema";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { ImageProcessingOutput, ImageProcessingProvider, ProductImageReference } from "../ai/types";
+import { recordUsageEvent } from "../usage/usage-accounting.server";
 
 function toImageReference(media: { id: string; originalUrl: string; altText: string | null; position: number }): ProductImageReference {
   return { mediaId: media.id, url: media.originalUrl, altText: media.altText, position: media.position };
+}
+
+/** See services/generation/job.server.ts's identical helper — records
+ * this job's terminal outcome onto the usage ledger; a ledger write
+ * failure is logged and swallowed, never allowed to fail the job. */
+async function recordProcessingUsage(
+  shop: string,
+  processingJobId: string,
+  status: "SUCCEEDED" | "FAILED",
+  detail: { providerName?: string; durationMs?: number },
+): Promise<void> {
+  try {
+    await recordUsageEvent({
+      shop,
+      operationType: "IMAGE_PROCESSING",
+      status,
+      jobId: processingJobId,
+      providerName: detail.providerName ?? null,
+      outputCount: status === "SUCCEEDED" ? 1 : 0,
+      durationMs: detail.durationMs ?? null,
+    });
+  } catch (error) {
+    logger.warn("processing.job.usage_record_failed", {
+      shop,
+      processingJobId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
 }
 
 export interface ProcessingJobPayload {
@@ -87,9 +116,23 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
 
   logger.info("processing.job.start", { shop, processingJobId, attempt, totalAttempts });
 
+  const context: AuthContext = { shop, sessionId: "worker:processing", isOnline: false };
+
+  // Idempotency guard — checked BEFORE `markProcessing` (which
+  // unconditionally overwrites `status`, so checking after it would
+  // never see "SUCCEEDED"). See services/generation/job.server.ts's
+  // identical guard for the full reasoning (a redelivered/duplicate
+  // BullMQ job, or a prior attempt that persisted a result and then
+  // failed writing SUCCEEDED itself, would otherwise create a second
+  // result for the same logical request).
+  const existingJobRow = await getProcessingJob(context, processingJobId);
+  if (existingJobRow?.status === "SUCCEEDED") {
+    logger.info("processing.job.already_succeeded", { shop, processingJobId, attempt });
+    return;
+  }
+
   await markProcessing(shop, processingJobId, attempt);
 
-  const context: AuthContext = { shop, sessionId: "worker:processing", isOnline: false };
   const attemptStartedAt = Date.now();
 
   try {
@@ -103,10 +146,13 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
 
     const sourceMedia = await findMediaForProduct(shop, jobRow.productId, jobRow.sourceMediaId);
     if (!sourceMedia) {
-      await markFailed(shop, processingJobId, {
-        message: "The source image no longer exists.",
-        durationMs: Date.now() - attemptStartedAt,
-      });
+      const durationMs = Date.now() - attemptStartedAt;
+      await markFailed(shop, processingJobId, { message: "The source image no longer exists.", durationMs });
+      // This is a genuine terminal failure (no retry will fix a deleted
+      // source image) — recorded immediately, not gated on
+      // isFinalAttempt the way the catch block below is, since there IS
+      // no further attempt coming for this specific failure.
+      await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
       return;
     }
 
@@ -121,19 +167,36 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
     const uploaded = await storage.upload({ key, body: output.data, contentType: output.contentType });
     const url = await storage.getSignedUrl({ key: uploaded.key, expiresInSeconds: 3600, operation: "get" });
 
-    await createResult(shop, processingJobId, {
-      storageKey: uploaded.key,
-      url,
-      width: output.width ?? null,
-      height: output.height ?? null,
-      format: formatFromContentType(output.contentType),
-      providerName: provider.name,
-      providerResultId: (output.metadata?.providerResultId as string | undefined) ?? null,
-      metadata: output.metadata ?? null,
-    });
+    try {
+      await createResult(shop, processingJobId, {
+        storageKey: uploaded.key,
+        url,
+        width: output.width ?? null,
+        height: output.height ?? null,
+        format: formatFromContentType(output.contentType),
+        providerName: provider.name,
+        providerResultId: (output.metadata?.providerResultId as string | undefined) ?? null,
+        metadata: output.metadata ?? null,
+      });
+    } catch (persistError) {
+      // See services/generation/job.server.ts's identical cleanup for
+      // the full reasoning — the upload succeeded but the DB write that
+      // would make it referenced didn't; delete the now-orphaned object
+      // rather than leaving it unreferenced forever. Best-effort.
+      await storage.delete(uploaded.key).catch((cleanupError: unknown) =>
+        logger.warn("processing.job.orphan_cleanup_failed", {
+          shop,
+          processingJobId,
+          storageKey: uploaded.key,
+          detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+        }),
+      );
+      throw persistError;
+    }
 
     const durationMs = Date.now() - attemptStartedAt;
     await markSucceeded(shop, processingJobId, { providerName: provider.name, durationMs });
+    await recordProcessingUsage(shop, processingJobId, "SUCCEEDED", { providerName: provider.name, durationMs });
 
     logger.info("processing.job.completed", {
       shop,
@@ -163,6 +226,7 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
       await markFailed(shop, processingJobId, { message, durationMs });
+      await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

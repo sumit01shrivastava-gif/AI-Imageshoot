@@ -142,6 +142,7 @@ model ShopifyProduct {
   generationJobs  GenerationJob[]
   processingJobs  ProcessingJob[]
   storeVisualRefs StoreVisualJobProduct[]
+  publishingJobs  PublishingJob[]
 
   // One local row per Shopify product per shop; safe-upsert target for sync.
   @@unique([shop, shopifyProductId])
@@ -992,5 +993,150 @@ model ProcessingBatch {
 
   jobs ProcessingJob[]
 
+  @@index([shop, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Production hardening pass — usage accounting + publishing foundation
+// ---------------------------------------------------------------------------
+
+// A billable operation kind — mirrors this app's four job-producing
+// domains. Deliberately NOT a foreign key into any of the four job
+// tables (GenerationJob/ProcessingJob/StoreVisualJob/ProductIntelligence's
+// analysis run): a single ledger spanning four differently-shaped job
+// tables has no clean polymorphic relation in Prisma, so `jobId` below is
+// a soft reference (an id string, resolved back to its owning table by
+// `operationType` at read time by the caller) — the exact same "soft
+// cross-domain reference" pattern services/assets/asset-library.server.ts
+// already uses to merge GenerationResult/ProcessingResult/StoreVisualResult.
+enum UsageOperationType {
+  PRODUCT_ANALYSIS
+  IMAGE_GENERATION
+  IMAGE_PROCESSING
+  STORE_VISUAL_GENERATION
+}
+
+enum UsageEventStatus {
+  SUCCEEDED
+  FAILED
+}
+
+// One row per BILLABLE OPERATION, not per BullMQ attempt — see
+// services/usage/usage-accounting.server.ts's `recordUsageEvent` and
+// docs/usage.md "Idempotency semantics". A job that fails on attempt 1
+// and succeeds on attempt 2 (BullMQ's automatic retry — see each domain's
+// queue.server.ts) produces exactly ONE usage event for that job, because
+// `idempotencyKey` (below) is keyed by the job's own id, not the attempt.
+// A merchant clicking "Regenerate" creates a brand-new job id (see every
+// job model's own "never overwritten" convention) and therefore a
+// brand-new, separate usage event — correct, since it's a new logical
+// operation. No pricing/cost is computed or stored anywhere in this
+// model — see CLAUDE.md "Current phase" for why.
+model UsageEvent {
+  id String @id @default(cuid())
+
+  shop String
+
+  operationType UsageOperationType
+  status        UsageEventStatus
+
+  // The originating job's own id (GenerationJob.id / ProcessingJob.id /
+  // StoreVisualJob.id / ProductIntelligence's shop+productId analysis
+  // run, encoded as "{productId}" for that one operationType) — see
+  // module comment above for why this is a soft reference, not a FK.
+  jobId String
+
+  // "{operationType}:{jobId}" — see model comment. The single mechanism
+  // that makes recording idempotent: `recordUsageEvent` upserts on this
+  // key, so calling it twice for the same job (a redelivered BullMQ
+  // completion, a duplicate terminal-state transition) is a no-op the
+  // second time, never a double charge.
+  idempotencyKey String @unique
+
+  providerName String?
+  // Defaulted to 1 — every operation counts as one unit today; a future
+  // billing phase that prices operations differently (e.g. by output
+  // count or provider cost) can start reading/writing a real value here
+  // without a schema change.
+  unitsConsumed Int     @default(1)
+  outputCount   Int     @default(0)
+  durationMs    Int?
+
+  // Free-form, non-billing detail (e.g. which generationType/operation,
+  // aspect ratio) — for the merchant-facing usage UI/future audit, never
+  // parsed for pricing logic.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([shop, operationType])
+  @@index([shop, createdAt])
+}
+
+// What kind of approved result a PublishingJob is publishing — mirrors
+// UsageEvent's "soft cross-domain reference" pattern for the same reason
+// (three differently-shaped result tables, no polymorphic Prisma
+// relation).
+enum PublishingSourceType {
+  GENERATION_RESULT
+  PROCESSING_RESULT
+  STORE_VISUAL_RESULT
+}
+
+// Same five-terminal-plus-in-flight shape as every other job status enum
+// in this schema (GenerationStatus/ProcessingStatus/StoreVisualStatus) —
+// see ProcessingStatus's own comment for why this is its own enum rather
+// than a shared one.
+enum PublishingStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// One row per PUBLISH REQUEST — a merchant's explicit "take this
+// approved result and attach it to this product's Shopify media" intent.
+// Never auto-created by Approve (see docs/publishing.md "Approval and
+// publishing are separate concepts") — always a distinct, deliberate
+// merchant action. Never overwritten; a re-publish attempt after a
+// FAILED job creates a new row, same "history preserved, never mutated"
+// convention as every other job model in this schema.
+model PublishingJob {
+  id String @id @default(cuid())
+
+  shop String
+
+  sourceType     PublishingSourceType
+  // Soft reference into GenerationResult.id / ProcessingResult.id /
+  // StoreVisualResult.id — see PublishingSourceType's comment.
+  sourceResultId String
+
+  targetProductId String
+  targetProduct   ShopifyProduct @relation(fields: [targetProductId], references: [id], onDelete: Cascade)
+
+  status PublishingStatus @default(PENDING)
+
+  // Shopify's own media GID (e.g. "gid://shopify/MediaImage/...") once
+  // the publish succeeds — the durable proof of what was actually
+  // attached, for publish history display.
+  shopifyMediaId String?
+
+  // Merchant-safe summary of the last failure, if any — see CLAUDE.md
+  // "Safe error handling". Never a raw Shopify API error body.
+  errorMessage String?
+  retryCount   Int     @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  durationMs  Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop, targetProductId])
+  @@index([shop, sourceType, sourceResultId])
+  @@index([shop, status])
   @@index([shop, createdAt])
 }

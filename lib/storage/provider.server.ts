@@ -1,26 +1,30 @@
 /**
  * Resolves which `StorageProvider` the app uses.
  *
- * No real cloud storage vendor SDK is installed yet (see CLAUDE.md
- * "Storage rules"; `OBJECT_STORAGE_PROVIDER` is declared in
- * `lib/validation/env.server.ts` but unread). Phase 4 replaced the
- * previous default (`MemoryStorageProvider` — not actually persistent,
- * not shared across processes) with `LocalFilesystemStorageProvider` —
- * see that file's doc comment and docs/image-processing.md "Storage" for
- * why this satisfies "persistent storage" without a cloud vendor. A real
- * cloud provider, when selected, is the only thing that changes here.
+ * `LocalFilesystemStorageProvider` (Phase 4) remains the default —
+ * genuinely persistent, zero-configuration, correct for development/test
+ * and a single-host deployment. `S3StorageProvider` (this pass) is
+ * selected whenever `OBJECT_STORAGE_PROVIDER=s3` and the bucket/
+ * credentials are present — mirrors
+ * services/processing/provider.server.ts's exact "real vendor selected
+ * via an env value, not via NODE_ENV" resolution shape. See
+ * docs/storage.md "Production configuration".
  */
+import { getEnv } from "../validation/env.server";
 import type { StorageProvider } from "./types";
 import { LocalFilesystemStorageProvider } from "./local-filesystem-provider.server";
+import { S3StorageProvider } from "./s3-storage-provider.server";
 
 let provider: StorageProvider | undefined;
 
+function isS3Configured(): boolean {
+  const env = getEnv();
+  return env.OBJECT_STORAGE_PROVIDER === "s3" && Boolean(env.OBJECT_STORAGE_BUCKET) && Boolean(env.OBJECT_STORAGE_ACCESS_KEY) && Boolean(env.OBJECT_STORAGE_SECRET_KEY);
+}
+
 export function getConfiguredStorageProvider(): StorageProvider {
   if (!provider) {
-    // No real cloud vendor selected — see module doc comment above. When
-    // one is added, branch on `getEnv().OBJECT_STORAGE_PROVIDER` here;
-    // this is the only place that needs to change.
-    provider = new LocalFilesystemStorageProvider();
+    provider = isS3Configured() ? new S3StorageProvider() : new LocalFilesystemStorageProvider();
   }
   return provider;
 }

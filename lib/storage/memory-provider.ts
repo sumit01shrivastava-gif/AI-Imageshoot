@@ -33,7 +33,13 @@ export class MemoryStorageProvider implements StorageProvider {
     return `memory://${options.key}?operation=${options.operation}&expiresIn=${options.expiresInSeconds}`;
   }
 
-  /** Test helper: whether a key was ever uploaded and hasn't been deleted. */
+  async exists(key: string): Promise<boolean> {
+    return this.objects.has(key);
+  }
+
+  /** @deprecated Synchronous test helper predating the `StorageProvider`
+   * interface's own `exists`. Use `exists` for anything typed against the
+   * interface; kept for any existing synchronous test call site. */
   has(key: string): boolean {
     return this.objects.has(key);
   }

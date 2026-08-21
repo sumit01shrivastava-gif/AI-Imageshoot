@@ -6,12 +6,13 @@
  * in this directory.
  *
  * `"catalog-sync"` (Phase 1), `"product-intelligence"` (Phase 2),
- * `"generation"` (Phase 3), `"enhancement"` (Phase 4), and
- * `"store-visuals"` (Package 3, store-level generation) are registered —
- * see services/products/sync-job.server.ts,
+ * `"generation"` (Phase 3), `"enhancement"` (Phase 4),
+ * `"store-visuals"` (Package 3, store-level generation), and
+ * `"publishing"` (production hardening pass) are all registered — see
+ * services/products/sync-job.server.ts,
  * services/intelligence/job.server.ts, services/generation/job.server.ts,
- * services/processing/job.server.ts, and services/store-visuals/job.server.ts.
- * `"publishing"` remains unregistered until the phase that needs it.
+ * services/processing/job.server.ts, services/store-visuals/job.server.ts,
+ * and services/publishing/job.server.ts.
  */
 import type { Job, Processor } from "bullmq";
 import { closeRedisConnection, createWorker } from "../lib/queue";
@@ -22,6 +23,7 @@ import { processProductIntelligenceJob } from "../services/intelligence/job.serv
 import { processGenerationJob } from "../services/generation/job.server";
 import { processProcessingJob } from "../services/processing/job.server";
 import { processStoreVisualJob } from "../services/store-visuals/job.server";
+import { processPublishingJob } from "../services/publishing/job.server";
 
 interface WorkerRegistration {
   queue: QueueName;
@@ -34,6 +36,7 @@ const WORKER_REGISTRY: WorkerRegistration[] = [
   { queue: "generation", processor: processGenerationJob as Processor },
   { queue: "enhancement", processor: processProcessingJob as Processor },
   { queue: "store-visuals", processor: processStoreVisualJob as Processor },
+  { queue: "publishing", processor: processPublishingJob as Processor },
 ];
 
 async function main(): Promise<void> {

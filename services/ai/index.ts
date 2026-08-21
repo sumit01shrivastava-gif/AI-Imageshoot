@@ -22,4 +22,6 @@ export {
   UnconfiguredImageGenerationProvider,
   UnconfiguredImageProcessingProvider,
 } from "./unconfigured-provider";
-export { ProductionImageProcessingProvider } from "./production-image-processing-provider.server";
+export { ProductionImageProcessingProvider, ProviderTimeoutError } from "./production-image-processing-provider.server";
+export { ProductionImageGenerationProvider, sizeForAspectRatio } from "./production-image-generation-provider.server";
+export { ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";

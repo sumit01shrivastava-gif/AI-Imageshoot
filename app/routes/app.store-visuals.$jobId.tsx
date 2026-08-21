@@ -21,6 +21,17 @@ import {
   requestStoreVisual,
   StoreVisualResultNotFoundError,
 } from "../../services/store-visuals/request-store-visual.server";
+import {
+  requestPublish,
+  getLatestPublishStatus,
+  ResultNotApprovedError,
+  InvalidPublishTargetError,
+  AlreadyPublishedError,
+  PublishInProgressError,
+  InvalidPublishRequestError,
+  PublishSourceNotFoundError,
+} from "../../services/publishing/request-publish.server";
+import { PublishControl } from "../components/publish-control";
 import type { StoreVisualJobRow, StoreVisualResultRow } from "../../db/repositories/store-visual-job.repository";
 import type { StoreVisualPlan } from "../../services/store-visuals/schema";
 
@@ -41,7 +52,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
   if (!job) throw NOT_FOUND_RESPONSE();
 
-  return { job: withResultsSanitizedForClient(job) };
+  const latestResult = job.results[job.results.length - 1];
+  const publishStatus = latestResult
+    ? await getLatestPublishStatus(context, "STORE_VISUAL_RESULT", latestResult.id)
+    : null;
+
+  return { job: withResultsSanitizedForClient(job), publishStatus };
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -92,6 +108,32 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "request-publish") {
+    const sourceResultId = formData.get("sourceResultId");
+    const targetProductId = formData.get("targetProductId");
+    if (typeof sourceResultId !== "string" || typeof targetProductId !== "string") {
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+    try {
+      await requestPublish(context, { sourceType: "STORE_VISUAL_RESULT", sourceResultId, targetProductId });
+      return { ok: true as const };
+    } catch (error) {
+      if (
+        error instanceof ResultNotApprovedError ||
+        error instanceof InvalidPublishTargetError ||
+        error instanceof AlreadyPublishedError ||
+        error instanceof PublishInProgressError ||
+        error instanceof InvalidPublishRequestError
+      ) {
+        return { ok: false as const, error: error.message };
+      }
+      if (error instanceof PublishSourceNotFoundError) {
+        throw NOT_FOUND_RESPONSE();
+      }
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+  }
+
   return { ok: false as const, error: "Unknown action." };
 };
 
@@ -120,7 +162,7 @@ const VISUAL_TYPE_LABEL: Record<string, string> = {
 };
 
 export default function StoreVisualDetail() {
-  const { job } = useLoaderData<typeof loader>();
+  const { job, publishStatus } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const navigate = useNavigate();
   const shopify = useAppBridge();
@@ -225,6 +267,15 @@ export default function StoreVisualDetail() {
                 Regenerate
               </s-button>
             </s-stack>
+
+            {latestResult.reviewStatus === "APPROVED" && (
+              <PublishControl
+                sourceType="STORE_VISUAL_RESULT"
+                sourceResultId={latestResult.id}
+                candidateProducts={job.products.map((p) => ({ productId: p.productId, title: p.product.title }))}
+                publishStatus={publishStatus}
+              />
+            )}
           </s-stack>
         )}
       </s-section>

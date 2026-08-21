@@ -268,6 +268,23 @@ export async function countProcessingResultsForShop(shop: string, filters: Proce
   });
 }
 
+const PUBLISH_RESULT_SELECT = {
+  id: true,
+  shop: true,
+  storageKey: true,
+  reviewStatus: true,
+  processingJob: { select: { productId: true, product: { select: { shopifyProductId: true, title: true } } } },
+} satisfies Prisma.ProcessingResultSelect;
+
+export type ProcessingPublishSourceRow = Prisma.ProcessingResultGetPayload<{ select: typeof PUBLISH_RESULT_SELECT }>;
+
+/** See generation-job.repository.ts's identical `getGenerationResultForPublishing` — same reasoning. */
+export async function getProcessingResultForPublishing(shop: string, resultId: string): Promise<ProcessingPublishSourceRow | null> {
+  const row = await prisma.processingResult.findUnique({ where: { id: resultId }, select: PUBLISH_RESULT_SELECT });
+  if (!row || row.shop !== shop) return null;
+  return row;
+}
+
 /** Sets a specific result's review decision. Verifies the result belongs
  * to this shop (via its job) before updating — never trusts a
  * client-supplied result id directly. Returns `false` if not found for

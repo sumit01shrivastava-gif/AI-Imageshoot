@@ -39,18 +39,26 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
 
   // --- Object storage -----------------------------------------------------
-  // A real cloud vendor (S3/R2/GCS/...) is still not wired up — these
-  // remain declared-but-unread hooks for that future phase (see
-  // lib/storage/provider.server.ts). Phase 4 instead persists through
-  // `LocalFilesystemStorageProvider`, configured by STORAGE_LOCAL_ROOT
-  // below — genuinely persistent (survives a process restart, shared
-  // across the web/worker process boundary on one host), just not yet
-  // cloud-backed. See docs/image-processing.md "Storage".
+  // An S3-compatible object storage vendor (AWS S3, Cloudflare R2, MinIO,
+  // Backblaze B2, DigitalOcean Spaces, ...) — `lib/storage/s3-storage-provider.server.ts`.
+  // "s3-compatible" is a protocol, not one commercial vendor: every
+  // vendor listed above speaks the identical S3 REST API, so this one
+  // implementation covers all of them via `OBJECT_STORAGE_ENDPOINT`. Set
+  // `OBJECT_STORAGE_PROVIDER=s3` to select it; unset (the default) keeps
+  // using `LocalFilesystemStorageProvider` — see
+  // lib/storage/provider.server.ts and docs/storage.md.
   OBJECT_STORAGE_PROVIDER: z.string().optional(),
   OBJECT_STORAGE_BUCKET: z.string().optional(),
+  // Required for a non-AWS S3-compatible vendor (R2/MinIO/Spaces/B2);
+  // omit for real AWS S3, which resolves its endpoint from the region.
   OBJECT_STORAGE_ENDPOINT: z.string().optional(),
   OBJECT_STORAGE_ACCESS_KEY: z.string().optional(),
   OBJECT_STORAGE_SECRET_KEY: z.string().optional(),
+  // SigV4 signing requires a region even for vendors (R2, some MinIO
+  // deployments) that don't meaningfully use one — "auto" is Cloudflare
+  // R2's own documented convention and a safe default for any vendor that
+  // ignores the value.
+  OBJECT_STORAGE_REGION: z.string().optional().default("auto"),
   // Directory `LocalFilesystemStorageProvider` reads/writes under. Defaults
   // to a project-local, gitignored directory so `npm run dev`/tests work
   // with zero configuration.
@@ -65,11 +73,24 @@ const envSchema = z.object({
   MEDIA_SIGNING_SECRET: z.string().optional(),
 
   // --- AI provider ---------------------------------------------------------
-  // Optional at this phase: no AI provider is wired up yet (Step 4 is an
-  // abstraction only). Never holds real credentials in this repo's .env.example.
+  // Optional: falls back to `UnconfiguredImageGenerationProvider` (throws
+  // on every call) when `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` are
+  // unset — see services/generation/provider.server.ts and
+  // docs/ai-providers.md. Never holds real credentials in this repo's
+  // .env.example.
   AI_PROVIDER: z.string().optional(),
   AI_PROVIDER_API_KEY: z.string().optional(),
   AI_PROVIDER_BASE_URL: z.string().optional(),
+  // Model/version identifier forwarded to the provider — purely a passed
+  // -through string (this app never interprets it), recorded onto each
+  // GenerationResult's metadata for traceability. Optional; the provider
+  // contract's own default applies when unset.
+  AI_PROVIDER_MODEL: z.string().optional(),
+  // Per-request timeout, in milliseconds, for
+  // production-image-generation-provider.server.ts's outbound calls.
+  // Optional — defaults to that file's own DEFAULT_REQUEST_TIMEOUT_MS
+  // when unset.
+  AI_PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
 
   // --- Image processing provider (Phase 4) --------------------------------
   // Optional: falls back to UnconfiguredImageProcessingProvider (throws on

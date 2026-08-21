@@ -32,11 +32,20 @@
  * merchant-facing failure message by services/processing/job.server.ts
  * (see CLAUDE.md "Safe error handling") — this is purely about not
  * hanging, not about a different user-facing outcome.
+ *
+ * Timeout/error-classification plumbing lives in
+ * ./http-provider-utils.server.ts, shared with
+ * production-image-generation-provider.server.ts — `ProviderTimeoutError`
+ * is re-exported here so existing importers of this module don't need to
+ * change.
  */
 import sharp from "sharp";
 import { getEnv } from "../../lib/validation/env.server";
 import { UnconfiguredAIProviderError } from "./unconfigured-provider";
+import { fetchWithTimeout, ProviderTimeoutError } from "./http-provider-utils.server";
 import type { ImageProcessingInput, ImageProcessingOutput, ImageProcessingProvider } from "./types";
+
+export { ProviderTimeoutError };
 
 const REMOVE_BG_ENDPOINT = "https://api.remove.bg/v1.0/removebg";
 
@@ -45,33 +54,6 @@ const REMOVE_BG_ENDPOINT = "https://api.remove.bg/v1.0/removebg";
  * enough that a hung request fails within one HTTP request cycle rather
  * than blocking a worker slot indefinitely. */
 const REQUEST_TIMEOUT_MS = 30_000;
-
-/** A provider-specific error distinct from a generic network/HTTP
- * failure — see this module's doc comment. */
-export class ProviderTimeoutError extends Error {
-  constructor(what: string) {
-    super(`Timed out after ${REQUEST_TIMEOUT_MS}ms: ${what}`);
-    this.name = "ProviderTimeoutError";
-  }
-}
-
-/** `fetch` with a bounded timeout — an aborted request surfaces as
- * `ProviderTimeoutError`, never a raw `AbortError` (which is easy to
- * mistake for a merchant-initiated cancellation). */
-async function fetchWithTimeout(url: string, what: string, init?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new ProviderTimeoutError(what);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 /** Mild, conservative defaults — "do not over-process the product" (see
  * docs/image-processing.md "Image cleanup"). */
@@ -89,7 +71,7 @@ const ASPECT_RATIO_DIMENSIONS: Record<string, { width: number; height: number }>
 };
 
 async function fetchSourceBytes(url: string): Promise<Buffer> {
-  const response = await fetchWithTimeout(url, "fetching source image");
+  const response = await fetchWithTimeout(url, "fetching source image", REQUEST_TIMEOUT_MS);
   if (!response.ok) {
     throw new Error(`Failed to fetch source image (status ${response.status})`);
   }
@@ -106,7 +88,7 @@ export class ProductionImageProcessingProvider implements ImageProcessingProvide
     }
 
     const body = new URLSearchParams({ image_url: input.sourceImage.url, size: "auto", format: "png" });
-    const response = await fetchWithTimeout(REMOVE_BG_ENDPOINT, "calling remove.bg", {
+    const response = await fetchWithTimeout(REMOVE_BG_ENDPOINT, "calling remove.bg", REQUEST_TIMEOUT_MS, {
       method: "POST",
       headers: { "X-Api-Key": env.REMOVE_BG_API_KEY, "Content-Type": "application/x-www-form-urlencoded" },
       body,

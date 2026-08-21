@@ -42,4 +42,10 @@ export interface StorageProvider {
   download(key: string): Promise<DownloadResult>;
   delete(key: string): Promise<void>;
   getSignedUrl(options: SignedUrlOptions): Promise<string>;
+  /** Whether an object currently exists at `key` — never throws for a
+   * missing object (that's a normal `false`, not an error); a genuine
+   * provider/network failure still propagates. Used for orphaned-object
+   * cleanup (see lib/storage/cleanup.server.ts) and safe deletes that
+   * shouldn't fail just because the object was already gone. */
+  exists(key: string): Promise<boolean>;
 }

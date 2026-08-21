@@ -13,7 +13,7 @@
  * key that looks like a secret) AND by value shape (long opaque tokens),
  * recursively, before anything is serialized.
  */
-import { SECRET_ENV_KEYS } from "../validation/env.server";
+import { SECRET_ENV_KEYS, getEnv } from "../validation/env.server";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 type LogMeta = Record<string, unknown>;
@@ -27,8 +27,46 @@ function looksLikeSecretKey(key: string): boolean {
   return SECRET_ENV_KEY_SET.has(key) || SECRET_KEY_PATTERN.test(key);
 }
 
-/** Recursively redacts any object value keyed by something secret-shaped. */
+/**
+ * The literal values of every currently-configured secret env var
+ * (SECRET_ENV_KEYS) — used below to catch a secret that ends up embedded
+ * inside an unrelated field's string content (e.g. a vendor/GraphQL error
+ * message that happens to echo a credential back), which key-name-based
+ * redaction alone can't catch. Recomputed on every call rather than
+ * cached: `getEnv()` is already cheap (cached internally) and this keeps
+ * a test's `resetEnvCacheForTests()` immediately reflected here too. Never
+ * throws — a log call must never fail just because environment validation
+ * hasn't run yet or has failed; that failure gets its own log line
+ * elsewhere, not a crash inside logging itself. Short values are skipped
+ * to avoid redacting incidental substring matches.
+ */
+function configuredSecretValues(): string[] {
+  try {
+    const env = getEnv();
+    return SECRET_ENV_KEYS.map((key) => env[key]).filter(
+      (value): value is string => typeof value === "string" && value.length >= 8,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function redactSecretSubstrings(value: string): string {
+  let result = value;
+  for (const secret of configuredSecretValues()) {
+    if (result.includes(secret)) result = result.split(secret).join(REDACTED);
+  }
+  return result;
+}
+
+/** Recursively redacts any object value keyed by something secret-shaped,
+ * AND any string value (regardless of its key) that contains a currently
+ * -configured secret's literal value. */
 export function redact(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === "string") {
+    return redactSecretSubstrings(value);
+  }
+
   if (Array.isArray(value)) {
     return value.map((entry) => redact(entry, seen));
   }

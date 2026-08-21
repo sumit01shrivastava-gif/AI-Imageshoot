@@ -28,6 +28,35 @@ import { recordIdentityValidation } from "../generation/identity-validation.serv
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { GeneratedImageOutput } from "../ai/types";
 import type { StoreVisualPlan } from "./schema";
+import { recordUsageEvent } from "../usage/usage-accounting.server";
+
+/** See services/generation/job.server.ts's identical helper — records
+ * this job's terminal outcome onto the usage ledger; a ledger write
+ * failure is logged and swallowed, never allowed to fail the job. */
+async function recordStoreVisualUsage(
+  shop: string,
+  storeVisualJobId: string,
+  status: "SUCCEEDED" | "FAILED",
+  detail: { providerName?: string; outputCount?: number; durationMs?: number },
+): Promise<void> {
+  try {
+    await recordUsageEvent({
+      shop,
+      operationType: "STORE_VISUAL_GENERATION",
+      status,
+      jobId: storeVisualJobId,
+      providerName: detail.providerName ?? null,
+      outputCount: detail.outputCount ?? 0,
+      durationMs: detail.durationMs ?? null,
+    });
+  } catch (error) {
+    logger.warn("store_visual.job.usage_record_failed", {
+      shop,
+      storeVisualJobId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
 
 export interface StoreVisualJobPayload {
   shop: string;
@@ -108,9 +137,20 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
 
   logger.info("store_visual.job.start", { shop, storeVisualJobId, attempt, totalAttempts });
 
+  const context: AuthContext = { shop, sessionId: "worker:store-visuals", isOnline: false };
+
+  // Idempotency guard — checked BEFORE `markProcessing` (which
+  // unconditionally overwrites `status`, so checking after it would
+  // never see "SUCCEEDED"). See services/generation/job.server.ts's
+  // identical guard for the full reasoning.
+  const existingJobRow = await getStoreVisualJob(context, storeVisualJobId);
+  if (existingJobRow?.status === "SUCCEEDED") {
+    logger.info("store_visual.job.already_succeeded", { shop, storeVisualJobId, attempt });
+    return;
+  }
+
   await markProcessing(shop, storeVisualJobId, attempt);
 
-  const context: AuthContext = { shop, sessionId: "worker:store-visuals", isOnline: false };
   const attemptStartedAt = Date.now();
 
   try {
@@ -131,17 +171,81 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
     assertValidGenerateImageResult(result);
 
     const identityValidation = recordStoreVisualIdentityValidation(plan);
-    const storedResults = await Promise.all(
+    // `allSettled`, not `all` — see services/generation/job.server.ts's
+    // identical comment for the full reasoning (a rejected Promise.all
+    // would discard the storage keys of any OTHER output that already
+    // uploaded successfully, orphaning them).
+    const uploadOutcomes = await Promise.allSettled(
       result.outputs.map((output, index) =>
         persistOutput(shop, storeVisualJobId, index, output, provider.name, identityValidation),
       ),
     );
-    await createResults(shop, storeVisualJobId, storedResults);
+    const uploadFailure = uploadOutcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+    if (uploadFailure) {
+      const succeeded = uploadOutcomes.filter(
+        (o): o is PromiseFulfilledResult<CreateResultInput> => o.status === "fulfilled",
+      );
+      // See services/generation/job.server.ts's identical event for the
+      // full reasoning — a StoreVisualJob is all-or-nothing too (same
+      // data model shape), this just makes the partial upload outcome
+      // explicit/observable rather than silently folded into
+      // `attempt_failed` below.
+      logger.warn("store_visual.job.partial_upload_failure", {
+        shop,
+        storeVisualJobId,
+        attemptedOutputs: uploadOutcomes.length,
+        succeededOutputs: succeeded.length,
+        failedOutputs: uploadOutcomes.length - succeeded.length,
+      });
+      await Promise.all(
+        succeeded.map((o) =>
+          getConfiguredStorageProvider()
+            .delete(o.value.storageKey)
+            .catch((cleanupError: unknown) =>
+              logger.warn("store_visual.job.orphan_cleanup_failed", {
+                shop,
+                storeVisualJobId,
+                storageKey: o.value.storageKey,
+                detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+              }),
+            ),
+        ),
+      );
+      throw uploadFailure.reason;
+    }
+    const storedResults = uploadOutcomes.map((o) => (o as PromiseFulfilledResult<CreateResultInput>).value);
+
+    try {
+      await createResults(shop, storeVisualJobId, storedResults);
+    } catch (persistError) {
+      // See services/generation/job.server.ts's identical cleanup for
+      // the full reasoning.
+      await Promise.all(
+        storedResults.map((stored) =>
+          getConfiguredStorageProvider()
+            .delete(stored.storageKey)
+            .catch((cleanupError: unknown) =>
+              logger.warn("store_visual.job.orphan_cleanup_failed", {
+                shop,
+                storeVisualJobId,
+                storageKey: stored.storageKey,
+                detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+              }),
+            ),
+        ),
+      );
+      throw persistError;
+    }
 
     const durationMs = Date.now() - attemptStartedAt;
     await markSucceeded(shop, storeVisualJobId, {
       providerName: provider.name,
       providerJobId: result.providerJobId,
+      durationMs,
+    });
+    await recordStoreVisualUsage(shop, storeVisualJobId, "SUCCEEDED", {
+      providerName: provider.name,
+      outputCount: storedResults.length,
       durationMs,
     });
 
@@ -173,6 +277,7 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
       await markFailed(shop, storeVisualJobId, { message, durationMs });
+      await recordStoreVisualUsage(shop, storeVisualJobId, "FAILED", { durationMs });
     }
 
     throw error;

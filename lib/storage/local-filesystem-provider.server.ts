@@ -130,13 +130,19 @@ export class LocalFilesystemStorageProvider implements StorageProvider {
     return `/media/${encodedKey}?expires=${expiresAt}&sig=${signature}`;
   }
 
-  /** Test/debug helper: whether a key currently has an object on disk. */
-  async has(key: string): Promise<boolean> {
+  async exists(key: string): Promise<boolean> {
     try {
       await stat(resolveObjectPath(key));
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** @deprecated Use `exists` (the `StorageProvider` interface method) —
+   * kept as an alias so any existing test-only caller of the old
+   * debug-helper name keeps working. */
+  async has(key: string): Promise<boolean> {
+    return this.exists(key);
   }
 }

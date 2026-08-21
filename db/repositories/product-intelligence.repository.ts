@@ -146,7 +146,7 @@ export async function saveResult(
   productId: string,
   data: ProductIntelligenceData,
   meta: SaveResultMeta,
-): Promise<void> {
+): Promise<{ analysisVersion: number }> {
   const existing = await prisma.productIntelligence.findUnique({
     where: { productId },
     select: { analysisVersion: true },
@@ -176,6 +176,8 @@ export async function saveResult(
       rawAnalysis: meta.rawAnalysis as Prisma.InputJsonValue,
     },
   });
+
+  return { analysisVersion: nextVersion };
 }
 
 function toColumns(data: ProductIntelligenceData) {

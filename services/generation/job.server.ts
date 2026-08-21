@@ -43,6 +43,38 @@ import { parseGenerationPlan, assertValidGenerateImageResult, InvalidGenerationR
 import { recordIdentityValidation, type IdentityValidationResult } from "./identity-validation.server";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import type { GeneratedImageOutput } from "../ai/types";
+import { recordUsageEvent } from "../usage/usage-accounting.server";
+
+/** Records one usage-ledger event for this job's terminal outcome — see
+ * services/usage/usage-accounting.server.ts's module doc comment for why
+ * this happens alongside markSucceeded/markFailed. Never allowed to fail
+ * the job itself: a usage-ledger write failure is logged and swallowed,
+ * not rethrown — the merchant's actual generation result must never be
+ * held hostage to accounting bookkeeping. */
+async function recordGenerationUsage(
+  shop: string,
+  generationJobId: string,
+  status: "SUCCEEDED" | "FAILED",
+  detail: { providerName?: string; outputCount?: number; durationMs?: number },
+): Promise<void> {
+  try {
+    await recordUsageEvent({
+      shop,
+      operationType: "IMAGE_GENERATION",
+      status,
+      jobId: generationJobId,
+      providerName: detail.providerName ?? null,
+      outputCount: detail.outputCount ?? 0,
+      durationMs: detail.durationMs ?? null,
+    });
+  } catch (error) {
+    logger.warn("generation.job.usage_record_failed", {
+      shop,
+      generationJobId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
 
 export interface GenerationJobPayload {
   shop: string;
@@ -103,9 +135,28 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
 
   logger.info("generation.job.start", { shop, generationJobId, attempt, totalAttempts });
 
+  const context: AuthContext = { shop, sessionId: "worker:generation", isOnline: false };
+
+  // Idempotency guard — checked BEFORE `markProcessing` (which
+  // unconditionally overwrites `status`, so checking after it would
+  // never see "SUCCEEDED"). A job only ever reaches SUCCEEDED once, at
+  // the bottom of the try block below, right before returning — the
+  // ONLY way this processor runs again for an already-SUCCEEDED job is a
+  // redelivered/duplicate BullMQ job, or a prior attempt that created
+  // results and then failed on the write to `markSucceeded` itself
+  // (rare, but possible on a transient DB error). Either way, results
+  // already exist — creating them again would double them, and even
+  // re-marking status/timestamps on an already-terminal job is pointless
+  // work — so this bails out before touching anything. See
+  // docs/generation-pipeline.md "Idempotency".
+  const existingJobRow = await getGenerationJob(context, generationJobId);
+  if (existingJobRow?.status === "SUCCEEDED") {
+    logger.info("generation.job.already_succeeded", { shop, generationJobId, attempt });
+    return;
+  }
+
   await markProcessing(shop, generationJobId, attempt);
 
-  const context: AuthContext = { shop, sessionId: "worker:generation", isOnline: false };
   const attemptStartedAt = Date.now();
 
   try {
@@ -126,17 +177,95 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     const identityValidation = plan.productFacts.identityAnchors
       ? recordIdentityValidation(plan.productFacts.identityAnchors)
       : { validated: false, reason: "no identity anchors present on this generation plan", identityAnchorsChecked: [] };
-    const storedResults = await Promise.all(
+    // `allSettled`, not `all` — with more than one output, `all` would
+    // reject as soon as ONE upload fails while the OTHERS may have
+    // already succeeded and be sitting in storage; their storage keys
+    // would never reach us (a rejected Promise.all discards every
+    // settled value), so they'd be orphaned forever. Settling every
+    // upload first lets us see exactly which ones actually landed, so a
+    // partial failure can still clean up after itself (see docs/storage.md
+    // "Orphaned object prevention" — "partial multi-output failure").
+    const uploadOutcomes = await Promise.allSettled(
       result.outputs.map((output, index) =>
         persistOutput(shop, generationJobId, index, output, provider.name, identityValidation),
       ),
     );
-    await createResults(shop, generationJobId, storedResults);
+    const uploadFailure = uploadOutcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+    if (uploadFailure) {
+      const succeeded = uploadOutcomes.filter(
+        (o): o is PromiseFulfilledResult<CreateResultInput> => o.status === "fulfilled",
+      );
+      const failedCount = uploadOutcomes.length - succeeded.length;
+      // A GenerationJob's outcome is all-or-nothing (SUCCEEDED or FAILED
+      // — there is no "3 of 4 outputs" partial-success state in the data
+      // model, matching every review/regenerate flow built against it),
+      // so ANY output failing here fails the whole attempt. That's a
+      // deliberate, existing design choice, not something this event
+      // changes — it exists purely so the partial upload outcome (how
+      // many succeeded before the failure, and how many of those are
+      // about to be cleaned back out of storage) is explicit and
+      // observable rather than silently folded into the generic
+      // `attempt_failed` log below.
+      logger.warn("generation.job.partial_upload_failure", {
+        shop,
+        generationJobId,
+        attemptedOutputs: uploadOutcomes.length,
+        succeededOutputs: succeeded.length,
+        failedOutputs: failedCount,
+      });
+      await Promise.all(
+        succeeded.map((o) =>
+          getConfiguredStorageProvider()
+            .delete(o.value.storageKey)
+            .catch((cleanupError: unknown) =>
+              logger.warn("generation.job.orphan_cleanup_failed", {
+                shop,
+                generationJobId,
+                storageKey: o.value.storageKey,
+                detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+              }),
+            ),
+        ),
+      );
+      throw uploadFailure.reason;
+    }
+    const storedResults = uploadOutcomes.map((o) => (o as PromiseFulfilledResult<CreateResultInput>).value);
+
+    try {
+      await createResults(shop, generationJobId, storedResults);
+    } catch (persistError) {
+      // The provider call and every upload succeeded, but the DB write
+      // that would make them visible/referenced didn't — clean up the
+      // now-orphaned storage objects rather than leaving them
+      // unreferenced forever (see docs/storage.md "Orphaned object
+      // prevention"). Best-effort: a cleanup failure is logged, never
+      // allowed to mask the real, original error.
+      await Promise.all(
+        storedResults.map((stored) =>
+          getConfiguredStorageProvider()
+            .delete(stored.storageKey)
+            .catch((cleanupError: unknown) =>
+              logger.warn("generation.job.orphan_cleanup_failed", {
+                shop,
+                generationJobId,
+                storageKey: stored.storageKey,
+                detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+              }),
+            ),
+        ),
+      );
+      throw persistError;
+    }
 
     const durationMs = Date.now() - attemptStartedAt;
     await markSucceeded(shop, generationJobId, {
       providerName: provider.name,
       providerJobId: result.providerJobId,
+      durationMs,
+    });
+    await recordGenerationUsage(shop, generationJobId, "SUCCEEDED", {
+      providerName: provider.name,
+      outputCount: storedResults.length,
       durationMs,
     });
 
@@ -168,6 +297,11 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
       await markFailed(shop, generationJobId, { message, durationMs });
+      // Only recorded once the job has truly, terminally failed (final
+      // attempt) — an intermediate retry failure is not yet a billable
+      // "failed operation", it's a step the queue's own retry may still
+      // recover from.
+      await recordGenerationUsage(shop, generationJobId, "FAILED", { durationMs });
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

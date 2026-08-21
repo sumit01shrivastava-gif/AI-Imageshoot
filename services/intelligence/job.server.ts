@@ -19,6 +19,7 @@ import { buildAnalyzeProductInput } from "./build-input";
 import { getConfiguredAIProvider } from "./provider.server";
 import { parseProductIntelligenceOutput, InvalidProductIntelligenceOutputError } from "./schema";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
+import { recordUsageEvent } from "../usage/usage-accounting.server";
 
 export interface ProductIntelligenceJobPayload {
   shop: string;
@@ -47,6 +48,14 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
   // function request-scoped code uses, as defense in depth. See CLAUDE.md
   // "Security requirements".
   const context: AuthContext = { shop, sessionId: "worker:product-intelligence", isOnline: false };
+  const startedAt = Date.now();
+  // This domain has no persisted per-request job row (a `ProductIntelligence`
+  // profile is upserted, one row per product — see docs/product-intelligence.md
+  // "Lifecycle") — the BullMQ job's own id is the closest stable, unique
+  // -per-run identifier to key the usage ledger's idempotency on. Falls
+  // back to a synthetic id in the (practically unreachable) case `job.id`
+  // is unset.
+  const usageJobId = job.id ?? `${productId}:${startedAt}`;
 
   try {
     const product = await findProductForShop(context, productId);
@@ -54,6 +63,7 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       // Product was deleted (by catalog sync) between the analysis being
       // requested and this job running.
       await markFailed(shop, productId, "This product no longer exists.");
+      await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
       return;
     }
 
@@ -66,6 +76,10 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       providerName: provider.name,
       sourceShopifyUpdatedAt: product.shopifyUpdatedAt,
       rawAnalysis: raw,
+    });
+    await recordProductAnalysisUsage(shop, usageJobId, "SUCCEEDED", {
+      providerName: provider.name,
+      durationMs: Date.now() - startedAt,
     });
 
     logger.info("intelligence.job.completed", { shop, productId, providerName: provider.name });
@@ -83,6 +97,35 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       detail: error instanceof Error ? error.message : "unknown error",
     });
     await markFailed(shop, productId, message);
+    await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
     throw error;
   }
 };
+
+/** See services/generation/job.server.ts's identical helper — records
+ * this job's terminal outcome onto the usage ledger; a ledger write
+ * failure is logged and swallowed, never allowed to fail the job. */
+async function recordProductAnalysisUsage(
+  shop: string,
+  jobId: string,
+  status: "SUCCEEDED" | "FAILED",
+  detail: { providerName?: string; durationMs?: number },
+): Promise<void> {
+  try {
+    await recordUsageEvent({
+      shop,
+      operationType: "PRODUCT_ANALYSIS",
+      status,
+      jobId,
+      providerName: detail.providerName ?? null,
+      outputCount: status === "SUCCEEDED" ? 1 : 0,
+      durationMs: detail.durationMs ?? null,
+    });
+  } catch (error) {
+    logger.warn("intelligence.job.usage_record_failed", {
+      shop,
+      jobId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}

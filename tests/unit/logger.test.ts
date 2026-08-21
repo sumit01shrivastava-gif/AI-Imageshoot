@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { redact } from "../../lib/logging/logger.server";
+import { resetEnvCacheForTests } from "../../lib/validation/env.server";
 
 describe("log redaction", () => {
   it("redacts keys that look like secrets", () => {
@@ -36,5 +37,47 @@ describe("log redaction", () => {
       unknown
     >;
     expect(result).toEqual({ count: 3, title: "Premium Leather Bag" });
+  });
+
+  // Key-name-based redaction alone can't catch a secret that ends up
+  // embedded inside an unrelated field's string content — e.g. a vendor
+  // or GraphQL error message that happens to echo a credential back (see
+  // services/*/job.server.ts's `detail: error.message` logging pattern).
+  // `redact` also scans string VALUES for any currently-configured
+  // secret's literal value, regardless of the key they're under.
+  describe("value-shape redaction (a secret embedded in an unrelated string)", () => {
+    afterEach(() => {
+      delete process.env.AI_PROVIDER_API_KEY;
+      resetEnvCacheForTests();
+    });
+
+    it("redacts a real, currently-configured secret (tests/setup.ts's SHOPIFY_API_SECRET) found inside an innocuous-keyed string", () => {
+      const result = redact({
+        detail: "provider rejected credential test_api_secret during handshake",
+      }) as Record<string, unknown>;
+      expect(result.detail).toBe("provider rejected credential [REDACTED] during handshake");
+    });
+
+    it("redacts a secret set only for this test, picked up after resetEnvCacheForTests()", () => {
+      process.env.AI_PROVIDER_API_KEY = "sk_live_abcdef123456";
+      resetEnvCacheForTests();
+
+      const result = redact({ detail: "auth failed for sk_live_abcdef123456" }) as Record<string, unknown>;
+      expect(result.detail).toBe("auth failed for [REDACTED]");
+    });
+
+    it("never throws or drops the log line just because the environment fails to validate", () => {
+      const originalDbUrl = process.env.DATABASE_URL;
+      delete process.env.DATABASE_URL; // makes getEnv() throw
+      resetEnvCacheForTests();
+
+      try {
+        expect(() => redact({ detail: "unaffected message" })).not.toThrow();
+        expect(redact({ detail: "unaffected message" })).toEqual({ detail: "unaffected message" });
+      } finally {
+        process.env.DATABASE_URL = originalDbUrl;
+        resetEnvCacheForTests();
+      }
+    });
   });
 });

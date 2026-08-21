@@ -282,6 +282,35 @@ export async function countStoreVisualResultsForShop(shop: string, filters: Stor
   });
 }
 
+const PUBLISH_RESULT_SELECT = {
+  id: true,
+  shop: true,
+  storageKey: true,
+  reviewStatus: true,
+  storeVisualJob: {
+    select: {
+      products: {
+        select: { productId: true, product: { select: { shopifyProductId: true, title: true } } },
+        orderBy: { position: "asc" },
+      },
+    },
+  },
+} satisfies Prisma.StoreVisualResultSelect;
+
+export type StoreVisualPublishSourceRow = Prisma.StoreVisualResultGetPayload<{ select: typeof PUBLISH_RESULT_SELECT }>;
+
+/** See generation-job.repository.ts's identical `getGenerationResultForPublishing`
+ * — same reasoning. A store visual can feature zero, one, or several
+ * products (unlike Generation/Processing's single owning product) —
+ * `storeVisualJob.products` is the candidate list a merchant chooses a
+ * publish target from; empty means "publishing isn't available for this
+ * fully generic visual" (see services/publishing/resolve-source.server.ts). */
+export async function getStoreVisualResultForPublishing(shop: string, resultId: string): Promise<StoreVisualPublishSourceRow | null> {
+  const row = await prisma.storeVisualResult.findUnique({ where: { id: resultId }, select: PUBLISH_RESULT_SELECT });
+  if (!row || row.shop !== shop) return null;
+  return row;
+}
+
 /** Sets a specific result's review decision — mirrors
  * generation-job.repository.ts's `setGenerationResultReviewStatus`
  * exactly. */

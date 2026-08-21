@@ -48,8 +48,19 @@ import {
 import { parseProcessingOptions } from "../../services/processing/schema";
 import { IMPLEMENTED_OPERATIONS, type ImageOperationValue } from "../../services/processing/types";
 import type { ProcessingJobRow, ProcessingResultRow } from "../../db/repositories/processing-job.repository";
+import {
+  requestPublish,
+  getLatestPublishStatus,
+  ResultNotApprovedError,
+  InvalidPublishTargetError,
+  AlreadyPublishedError,
+  PublishInProgressError,
+  InvalidPublishRequestError,
+  PublishSourceNotFoundError,
+} from "../../services/publishing/request-publish.server";
 import { useSelection } from "../components/selection-context";
 import { SelectionBar } from "../components/selection-bar";
+import { PublishControl, type PublishStatus } from "../components/publish-control";
 
 const NOT_FOUND_RESPONSE = () => new Response("Product not found", { status: 404 });
 
@@ -117,12 +128,41 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // preserved row, never overwritten.
   const processingHistory = await listProcessingHistory(context, product.id);
 
+  // Publish status for whichever result each section currently displays
+  // as "the" result (job.results[job.results.length - 1], same as
+  // ProductImageryResultDetail/ProcessingResultDetail below) — null when
+  // there's no result yet, which PublishControl never renders for.
+  // PRODUCT_CLEANUP's own "Image Generation" section (kept separate from
+  // the unified "AI Product Imagery" section below) has never had an
+  // Approve/Reject action — `requestPublish` requires an APPROVED
+  // result, so a Publish control there could never actually be used;
+  // deliberately not wired up rather than shipping a dead-end button
+  // (see CLAUDE.md "UX Polish" — no placeholder buttons).
+  const latestProductImageryJob =
+    generationHistory.find((job) => (PRODUCT_IMAGERY_TYPES as readonly string[]).includes(job.type)) ?? null;
+  const latestProcessingJob = processingHistory[0] ?? null;
+
+  const [productImageryPublishStatus, processingPublishStatus] = await Promise.all([
+    latestProductImageryJob?.results.length
+      ? getLatestPublishStatus(
+          context,
+          "GENERATION_RESULT",
+          latestProductImageryJob.results[latestProductImageryJob.results.length - 1].id,
+        )
+      : Promise.resolve(null),
+    latestProcessingJob?.results.length
+      ? getLatestPublishStatus(context, "PROCESSING_RESULT", latestProcessingJob.results[latestProcessingJob.results.length - 1].id)
+      : Promise.resolve(null),
+  ]);
+
   return {
     product,
     variants,
     variantsError,
     intelligence,
     intelligenceState,
+    productImageryPublishStatus,
+    processingPublishStatus,
     // See lib/storage/resign.server.ts's `withResultsSanitizedForClient`
     // doc comment — the repository select needs `storageKey` server-side
     // (to resign a fresh URL) but it must never reach the client.
@@ -378,6 +418,37 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "request-publish") {
+    const sourceType = formData.get("sourceType");
+    const sourceResultId = formData.get("sourceResultId");
+    const targetProductId = formData.get("targetProductId");
+    if (typeof sourceType !== "string" || typeof sourceResultId !== "string" || typeof targetProductId !== "string") {
+      return { ok: false as const, error: "Couldn't start publishing right now. Please try again." };
+    }
+    try {
+      await requestPublish(context, { sourceType, sourceResultId, targetProductId });
+      return { ok: true as const };
+    } catch (error) {
+      if (
+        error instanceof ResultNotApprovedError ||
+        error instanceof InvalidPublishTargetError ||
+        error instanceof AlreadyPublishedError ||
+        error instanceof PublishInProgressError ||
+        error instanceof InvalidPublishRequestError
+      ) {
+        return { ok: false as const, error: error.message };
+      }
+      if (error instanceof PublishSourceNotFoundError) {
+        return { ok: false as const, error: "That result could no longer be found." };
+      }
+      logger.error("products.detail.publish_failed", {
+        shop: context.shop,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      return { ok: false as const, error: "Couldn't start publishing right now. Please try again." };
+    }
+  }
+
   return { ok: false as const, error: "Unknown action." };
 };
 
@@ -471,6 +542,8 @@ export default function ProductDetail() {
     generationHistory,
     availableBrandStylePresets,
     processingHistory,
+    productImageryPublishStatus,
+    processingPublishStatus,
   } = useLoaderData<typeof loader>();
   const { isImageSelected, toggleImage, setProductImages, productSelectionState, selectedCountForProduct } =
     useSelection();
@@ -1093,6 +1166,9 @@ export default function ProductDetail() {
               onReview={reviewProductImageryResult}
               onRegenerate={() => regenerateProductImagery(latestProductImagery.id)}
               isRegenerating={isGeneratingProductImagery}
+              productId={product.id}
+              productTitle={product.title}
+              publishStatus={productImageryPublishStatus}
             />
           )}
 
@@ -1180,6 +1256,9 @@ export default function ProductDetail() {
                 onReview={reviewProcessing}
                 onRegenerate={() => regenerateProcessing(latestProcessing.id)}
                 isRegenerating={isProcessing}
+                productId={product.id}
+                productTitle={product.title}
+                publishStatus={processingPublishStatus}
               />
             </s-stack>
           )}
@@ -1325,11 +1404,17 @@ function ProductImageryResultDetail({
   onReview,
   onRegenerate,
   isRegenerating,
+  productId,
+  productTitle,
+  publishStatus,
 }: {
   job: GenerationJobRow;
   onReview: (resultId: string, decision: "APPROVED" | "REJECTED") => void;
   onRegenerate: () => void;
   isRegenerating: boolean;
+  productId: string;
+  productTitle: string;
+  publishStatus: PublishStatus | null;
 }) {
   const result: GenerationResultRow | undefined = job.results[job.results.length - 1];
   if (!result) return null;
@@ -1391,6 +1476,15 @@ function ProductImageryResultDetail({
             Regenerate
           </s-button>
         </s-stack>
+
+        {result.reviewStatus === "APPROVED" && (
+          <PublishControl
+            sourceType="GENERATION_RESULT"
+            sourceResultId={result.id}
+            candidateProducts={[{ productId, title: productTitle }]}
+            publishStatus={publishStatus}
+          />
+        )}
       </s-stack>
     </s-box>
   );
@@ -1409,11 +1503,17 @@ function ProcessingResultDetail({
   onReview,
   onRegenerate,
   isRegenerating,
+  productId,
+  productTitle,
+  publishStatus,
 }: {
   job: ProcessingJobRow;
   onReview: (resultId: string, decision: "APPROVED" | "REJECTED") => void;
   onRegenerate: () => void;
   isRegenerating: boolean;
+  productId: string;
+  productTitle: string;
+  publishStatus: PublishStatus | null;
 }) {
   const result: ProcessingResultRow | undefined = job.results[job.results.length - 1];
   if (!result) return null;
@@ -1468,6 +1568,15 @@ function ProcessingResultDetail({
             Regenerate
           </s-button>
         </s-stack>
+
+        {result.reviewStatus === "APPROVED" && (
+          <PublishControl
+            sourceType="PROCESSING_RESULT"
+            sourceResultId={result.id}
+            candidateProducts={[{ productId, title: productTitle }]}
+            publishStatus={publishStatus}
+          />
+        )}
       </s-stack>
     </s-box>
   );
