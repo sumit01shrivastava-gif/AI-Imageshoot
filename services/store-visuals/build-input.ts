@@ -28,6 +28,7 @@ export function buildGenerateImageInput(plan: StoreVisualPlan, attempt: number):
     outputFormat: plan.outputFormat,
     quality: plan.quality,
     outputCount: plan.outputCount,
+    maxResolutionPx: plan.maxResolutionPx,
     attempt,
     brandStyle: plan.brandStyle,
   };

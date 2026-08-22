@@ -239,11 +239,11 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
     }
 
     const durationMs = Date.now() - attemptStartedAt;
-    await markSucceeded(shop, storeVisualJobId, {
-      providerName: provider.name,
-      providerJobId: result.providerJobId,
-      durationMs,
-    });
+    // Usage/credit bookkeeping runs BEFORE `markSucceeded` writes the
+    // terminal status — see services/generation/job.server.ts's
+    // identical reordering/reasoning (a genuine, empirically-reproduced
+    // race under load: a caller polling job status must never observe
+    // SUCCEEDED before the reservation has actually settled).
     await recordStoreVisualUsage(shop, storeVisualJobId, "SUCCEEDED", {
       providerName: provider.name,
       outputCount: storedResults.length,
@@ -256,6 +256,11 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
         detail: settleError instanceof Error ? settleError.message : "unknown error",
       }),
     );
+    await markSucceeded(shop, storeVisualJobId, {
+      providerName: provider.name,
+      providerJobId: result.providerJobId,
+      durationMs,
+    });
 
     logger.info("store_visual.job.completed", {
       shop,
@@ -284,7 +289,8 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
           : error instanceof InvalidGenerationResultError
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
-      await markFailed(shop, storeVisualJobId, { message, durationMs });
+      // Same "usage/credit bookkeeping before the terminal status write"
+      // reordering as the SUCCEEDED path above.
       await recordStoreVisualUsage(shop, storeVisualJobId, "FAILED", { durationMs });
       await refundReservation(shop, storeVisualJobId).catch((refundError: unknown) =>
         logger.warn("store_visual.job.credit_resolution_failed", {
@@ -293,6 +299,7 @@ export const processStoreVisualJob: Processor<StoreVisualJobPayload> = async (jo
           detail: refundError instanceof Error ? refundError.message : "unknown error",
         }),
       );
+      await markFailed(shop, storeVisualJobId, { message, durationMs });
     }
 
     throw error;

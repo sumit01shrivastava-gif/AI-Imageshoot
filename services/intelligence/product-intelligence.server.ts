@@ -13,11 +13,14 @@ import { TenantMismatchError } from "../../lib/auth/tenant.server";
 import {
   getForProduct,
   ensurePendingAnalysis,
+  markFailed as markProductIntelligenceFailed,
   type ProductIntelligenceRow,
 } from "../../db/repositories/product-intelligence.repository";
+import { refundReservation } from "../../db/repositories/credit-reservation.repository";
 import { enqueueProductIntelligenceAnalysis } from "./queue.server";
 import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
+import { logger } from "../../lib/logging/logger.server";
 import { randomUUID } from "node:crypto";
 
 export { InsufficientCreditsError };
@@ -86,8 +89,43 @@ export async function requestProductAnalysis(context: AuthContext, productId: st
     await reserveCredits(context, creditReservationId, "PRODUCT_ANALYSIS", requiredCredits);
   }
 
-  await ensurePendingAnalysis(context.shop, productId);
-  await enqueueProductIntelligenceAnalysis({ shop: context.shop, productId, creditReservationId });
+  // Wrapped in a rollback boundary — see
+  // services/generation/request-generation.server.ts's identical
+  // pattern/reasoning: if `enqueueProductIntelligenceAnalysis` fails
+  // after the reservation above succeeded, nothing will ever run the
+  // worker that would otherwise settle/refund it.
+  try {
+    await ensurePendingAnalysis(context.shop, productId);
+    await enqueueProductIntelligenceAnalysis({ shop: context.shop, productId, creditReservationId });
+  } catch (error) {
+    logger.error("intelligence.request.enqueue_failed", {
+      shop: context.shop,
+      productId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+    if (creditReservationId) {
+      await refundReservation(context.shop, creditReservationId).catch((refundError: unknown) =>
+        logger.warn("intelligence.request.rollback_refund_failed", {
+          shop: context.shop,
+          productId,
+          detail: refundError instanceof Error ? refundError.message : "unknown error",
+        }),
+      );
+    }
+    // ensurePendingAnalysis may have already written PENDING even if the
+    // enqueue itself is what failed — without this, the merchant would
+    // see a perpetual "Analyzing…" state with no worker ever coming to
+    // resolve it.
+    await markProductIntelligenceFailed(context.shop, productId, "Couldn't start analysis. Please try again.").catch(
+      (markError: unknown) =>
+        logger.warn("intelligence.request.rollback_mark_failed_failed", {
+          shop: context.shop,
+          productId,
+          detail: markError instanceof Error ? markError.message : "unknown error",
+        }),
+    );
+    throw error;
+  }
 }
 
 export async function getProductIntelligence(

@@ -330,17 +330,31 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     }
 
     const durationMs = Date.now() - attemptStartedAt;
-    await markSucceeded(shop, generationJobId, {
-      providerName: provider.name,
-      providerJobId: result.providerJobId,
-      durationMs,
-    });
+    // Usage/credit bookkeeping runs BEFORE `markSucceeded` writes the
+    // terminal status — deliberately, not after: `markSucceeded` is what
+    // makes this job's outcome externally OBSERVABLE (a route/test
+    // polling job status, or a merchant's page reflecting a completed
+    // generation), so anything that outcome is supposed to imply (the
+    // usage ledger, the credit reservation settling to CONSUMED) must
+    // already be durable by the time that becomes visible — otherwise a
+    // caller can observe "SUCCEEDED" while the credit is still RESERVED,
+    // a real, empirically-reproduced race under load (see
+    // tests/integration/creative-studio/session.test.ts's mirrored
+    // FAILED-path regression test). Same "make the observable state
+    // change last" reasoning `createAndEnqueueGenerationJob`'s
+    // `markQueued`-before-`enqueue` ordering already uses, applied to the
+    // opposite end of a job's lifecycle.
     await recordGenerationUsage(shop, generationJobId, "SUCCEEDED", {
       providerName: provider.name,
       outputCount: storedResults.length,
       durationMs,
     });
     await resolveGenerationCredits(shop, generationJobId, "SUCCEEDED");
+    await markSucceeded(shop, generationJobId, {
+      providerName: provider.name,
+      providerJobId: result.providerJobId,
+      durationMs,
+    });
     if (creativeSessionId) {
       // A fresh read (rather than threading ids through `storedResults`,
       // which are pre-insert shapes with no DB-assigned id yet) — cheap,
@@ -381,7 +395,6 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
           : error instanceof InvalidGenerationResultError
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
-      await markFailed(shop, generationJobId, { message, durationMs });
       // Only recorded once the job has truly, terminally failed (final
       // attempt) — an intermediate retry failure is not yet a billable
       // "failed operation", it's a step the queue's own retry may still
@@ -390,8 +403,13 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       // Same reasoning — a reserved credit is only refunded once the job
       // has truly, terminally failed, never on an intermediate retry
       // attempt the queue may still recover from (see Part 11: "Failed
-      // generation must not consume permanent credits").
+      // generation must not consume permanent credits"). Run BEFORE
+      // `markFailed` for the same "make the observable state change
+      // last" reasoning as the SUCCEEDED path above — a caller polling
+      // for FAILED must never see it before the reservation has actually
+      // been refunded.
       await resolveGenerationCredits(shop, generationJobId, "FAILED");
+      await markFailed(shop, generationJobId, { message, durationMs });
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

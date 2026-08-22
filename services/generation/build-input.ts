@@ -19,6 +19,7 @@ export function buildGenerateImageInput(plan: GenerationPlan, attempt: number): 
     outputFormat: plan.outputFormat,
     quality: plan.quality,
     outputCount: plan.outputCount,
+    maxResolutionPx: plan.maxResolutionPx,
     attempt,
     brandStyle: plan.brandStyle,
     // Flatten the plan's lifestyleScene OR creativeIntent.creative (if

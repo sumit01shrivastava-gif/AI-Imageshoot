@@ -20,17 +20,20 @@ import { resignResultUrls } from "../../lib/storage";
 import {
   createGenerationJob,
   markQueued,
+  markFailed,
   getGenerationJob as getGenerationJobRow,
   listGenerationJobsForProduct as listGenerationJobsForProductRow,
   setGenerationResultReviewStatus,
   type GenerationJobRow,
 } from "../../db/repositories/generation-job.repository";
+import { refundReservation } from "../../db/repositories/credit-reservation.repository";
+import { logger } from "../../lib/logging/logger.server";
 import { buildGenerationPlan, type BuildGenerationPlanInput } from "./build-plan";
 import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
 import { GenerationTypeSchema, AspectRatioSchema, type GenerationPlan } from "./schema";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
-import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError } from "../usage/entitlement.server";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError, getPlan } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 import type { GenerationMode } from "../ai/types";
 
@@ -196,6 +199,18 @@ export async function createAndEnqueueGenerationJob(
     });
   }
 
+  // Snapshot the shop's REAL resolution ceiling onto the plan —
+  // unconditionally, for every generationType including Creative
+  // Studio's planOverride path, never trusting whatever a caller may
+  // have set (there is no merchant-facing "choose your resolution"
+  // control; this is purely a plan-derived ceiling — see
+  // services/generation/schema.ts's `maxResolutionPx` doc comment and
+  // docs/billing.md "Plan limit enforcement"). Enforced by CLAMPING the
+  // actual provider request (services/ai/openai-image-provider.server.ts's
+  // `sizeForAspectRatio`), not by rejecting the request — there is
+  // nothing for a merchant to have "over-requested" in the first place.
+  plan = { ...plan, maxResolutionPx: (await getPlan(context.shop)).maxGenerationResolutionPx };
+
   // Plan output-count limit — applies to EVERY generationType,
   // including Creative Studio (unlike the credit-gate block below, this
   // isn't skipped for a Creative-Studio-managed request; output-count
@@ -241,16 +256,55 @@ export async function createAndEnqueueGenerationJob(
     creativeSessionId: input.creativeSessionId,
   });
 
-  if (!isCreativeStudioManaged) {
-    await reserveCredits(context, job.id, "IMAGE_GENERATION", requiredCredits);
-  }
+  // Everything from here through the actual enqueue is wrapped in one
+  // rollback boundary: if ANYTHING in this sequence fails (a transient
+  // DB error reserving credits, `beforeEnqueue` itself failing, a
+  // markQueued/enqueue failure), the job row already exists but will
+  // never be picked up by a worker — meaning a reservation made just
+  // before the failure would otherwise be stuck RESERVED forever (no
+  // worker run ever left to settle/refund it), and the merchant would
+  // see the request silently vanish rather than a clear failure. Refund
+  // whatever reservation exists (a harmless no-op if none was actually
+  // created yet — see `refundReservation`'s conditional-update
+  // semantics) and mark the job FAILED, then rethrow the ORIGINAL error
+  // — this closes the "job creation failure after reservation" gap
+  // docs/usage.md's "Known limitations" previously only documented as
+  // accepted. See tests/integration/generation/generation-queue.test.ts
+  // for the regression coverage.
+  try {
+    if (!isCreativeStudioManaged) {
+      await reserveCredits(context, job.id, "IMAGE_GENERATION", requiredCredits);
+    }
 
-  if (input.beforeEnqueue) {
-    await input.beforeEnqueue(job.id);
-  }
+    if (input.beforeEnqueue) {
+      await input.beforeEnqueue(job.id);
+    }
 
-  await markQueued(context.shop, job.id);
-  await enqueueGenerationJob({ shop: context.shop, generationJobId: job.id });
+    await markQueued(context.shop, job.id);
+    await enqueueGenerationJob({ shop: context.shop, generationJobId: job.id });
+  } catch (error) {
+    logger.error("generation.request.enqueue_failed", {
+      shop: context.shop,
+      generationJobId: job.id,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+    await refundReservation(context.shop, job.id).catch((refundError: unknown) =>
+      logger.warn("generation.request.rollback_refund_failed", {
+        shop: context.shop,
+        generationJobId: job.id,
+        detail: refundError instanceof Error ? refundError.message : "unknown error",
+      }),
+    );
+    await markFailed(context.shop, job.id, { message: "Couldn't queue this request. Please try again.", durationMs: 0 }).catch(
+      (markError: unknown) =>
+        logger.warn("generation.request.rollback_mark_failed_failed", {
+          shop: context.shop,
+          generationJobId: job.id,
+          detail: markError instanceof Error ? markError.message : "unknown error",
+        }),
+    );
+    throw error;
+  }
 
   return job;
 }

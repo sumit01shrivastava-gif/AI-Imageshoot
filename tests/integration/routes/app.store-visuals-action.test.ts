@@ -53,6 +53,13 @@ function requestFor(shop: string): Request {
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: SHOP_A } });
   await prisma.storeVisualJob.deleteMany({ where: { shop: SHOP_A } });
+  // See tests/integration/store-visuals/store-visual-queue.test.ts's
+  // identical cleanup addition — a CONSUMED reservation counts against
+  // this shop's monthly credit allowance for as long as it exists, so
+  // without this, repeated local runs against the same persistent
+  // Postgres eventually exhaust it and fail every subsequent run with a
+  // real (not flaky) InsufficientCreditsError.
+  await prisma.creditReservation.deleteMany({ where: { shop: SHOP_A } });
 }
 
 let worker: Worker | undefined;

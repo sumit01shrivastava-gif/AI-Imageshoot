@@ -54,6 +54,16 @@ function product(shopifyProductId: string, title: string): SyncedProduct {
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: { in: [SHOP, OTHER_SHOP] } } });
   await prisma.storeVisualJob.deleteMany({ where: { shop: { in: [SHOP, OTHER_SHOP] } } });
+  // Real, persistent CONSUMED reservations count against this shop's
+  // monthly credit allowance for as long as they exist (see
+  // services/usage/entitlement.server.ts's `getRemainingCredits`) —
+  // without this, repeated local runs against the same persistent
+  // Postgres accumulate consumed credits across invocations until the
+  // STARTER plan's monthly allowance is genuinely exhausted, failing
+  // every subsequent run with a real (not flaky) InsufficientCreditsError
+  // unrelated to anything this file is actually testing. Same pattern
+  // every other credit-consuming integration test file already follows.
+  await prisma.creditReservation.deleteMany({ where: { shop: { in: [SHOP, OTHER_SHOP] } } });
 }
 
 let worker: Worker | undefined;

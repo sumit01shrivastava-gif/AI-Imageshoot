@@ -29,6 +29,7 @@ import { getConfiguredStorageProvider, resetConfiguredStorageProviderForTests } 
 import { upsertSyncedProduct } from "../../../db/repositories/shopify-product.repository";
 import { saveResult as saveIntelligenceResult } from "../../../db/repositories/product-intelligence.repository";
 import { parseProductIntelligenceOutput } from "../../../services/intelligence/schema";
+import { parseGenerationPlan } from "../../../services/generation/schema";
 import type { SyncedProduct } from "../../../services/products/types";
 import type { AuthContext } from "../../../lib/auth/types";
 import type { GenerationJobPayload } from "../../../services/generation/job.server";
@@ -200,6 +201,18 @@ describe("generation queue: end-to-end", () => {
     },
     15000,
   );
+
+  it("snapshots the shop's real plan resolution ceiling onto the persisted plan (Part 2's maxGenerationResolutionPx enforcement)", async () => {
+    const row = await seedAnalyzedProduct("gid://shopify/Product/resolution-1");
+    const job = await requestGeneration(CONTEXT, { productId: row.id, generationType: "PRODUCT_CLEANUP" });
+
+    const jobRow = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } });
+    const plan = parseGenerationPlan(jobRow.plan);
+    // This suite's shop is seeded with a STARTER subscription (see
+    // beforeAll) — STARTER's maxGenerationResolutionPx is 1536 (see
+    // services/billing/plans.ts).
+    expect(plan.maxResolutionPx).toBe(1536);
+  });
 
   it(
     "a single request can produce multiple independently-identifiable results",

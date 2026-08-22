@@ -41,6 +41,29 @@ describe("sizeForAspectRatio", () => {
   it("falls back to auto for an unrecognized ratio, never throwing", () => {
     expect(sizeForAspectRatio("not-a-ratio")).toBe("auto");
   });
+
+  describe("plan resolution ceiling (maxDimensionPx)", () => {
+    it("allows the full portrait/landscape sizes when no ceiling is given", () => {
+      expect(sizeForAspectRatio("16:9", undefined)).toBe("1536x1024");
+      expect(sizeForAspectRatio("16:9", null)).toBe("1536x1024");
+    });
+
+    it("allows portrait/landscape when the ceiling is at or above 1536", () => {
+      expect(sizeForAspectRatio("16:9", 1536)).toBe("1536x1024");
+      expect(sizeForAspectRatio("4:5", 2048)).toBe("1024x1536");
+    });
+
+    it("forces square when the ceiling is below 1536 (FREE plan's 1024), never silently generating a wider/taller canvas", () => {
+      expect(sizeForAspectRatio("16:9", 1024)).toBe("1024x1024");
+      expect(sizeForAspectRatio("4:5", 1024)).toBe("1024x1024");
+      expect(sizeForAspectRatio("21:9", 1024)).toBe("1024x1024");
+    });
+
+    it("a square request stays square regardless of the ceiling", () => {
+      expect(sizeForAspectRatio("1:1", 1024)).toBe("1024x1024");
+      expect(sizeForAspectRatio("1:1", 2048)).toBe("1024x1024");
+    });
+  });
 });
 
 describe("OpenAIImageGenerationProvider", () => {
@@ -77,6 +100,34 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(capturedBody?.size).toBe("1024x1024");
     expect(result.outputs).toHaveLength(1);
     expect(result.outputs[0].contentType).toBe("image/png");
+  });
+
+  it("clamps a wide aspect ratio to a square canvas when the plan's maxResolutionPx is below 1536", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      capturedBody = JSON.parse(init!.body as string);
+      return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    const provider = new OpenAIImageGenerationProvider();
+    await provider.generateImage(baseInput({ aspectRatio: "16:9", maxResolutionPx: 1024 }));
+
+    expect(capturedBody?.size).toBe("1024x1024");
+  });
+
+  it("allows the full landscape size when the plan's maxResolutionPx is 1536+", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      capturedBody = JSON.parse(init!.body as string);
+      return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    const provider = new OpenAIImageGenerationProvider();
+    await provider.generateImage(baseInput({ aspectRatio: "16:9", maxResolutionPx: 1536 }));
+
+    expect(capturedBody?.size).toBe("1536x1024");
   });
 
   it("uses a custom AI_PROVIDER_BASE_URL when set (e.g. a proxy)", async () => {

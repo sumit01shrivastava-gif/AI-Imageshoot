@@ -102,6 +102,48 @@ rather than inventing states that would immediately alias one another.
   already PENDING/PROCESSING (a narrow, accepted race is possible here —
   see "Known limitations").
 
+### Rollback on job-creation failure
+
+Every request-side entry point (`createAndEnqueueGenerationJob`,
+`createAndEnqueueProcessingJob`, `requestStoreVisual`,
+`requestProductAnalysis`) wraps the sequence from credit reservation
+through `markQueued`/enqueue in one rollback boundary: if ANYTHING in
+that sequence fails (a transient DB error reserving credits, a
+`beforeEnqueue` hook failing, a `markQueued`/enqueue failure), the code
+best-effort refunds whatever reservation exists (`refundReservation`'s
+conditional update is a harmless no-op if none was actually created yet)
+and marks the job/profile row FAILED, then rethrows the original error.
+Closes a genuine correctness gap found during the final production
+-integration audit: without this, a job row could exist with a
+permanently-RESERVED credit that no worker would ever run to
+settle/refund, since the job was never actually enqueued. See
+`tests/integration/{generation,processing,store-visuals,intelligence}/request-*-rollback.test.ts`
+for the regression coverage (each mocks only that domain's queue module,
+against real Postgres).
+
+### Ordering: credit resolution before the terminal status write
+
+Each domain's worker (`job.server.ts`) settles/refunds a job's
+reservation (`settleReservation`/`refundReservation`, or the generation
+-domain's `resolveGenerationCredits` wrapper) BEFORE writing the job's
+terminal `SUCCEEDED`/`FAILED` status (`markSucceeded`/`markFailed`) —
+deliberately, not after. `markSucceeded`/`markFailed` is what makes a
+job's outcome externally OBSERVABLE (a route/test polling job status, or
+a merchant's page reflecting a completed generation); if credit
+resolution ran after that write, a caller could observe a terminal
+status while the reservation was still `RESERVED` a moment longer. This
+was not theoretical — it was found as a real, reproducible-under-load
+test flake (`tests/integration/creative-studio/session.test.ts`'s
+"refunds the reservation when generation fails" test) during this same
+audit pass, confirmed absent on a clean checkout and consistently
+present once the full suite's parallel Postgres/Redis load was heavy
+enough to widen the window. Fixed uniformly across generation,
+processing, and store-visuals; the Product Intelligence domain's
+`saveResult` is a deliberate exception — see that call site's own doc
+comment in `services/intelligence/job.server.ts` for why reordering it
+would trade this narrow read race for a worse one (settling a credit for
+a write that then fails).
+
 ## Credit cost rule
 
 `services/usage/credit-costs.ts`'s `getCreditCost`:

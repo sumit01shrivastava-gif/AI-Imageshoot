@@ -91,9 +91,21 @@ just passing tests against mocked providers.
   `services/billing/plans.ts` matches what you actually intend to
   charge (this pass's numbers — FREE/$19/$49/$149 — are a reasonable
   starting catalog, not a validated pricing decision).
-- **Per-plan resolution enforcement** — output-count and batch-size ARE
-  now enforced (see docs/billing.md "Known limitations"); resolution
-  (`maxGenerationResolutionPx`) is still not.
+- ~~Per-plan resolution enforcement~~ — done. Output-count, batch-size,
+  and resolution (`maxGenerationResolutionPx`) are all enforced — see
+  docs/billing.md "Known limitations".
+- ~~Credit lifecycle final audit~~ — done. Every request-side entry
+  point now rolls back (refund + mark FAILED) on a job-creation failure
+  after reservation, and every worker settles/refunds a job's credit
+  reservation BEFORE writing its terminal status — closing two genuine
+  gaps found by direct testing, not guessed at. See docs/usage.md
+  "Rollback on job-creation failure" and "Ordering: credit resolution
+  before the terminal status write".
+- ~~Creative Studio quality pass~~ — done. Fixed: "turn X into Y"
+  color-override phrasing wasn't recognized at all; a requested removal
+  naming a protected brand/identity element ("remove the logo") could
+  reach the prompt and contradict the identity instruction's own
+  protection. See docs/creative-studio.md "Creative overrides".
 - **A real vision-capable `AIProvider` for Product Intelligence**, if
   you want genuine semantic identity validation instead of the current
   honest "not yet possible" result — see

@@ -42,6 +42,11 @@ async function cleanup() {
   await prisma.publishingJob.deleteMany({ where: { shop: SHOP } });
   await prisma.storeVisualJob.deleteMany({ where: { shop: SHOP } });
   await prisma.shopifyProduct.deleteMany({ where: { shop: SHOP } });
+  // See tests/integration/store-visuals/store-visual-queue.test.ts's
+  // identical cleanup addition — this file's `callNewAction` genuinely
+  // consumes real credits; without this, repeated local runs eventually
+  // exhaust this shop's monthly allowance for real.
+  await prisma.creditReservation.deleteMany({ where: { shop: SHOP } });
 }
 
 let worker: Worker | undefined;

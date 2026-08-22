@@ -94,9 +94,20 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
     if (!product) {
       // Product was deleted (by catalog sync) between the analysis being
       // requested and this job running.
-      await markFailed(shop, productId, "This product no longer exists.");
+      // Usage/credit bookkeeping before the terminal status write — see
+      // services/generation/job.server.ts's identical reordering/
+      // reasoning (a caller polling job status must never observe a
+      // terminal FAILED status before the reservation has actually been
+      // refunded). Safe here specifically because `markFailed` is a
+      // dedicated status-only write, independent of any data this
+      // request would have produced — unlike the SUCCEEDED path below,
+      // whose `saveResult` atomically writes both the analysis data AND
+      // the READY status in one upsert, so reordering credit settlement
+      // ahead of IT would risk settling a credit for a write that then
+      // fails (see that call site's own doc comment).
       await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
       await resolveAnalysisCredits(shop, creditReservationId, "FAILED");
+      await markFailed(shop, productId, "This product no longer exists.");
       return;
     }
 
@@ -105,6 +116,18 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
     const raw = await provider.analyzeProduct(input);
     const data = parseProductIntelligenceOutput(raw);
 
+    // Deliberately NOT reordered to settle credits first (unlike every
+    // other domain's job.server.ts — see the FAILED branches' doc
+    // comments below): `saveResult` atomically upserts both the analysis
+    // data AND the READY status in one write. Settling credits ahead of
+    // it would mean a `saveResult` failure leaves the reservation already
+    // CONSUMED (a conditional update, so `resolveAnalysisCredits`'s later
+    // refund attempt in the catch block below would be a no-op against
+    // an already-CONSUMED row) even though no analysis was ever actually
+    // saved — a worse bug (a charged credit for nothing delivered) than
+    // the narrower read-only race this ordering accepts instead (a
+    // caller could observe READY status a moment before the reservation
+    // shows CONSUMED).
     await saveResult(shop, productId, data, {
       providerName: provider.name,
       sourceShopifyUpdatedAt: product.shopifyUpdatedAt,
@@ -130,9 +153,11 @@ export const processProductIntelligenceJob: Processor<ProductIntelligenceJobPayl
       productId,
       detail: error instanceof Error ? error.message : "unknown error",
     });
-    await markFailed(shop, productId, message);
+    // Usage/credit bookkeeping before the terminal status write — see the
+    // early-return FAILED path above for the full reasoning.
     await recordProductAnalysisUsage(shop, usageJobId, "FAILED", { durationMs: Date.now() - startedAt });
     await resolveAnalysisCredits(shop, creditReservationId, "FAILED");
+    await markFailed(shop, productId, message);
     throw error;
   }
 };

@@ -69,6 +69,12 @@ export const StoreVisualPlanSchema = z.object({
   quality: GenerationQualitySchema,
   outputCount: z.number().int().min(1).max(4),
 
+  /** Same field/reasoning as services/generation/schema.ts's
+   * `GenerationPlanSchema.maxResolutionPx` — set unconditionally by
+   * `requestStoreVisual` from the shop's real resolved plan, never
+   * merchant-supplied. */
+  maxResolutionPx: z.number().int().positive().nullable().default(null),
+
   brandStyle: BrandStyleContextSchema.nullable(),
 
   constraints: z.array(z.string()).default([]),

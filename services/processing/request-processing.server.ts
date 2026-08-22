@@ -22,15 +22,18 @@ import { resignResultUrls } from "../../lib/storage";
 import {
   createProcessingJob,
   markQueued,
+  markFailed,
   getProcessingJob as getProcessingJobRow,
   listProcessingJobsForProduct as listProcessingJobsForProductRow,
   setResultReviewStatus,
   type ProcessingJobRow,
 } from "../../db/repositories/processing-job.repository";
+import { refundReservation } from "../../db/repositories/credit-reservation.repository";
 import { enqueueProcessingJob } from "./queue.server";
 import { ImageOperationSchema, parseProcessingOptions, type ProcessingOptions } from "./schema";
 import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
+import { logger } from "../../lib/logging/logger.server";
 
 export { InsufficientCreditsError };
 
@@ -126,11 +129,39 @@ export async function createAndEnqueueProcessingJob(
   // Reserved right after the row exists (its id is the reservation's
   // idempotency key — see createReservation's doc comment) and BEFORE
   // enqueueing, so a worker can never start processing a job with no
-  // corresponding hold.
-  await reserveCredits(context, job.id, "IMAGE_PROCESSING", requiredCredits);
-
-  await markQueued(context.shop, job.id);
-  await enqueueProcessingJob({ shop: context.shop, processingJobId: job.id });
+  // corresponding hold. Wrapped in a rollback boundary — see
+  // services/generation/request-generation.server.ts's identical
+  // pattern/reasoning (found during the final production-integration
+  // audit's credit-lifecycle pass): a failure anywhere in this sequence
+  // must refund whatever reservation exists and mark the job FAILED,
+  // never leave it RESERVED with no worker ever coming to resolve it.
+  try {
+    await reserveCredits(context, job.id, "IMAGE_PROCESSING", requiredCredits);
+    await markQueued(context.shop, job.id);
+    await enqueueProcessingJob({ shop: context.shop, processingJobId: job.id });
+  } catch (error) {
+    logger.error("processing.request.enqueue_failed", {
+      shop: context.shop,
+      processingJobId: job.id,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+    await refundReservation(context.shop, job.id).catch((refundError: unknown) =>
+      logger.warn("processing.request.rollback_refund_failed", {
+        shop: context.shop,
+        processingJobId: job.id,
+        detail: refundError instanceof Error ? refundError.message : "unknown error",
+      }),
+    );
+    await markFailed(context.shop, job.id, { message: "Couldn't queue this request. Please try again.", durationMs: 0 }).catch(
+      (markError: unknown) =>
+        logger.warn("processing.request.rollback_mark_failed_failed", {
+          shop: context.shop,
+          processingJobId: job.id,
+          detail: markError instanceof Error ? markError.message : "unknown error",
+        }),
+    );
+    throw error;
+  }
 
   return job;
 }

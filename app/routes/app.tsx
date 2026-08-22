@@ -4,6 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { requireAdminContext } from "../../services/shopify";
+import { getEnv } from "../../lib/validation/env.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Every /app/* route nests under this layout, so authenticating here
@@ -11,8 +12,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // "Security requirements") guards all of them.
   await requireAdminContext(request);
 
-  // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  // SHOPIFY_API_KEY (the app's Client ID) is intentionally public — it's
+  // not in SECRET_ENV_KEYS (lib/validation/env.server.ts) and App Bridge
+  // requires it client-side to initialize. Read via getEnv() (not raw
+  // process.env) so this stays the one validated source for every env
+  // var this app reads — see CLAUDE.md "Input validation".
+  return { apiKey: getEnv().SHOPIFY_API_KEY };
 };
 
 export default function App() {

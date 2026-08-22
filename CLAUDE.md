@@ -20,6 +20,82 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
+**Final commercial-launch integration pass — complete** (see
+docs/commercial-launch.md, docs/usage.md, docs/creative-studio.md for
+full detail). A four-part audit-then-fix pass across production
+configuration, per-plan resolution enforcement, the credit lifecycle,
+and Creative Studio prompt quality — explicitly NOT another round of
+architectural foundations. **No new Prisma migration** (every change
+this pass is either TypeScript-level or lives inside an existing JSON
+plan column):
+
+- **Part 1 (env var audit)** — found already largely correct from prior
+  passes: `lib/validation/env.server.ts` is the single validated schema
+  (required vars fail fast with a readable error; every optional
+  integration has a safe fallback), and `.env.example` already mirrors
+  it field-for-field. One real inconsistency fixed:
+  `app/routes/app.tsx`'s loader read `SHOPIFY_API_KEY` via raw
+  `process.env` instead of `getEnv()` — harmless (that var is
+  intentionally public, not in `SECRET_ENV_KEYS`) but inconsistent with
+  "one validated source for every env var"; now reads via `getEnv()`.
+- **Part 2 (`maxGenerationResolutionPx` enforcement)** — done in the
+  immediately-prior pass (see "Live-deployment pass" below); confirmed
+  still correctly wired this pass.
+- **Part 3 (credit lifecycle final audit)** — two genuine correctness
+  gaps found by direct testing, not guessed at, both fixed with
+  regression coverage: (1) a job-creation failure AFTER credit
+  reservation (a transient DB error, a `beforeEnqueue` hook failing, an
+  enqueue failure) previously left the reservation stuck `RESERVED`
+  forever with no worker ever coming to resolve it — every request-side
+  entry point (`createAndEnqueueGenerationJob`,
+  `createAndEnqueueProcessingJob`, `requestStoreVisual`,
+  `requestProductAnalysis`) now wraps reservation-through-enqueue in a
+  rollback boundary (refund + mark FAILED, log-and-swallow secondary
+  failures, rethrow the original error); (2) every worker
+  (`job.server.ts`) wrote a job's terminal `SUCCEEDED`/`FAILED` status
+  BEFORE settling/refunding its credit reservation — a real,
+  reproducible-under-load race (confirmed absent on a clean checkout,
+  consistently present under the full test suite's parallel Postgres/
+  Redis load) where a caller polling job status could observe the
+  terminal state before the credit ledger caught up; reordered
+  consistently across generation/processing/store-visuals (Product
+  Intelligence's atomic `saveResult` is a deliberate, documented
+  exception — reordering IT would trade this narrow read race for a
+  worse write race). Also found and fixed in passing: two integration
+  test files (`tests/integration/store-visuals/store-visual-queue.test.ts`,
+  `tests/integration/routes/app.store-visuals-action.test.ts`,
+  `tests/integration/routes/app.store-visuals-publish-action.test.ts`)
+  were missing the `CreditReservation` cleanup every other credit
+  -consuming test file already has, silently accumulating real consumed
+  credits across repeated local runs until a shop's monthly allowance
+  was genuinely exhausted. See docs/usage.md "Rollback on job-creation
+  failure" and "Ordering: credit resolution before the terminal status
+  write".
+- **Part 4 (Creative Studio quality pass)** — two genuine gaps found
+  against the instructions' own worked examples, both fixed with
+  regression coverage: (1) the heuristic intent parser's color/material
+  override pattern only matched a direct-object phrasing ("make the
+  bottle black") — "Turn this red bottle into a blue bottle" didn't
+  match at all and silently fell through to a generic
+  variation/fresh-scene default; fixed by adding an "into"/"to"-phrased
+  alternative, tried FIRST specifically because trying the direct-object
+  form first would wrongly capture "red" (the product's current color)
+  instead of "blue" (the requested target) whenever a message names
+  both; (2) a requested removal naming a protected brand/identity
+  element ("Remove the logo") flowed straight into the synthesized
+  prompt's "without logo" clause with no check against the identity
+  instruction's own unconditional "do not alter any visible logos"
+  protection two sentences earlier — a self-contradicting prompt;
+  fixed via `identity-constraints.ts`'s new `filterProtectedRemovals`,
+  structurally excluding any protected term from both the prompt and the
+  persisted plan (recorded separately as `blockedRemovals` for
+  traceability; surfaced to the merchant via the chat acknowledgement).
+  The other two worked examples ("use the second image" ordinal
+  resolution; "keep everything the same but make it premium" producing
+  an edit, not a fresh image) were already correctly handled —
+  confirmed by new regression tests, not just re-asserted. See
+  docs/creative-studio.md "Creative overrides".
+
 **Live-deployment pass — complete** (see docs/production-deployment.md
 and docs/commercial-launch.md for full detail). This pass connected a
 real, production commercial AI vendor (OpenAI's `gpt-image-1` —

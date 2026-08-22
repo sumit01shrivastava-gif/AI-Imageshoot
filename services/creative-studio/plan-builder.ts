@@ -31,7 +31,7 @@ import { toBrandStyleContext, buildProductFactsContext } from "../generation/bui
 import type { AspectRatioValue } from "../generation/types";
 import type { ParsedIntent } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
-import { buildIdentityConstraints } from "./identity-constraints";
+import { buildIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
 
 export class ProductNotAnalyzedError extends Error {
   constructor() {
@@ -206,6 +206,17 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
   const category = intelligence.category ?? (product.productType || "product");
   const identityConstraints = buildIdentityConstraints(identityAnchors, product.title, parsedIntent.attributeOverrides);
 
+  // "Remove the logo" (Part 4 worked example): a requested removal that
+  // names a protected brand/identity element must never reach the
+  // prompt — it would directly contradict the identity instruction's
+  // own "do not alter any visible logos" clause two sentences earlier.
+  // Filtered BEFORE building `creative` so both the synthesized prompt
+  // and the persisted `creativeIntent.creative.removeElements` agree on
+  // what was actually requested of the provider; `blocked` is kept
+  // separately for traceability (see identity-constraints.ts's doc
+  // comment) rather than silently dropped.
+  const { allowed: removeElements, blocked: blockedRemovals } = filterProtectedRemovals(parsedIntent.removeElements);
+
   const creative = {
     scene: parsedIntent.scene,
     style: parsedIntent.style,
@@ -214,7 +225,8 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     camera: parsedIntent.camera,
     colorDirection: parsedIntent.colorDirection,
     addElements: parsedIntent.addElements,
-    removeElements: parsedIntent.removeElements,
+    removeElements,
+    blockedRemovals,
     colorOverride: parsedIntent.attributeOverrides.color,
     materialOverride: parsedIntent.attributeOverrides.material,
   };

@@ -18,6 +18,7 @@ import { resignResultUrls } from "../../lib/storage";
 import {
   createStoreVisualJob,
   markQueued,
+  markFailed,
   getStoreVisualJob as getStoreVisualJobRow,
   listStoreVisualJobsForShop,
   setStoreVisualResultReviewStatus,
@@ -25,12 +26,14 @@ import {
   type StoreVisualJobListFilters,
   type StoreVisualJobListPage,
 } from "../../db/repositories/store-visual-job.repository";
+import { refundReservation } from "../../db/repositories/credit-reservation.repository";
+import { logger } from "../../lib/logging/logger.server";
 import { buildStoreVisualPlan, type StoreVisualProductInput } from "./build-plan";
 import { resolveBrandStylePreset } from "../generation/brand-style-preset.server";
 import { enqueueStoreVisualJob } from "./queue.server";
 import { StoreVisualTypeSchema, AspectRatioSchema } from "./schema";
 import type { AspectRatioValue } from "./types";
-import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError } from "../usage/entitlement.server";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError, getPlan } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 
 export { InsufficientCreditsError, PlanLimitExceededError };
@@ -123,12 +126,17 @@ export async function requestStoreVisual(
 
   const brandStylePreset = input.presetId ? await resolveBrandStylePreset(context, input.presetId) : null;
 
-  const plan = buildStoreVisualPlan({
+  let plan = buildStoreVisualPlan({
     visualType: typeResult.data,
     products,
     brandStylePreset,
     aspectRatioOverride,
   });
+
+  // Snapshot the shop's real resolution ceiling — see
+  // services/generation/request-generation.server.ts's identical step
+  // for the full reasoning.
+  plan = { ...plan, maxResolutionPx: (await getPlan(context.shop)).maxGenerationResolutionPx };
 
   // Plan output-count limit — same field/reasoning as
   // services/generation/request-generation.server.ts's identical check
@@ -152,10 +160,36 @@ export async function requestStoreVisual(
     productIds: products.map((p) => p.product.id),
   });
 
-  await reserveCredits(context, job.id, "STORE_VISUAL_GENERATION", requiredCredits);
-
-  await markQueued(context.shop, job.id);
-  await enqueueStoreVisualJob({ shop: context.shop, storeVisualJobId: job.id });
+  // Wrapped in a rollback boundary — see
+  // services/generation/request-generation.server.ts's identical
+  // pattern/reasoning.
+  try {
+    await reserveCredits(context, job.id, "STORE_VISUAL_GENERATION", requiredCredits);
+    await markQueued(context.shop, job.id);
+    await enqueueStoreVisualJob({ shop: context.shop, storeVisualJobId: job.id });
+  } catch (error) {
+    logger.error("store_visuals.request.enqueue_failed", {
+      shop: context.shop,
+      storeVisualJobId: job.id,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+    await refundReservation(context.shop, job.id).catch((refundError: unknown) =>
+      logger.warn("store_visuals.request.rollback_refund_failed", {
+        shop: context.shop,
+        storeVisualJobId: job.id,
+        detail: refundError instanceof Error ? refundError.message : "unknown error",
+      }),
+    );
+    await markFailed(context.shop, job.id, { message: "Couldn't queue this request. Please try again.", durationMs: 0 }).catch(
+      (markError: unknown) =>
+        logger.warn("store_visuals.request.rollback_mark_failed_failed", {
+          shop: context.shop,
+          storeVisualJobId: job.id,
+          detail: markError instanceof Error ? markError.message : "unknown error",
+        }),
+    );
+    throw error;
+  }
 
   return job;
 }

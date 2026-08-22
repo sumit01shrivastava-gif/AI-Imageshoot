@@ -102,6 +102,15 @@ export const CreativeStudioPlanSchema = z.object({
     colorDirection: z.string().min(1).nullable().default(null),
     addElements: z.array(z.string()).default([]),
     removeElements: z.array(z.string()).default([]),
+    /** Requested removals that named a protected brand/identity element
+     * (e.g. "remove the logo") and were structurally excluded from
+     * `removeElements`/the synthesized prompt rather than silently
+     * honored — see services/creative-studio/identity-constraints.ts's
+     * `filterProtectedRemovals`. Empty when nothing was blocked. Kept for
+     * traceability/history display and so the merchant's chat
+     * acknowledgement can note the decline instead of the request just
+     * silently not happening. */
+    blockedRemovals: z.array(z.string()).default([]),
   }),
 
   identityConstraints: z.object({
@@ -250,6 +259,19 @@ export const GenerationPlanSchema = z.object({
   outputFormat: OutputFormatSchema,
   quality: GenerationQualitySchema,
   outputCount: z.number().int().min(1).max(4),
+
+  /** The shop's real, resolved plan ceiling
+   * (`PlanDefinition.maxGenerationResolutionPx` —
+   * services/billing/plans.ts) at the moment this job was created — set
+   * unconditionally by `createAndEnqueueGenerationJob`
+   * (request-generation.server.ts), never merchant-supplied, and never
+   * left to whatever a stale/cached plan value might imply later. `null`
+   * only for a plan built outside that path (e.g. a unit test
+   * constructing a `GenerationPlan` directly) — the provider layer falls
+   * back to its own default ceiling in that case. See
+   * services/ai/prompt-composition.ts's sibling concern
+   * (`sizeForAspectRatio`) and docs/billing.md "Plan limit enforcement". */
+  maxResolutionPx: z.number().int().positive().nullable().default(null),
 
   modelConfiguration: z
     .object({

@@ -262,6 +262,36 @@ Every OTHER anchor (shape, construction, hardware, branding) stays fully
 immutable regardless of an override — only the two explicitly-named,
 explicitly-requested fields are ever exempted.
 
+**"Turn X into Y" phrasing** (`services/ai/heuristic-intent-parser.ts`'s
+`COLOR_OVERRIDE_PATTERN`/`MATERIAL_OVERRIDE_PATTERN`): the color/material
+override pattern originally only matched a direct-object phrasing ("make
+the bottle black"). A genuine gap, found during the final production
+-integration audit: "Turn this red bottle into a blue bottle" didn't
+match at all, so the request silently fell through to the generic
+default (a plain variation/fresh scene) instead of being recognized as a
+color override. Fixed by adding an "into"/"to"-phrased alternative,
+deliberately tried FIRST in the pattern's alternation — trying the
+direct-object form first would have wrongly captured "red" (the
+product's CURRENT color, which the direct-object form's own
+`{color}`-word slot happens to also match) instead of "blue" (the
+requested TARGET color) whenever a message names both.
+
+**Protected-element removal** (`services/creative-studio/identity-constraints.ts`'s
+`filterProtectedRemovals`): a requested removal (`ParsedIntent.removeElements`,
+e.g. "Remove the logo") previously flowed straight into the synthesized
+prompt's "without logo" clause with no check against the identity
+instruction's own unconditional "do not alter any visible logos"
+protection two sentences earlier — a self-contradicting prompt that
+invited whichever clause the model weighted more. Fixed: any
+`removeElements` entry naming a protected term (logo, brand/branding,
+trademark, watermark, wordmark, label) is structurally excluded from
+both the synthesized prompt AND the persisted
+`creativeIntent.creative.removeElements` before either is built, and
+recorded separately on `creativeIntent.creative.blockedRemovals` for
+traceability. The merchant's chat acknowledgement
+(`session.server.ts`'s `assistantAcknowledgement`) surfaces the decline
+rather than the request silently no-op'ing.
+
 ## Image-to-image flow (Part 5)
 
 `GenerateImageInput` (`services/ai/types.ts`) gained two small, additive

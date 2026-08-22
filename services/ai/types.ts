@@ -178,6 +178,18 @@ export interface GenerateImageInput {
   quality: GenerationQuality;
   /** How many output images this request wants. */
   outputCount: number;
+  /** The shop's real plan resolution ceiling, in pixels on the long
+   * edge — resolved server-side from the shop's actual subscription
+   * (never merchant-supplied), snapshotted onto the `GenerationPlan` at
+   * job-creation time (see services/generation/schema.ts's
+   * `maxResolutionPx` doc comment). A provider MUST clamp its own
+   * output size to this ceiling rather than silently generating a
+   * larger image and reporting success — see
+   * services/ai/openai-image-provider.server.ts's `sizeForAspectRatio`
+   * for the concrete mapping. `undefined`/`null` falls back to the
+   * provider's own default ceiling (e.g. for a `GenerateImageInput`
+   * built outside the plan pipeline, such as a unit test). */
+  maxResolutionPx?: number | null;
   /** Which attempt of this generation job this call represents (1 = first
    * attempt) — lets a provider treat retries idempotently and lets the
    * deterministic test provider simulate "fails once, then succeeds" for

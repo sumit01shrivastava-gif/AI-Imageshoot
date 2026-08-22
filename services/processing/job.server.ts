@@ -148,11 +148,12 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
     const sourceMedia = await findMediaForProduct(shop, jobRow.productId, jobRow.sourceMediaId);
     if (!sourceMedia) {
       const durationMs = Date.now() - attemptStartedAt;
-      await markFailed(shop, processingJobId, { message: "The source image no longer exists.", durationMs });
       // This is a genuine terminal failure (no retry will fix a deleted
       // source image) — recorded immediately, not gated on
       // isFinalAttempt the way the catch block below is, since there IS
-      // no further attempt coming for this specific failure.
+      // no further attempt coming for this specific failure. Usage/credit
+      // bookkeeping before the terminal status write — see the SUCCEEDED
+      // path's identical reordering/reasoning below.
       await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
       await refundReservation(shop, processingJobId).catch((refundError: unknown) =>
         logger.warn("processing.job.credit_resolution_failed", {
@@ -161,6 +162,7 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
           detail: refundError instanceof Error ? refundError.message : "unknown error",
         }),
       );
+      await markFailed(shop, processingJobId, { message: "The source image no longer exists.", durationMs });
       return;
     }
 
@@ -203,7 +205,11 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
     }
 
     const durationMs = Date.now() - attemptStartedAt;
-    await markSucceeded(shop, processingJobId, { providerName: provider.name, durationMs });
+    // Usage/credit bookkeeping runs BEFORE `markSucceeded` writes the
+    // terminal status — see services/generation/job.server.ts's
+    // identical reordering/reasoning (a genuine, empirically-reproduced
+    // race under load: a caller polling job status must never observe
+    // SUCCEEDED before the reservation has actually settled).
     await recordProcessingUsage(shop, processingJobId, "SUCCEEDED", { providerName: provider.name, durationMs });
     await settleReservation(shop, processingJobId).catch((settleError: unknown) =>
       logger.warn("processing.job.credit_resolution_failed", {
@@ -212,6 +218,7 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
         detail: settleError instanceof Error ? settleError.message : "unknown error",
       }),
     );
+    await markSucceeded(shop, processingJobId, { providerName: provider.name, durationMs });
 
     logger.info("processing.job.completed", {
       shop,
@@ -240,7 +247,8 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
           : error instanceof InvalidProcessingOutputError
             ? INVALID_OUTPUT_MESSAGE
             : GENERIC_FAILURE_MESSAGE;
-      await markFailed(shop, processingJobId, { message, durationMs });
+      // Same "usage/credit bookkeeping before the terminal status write"
+      // reordering as the SUCCEEDED path above.
       await recordProcessingUsage(shop, processingJobId, "FAILED", { durationMs });
       await refundReservation(shop, processingJobId).catch((refundError: unknown) =>
         logger.warn("processing.job.credit_resolution_failed", {
@@ -249,6 +257,7 @@ export const processProcessingJob: Processor<ProcessingJobPayload> = async (job)
           detail: refundError instanceof Error ? refundError.message : "unknown error",
         }),
       );
+      await markFailed(shop, processingJobId, { message, durationMs });
     }
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,

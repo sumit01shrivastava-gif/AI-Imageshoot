@@ -205,13 +205,26 @@ docs/usage.md "Security".
   exceeds its plan's limit is rejected outright (`PlanLimitExceededError`,
   "Upgrade your plan for a higher limit"), never silently clamped to a
   smaller count without telling the merchant.
-- **`PlanDefinition.maxGenerationResolutionPx` is still NOT enforced** —
-  `services/generation/build-input.ts` doesn't read a plan's resolution
-  cap; every plan currently gets whatever resolution the provider itself
-  defaults to for a given aspect ratio/quality tier (see
-  docs/ai-pipeline.md). Flagging explicitly rather than leaving it to be
-  discovered later — closing this gap needs the provider layer to accept
-  an explicit max-dimension parameter per plan, not yet wired.
+- **`PlanDefinition.maxGenerationResolutionPx` is now enforced too**
+  (final production-integration pass) —
+  `GenerationPlanSchema`/`StoreVisualPlanSchema` gained `maxResolutionPx`,
+  snapshotted from the shop's real resolved plan at request time (never
+  merchant-supplied) by `createAndEnqueueGenerationJob`/`requestStoreVisual`,
+  flowing through `build-input.ts` into `GenerateImageInput.maxResolutionPx`.
+  Unlike `maxOutputsPerGeneration`/`maxProcessingBatchSize`, this is
+  enforced by CLAMPING at the provider layer rather than rejecting the
+  request — there is no merchant-facing "choose your resolution"
+  control to reject an over-request against; the plan ceiling instead
+  bounds the actual size sent to the vendor. For
+  `OpenAIImageGenerationProvider` specifically, this means a FREE-plan
+  shop (ceiling 1024px, below gpt-image-1's 1536px non-square size) is
+  generated as a square (`1024x1024`) regardless of the requested
+  aspect ratio — a deliberate product trade-off ("FREE is square-only,
+  upgrade for portrait/landscape"), not an incidental side effect — see
+  `services/ai/openai-image-provider.server.ts`'s `sizeForAspectRatio`
+  doc comment. The generic vendor-agnostic contract
+  (`ProductionImageGenerationProvider`) clamps its own arbitrary-WxH
+  `maxDimension` the same way.
 - **No proration, no invoices/transactions UI** — Shopify's Billing API
   exposes transaction history; this pass's `/app/billing` doesn't
   surface it (out of scope: "invoices/transactions if available" was

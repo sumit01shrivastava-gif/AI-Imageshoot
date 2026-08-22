@@ -108,8 +108,28 @@ const COLOR_WORDS = [
   "cream",
   "ivory",
 ];
-const COLOR_OVERRIDE_PATTERN = new RegExp(`\\bmake\\s+(?:it|the\\s+[a-z]+)\\s+(${COLOR_WORDS.join("|")})\\b`, "i");
-const MATERIAL_OVERRIDE_PATTERN = /\bmake\s+(?:it|the\s+[a-z]+)\s+(?:out of|from|in)\s+([a-z][a-z\s]{2,30}?)(?=[.,!]|$)/i;
+// Two forms, both verb-and-color-word gated (never a bare "the bottle is
+// red" description — that's a fact, not a request). The "into"/"to"
+// -phrased form ("turn this red bottle into a blue bottle", "change it to
+// blue") is tried FIRST — deliberately: if the direct-object form were
+// tried first, "turn this red bottle into a blue bottle" would wrongly
+// match as "turn this [red]" and capture the product's CURRENT color
+// (red) instead of the requested target color (blue), since "red" itself
+// satisfies the direct-object form's own color-word slot. Trying the
+// "into"/"to" form first means a message containing both an original and
+// a target color always resolves to the target. The direct-object form
+// ("make/turn/change it/the bottle red") is the fallback for phrasing
+// with no second, competing color word. A non-greedy `.{0,30}?` lets the
+// "into"/"to" form tolerate descriptive words between the verb and
+// "into"/"to" ("turn THIS RED BOTTLE into blue"). See
+// docs/creative-studio.md "Creative overrides" worked example.
+const COLOR_OVERRIDE_PATTERN = new RegExp(
+  `\\b(?:turn|change)\\s+(?:it|this|that|the)\\b.{0,30}?\\b(?:into|to)\\s+(?:a\\s+|an\\s+)?(${COLOR_WORDS.join("|")})\\b` +
+    `|\\b(?:make|turn|change)\\s+(?:it|this|that|the\\s+[a-z]+)\\s+(${COLOR_WORDS.join("|")})\\b`,
+  "i",
+);
+const MATERIAL_OVERRIDE_PATTERN =
+  /\b(?:make|turn|change)\s+(?:it|this|that|the\s+[a-z]+)\s+(?:out of|from|in)\s+([a-z][a-z\s]{2,30}?)(?=[.,!]|$)/i;
 
 function extractVariationCount(message: string): number | null {
   const explicitDigit = message.match(/\b(\d+)\s+(?:variations?|options?|alternatives?|versions?)\b/i);
@@ -192,8 +212,12 @@ function extractTargetResultReference(message: string): string | null {
 function extractAttributeOverrides(message: string): { color: string | null; material: string | null } {
   const colorMatch = COLOR_OVERRIDE_PATTERN.exec(message);
   const materialMatch = MATERIAL_OVERRIDE_PATTERN.exec(message);
+  // COLOR_OVERRIDE_PATTERN has two alternatives (direct-object form vs.
+  // "into"-phrased form) — only one of its two capture groups is ever
+  // populated per match, never both.
+  const color = colorMatch ? (colorMatch[1] ?? colorMatch[2]) : undefined;
   return {
-    color: colorMatch ? colorMatch[1].toLowerCase() : null,
+    color: color ? color.toLowerCase() : null,
     material: materialMatch ? materialMatch[1].trim().toLowerCase() : null,
   };
 }

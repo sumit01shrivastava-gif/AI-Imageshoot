@@ -34,6 +34,7 @@ describe("buildCreativeContext", () => {
           colorDirection: null,
           addElements: [],
           removeElements: [],
+          blockedRemovals: [],
         },
         identityConstraints: { immutable: [], instruction: "preserve it" },
         creativeSessionId: "session-1",

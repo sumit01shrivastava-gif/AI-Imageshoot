@@ -111,3 +111,36 @@ export function buildIdentityConstraints(
 
   return { immutable, overridden: { color: colorOverride, material: materialOverride }, instruction };
 }
+
+/** Terms that name a protected brand/identity element — mirrors
+ * `CATEGORY_ITEMS`'s unconditional "any visible logos"/"any visible
+ * labels or text printed on the product" protection above (that
+ * protection applies to every product, not only when Product
+ * Intelligence explicitly flagged `brandingVisible` — a false negative
+ * there must never become a way to strip branding). Deliberately a
+ * small, named keyword list, not a general classifier — same "narrow,
+ * structural, not fragile string search" spirit as the color/material
+ * override mechanism. */
+const PROTECTED_REMOVAL_TERMS = /\b(logo|brand(?:ing)?|trademark|watermark|wordmark|label)\b/i;
+
+/**
+ * Splits a requested `removeElements` list into what's safe to actually
+ * ask the provider to remove and what must be silently held back because
+ * it names a protected identity/branding element — e.g. "Remove the
+ * logo" (Part 4 worked example). Never lets a "remove X" request reach
+ * the synthesized prompt when X is exactly what the identity instruction,
+ * two sentences earlier, told the model to preserve — that self
+ * -contradiction is what would otherwise invite the model to comply with
+ * whichever clause it weighted more. `blocked` is returned (not just
+ * dropped) so a caller can still record/surface that the request was
+ * declined rather than silently no-op'd — see plan-builder.ts and
+ * services/creative-studio/session.server.ts's `assistantAcknowledgement`.
+ */
+export function filterProtectedRemovals(removeElements: string[]): { allowed: string[]; blocked: string[] } {
+  const allowed: string[] = [];
+  const blocked: string[] = [];
+  for (const item of removeElements) {
+    (PROTECTED_REMOVAL_TERMS.test(item) ? blocked : allowed).push(item);
+  }
+  return { allowed, blocked };
+}

@@ -53,14 +53,28 @@ function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string
  * here, per this file's "stay generic" domain boundary) onto the closest
  * one: square stays square, anything taller-than-wide goes portrait,
  * anything wider-than-tall goes landscape. An unrecognized ratio (or one
- * this app hasn't curated) falls back to `auto` — never throws. */
-export function sizeForAspectRatio(aspectRatio: string): "1024x1024" | "1024x1536" | "1536x1024" | "auto" {
+ * this app hasn't curated) falls back to `auto` — never throws.
+ *
+ * `maxDimensionPx` is the shop's real plan resolution ceiling
+ * (`GenerateImageInput.maxResolutionPx`) — gpt-image-1's two non-square
+ * sizes both have a long edge of 1536px, so a plan whose ceiling is
+ * BELOW that (today, only FREE — see services/billing/plans.ts) cannot
+ * honor a non-square request at all; this forces the square 1024x1024
+ * option (the only one that fits under a sub-1536 ceiling) rather than
+ * silently generating the larger 1536px canvas and reporting success.
+ * This is a real, deliberate product trade-off — "FREE plan generates
+ * square only, upgrade for portrait/landscape" — not an incidental
+ * side effect; see docs/billing.md "Plan limit enforcement". `null`/
+ * `undefined` (no plan context — e.g. a `GenerateImageInput` built
+ * outside the plan pipeline) never restricts orientation. */
+export function sizeForAspectRatio(aspectRatio: string, maxDimensionPx?: number | null): "1024x1024" | "1024x1536" | "1536x1024" | "auto" {
   const match = /^(\d+):(\d+)$/.exec(aspectRatio);
   if (!match) return "auto";
   const w = Number(match[1]);
   const h = Number(match[2]);
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return "auto";
-  if (w === h) return "1024x1024";
+  const allowsWideSizes = maxDimensionPx == null || maxDimensionPx >= 1536;
+  if (w === h || !allowsWideSizes) return "1024x1024";
   return w > h ? "1536x1024" : "1024x1536";
 }
 
@@ -109,7 +123,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     const editMode = isEditMode(input.mode);
     const referenceUrls = editMode ? this.resolveReferenceImageUrls(input) : [];
     const model = resolveModel(env, editMode && referenceUrls.length > 0);
-    const size = sizeForAspectRatio(input.aspectRatio);
+    const size = sizeForAspectRatio(input.aspectRatio, input.maxResolutionPx);
     const quality = qualityForTier(input.quality);
 
     logger.info("ai_provider.generation.request", {

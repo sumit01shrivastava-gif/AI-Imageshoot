@@ -294,4 +294,58 @@ describe("buildCreativeGenerationPlan", () => {
       }),
     ).toThrow(ProductNotAnalyzedError);
   });
+
+  describe("protected-element removal (Part 4 worked example)", () => {
+    it("never lets 'Remove the logo' reach the prompt as a removal, and records it as blocked", async () => {
+      const parsedIntent = await intent("Remove the logo", 1);
+      expect(parsedIntent.removeElements).toContain("logo"); // the parser itself has no notion of "protected"
+
+      const plan = buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence({
+          identityAnchors: {
+            category: "Handbags",
+            shape: "Rectangular",
+            material: "Leather",
+            primaryColor: "Brown",
+            constructionDetails: [],
+            distinctiveHardware: ["gold clasp"],
+            brandingVisible: true,
+            brandingDescription: "embossed brand logo on the front flap",
+          },
+        }),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: "https://signed.example.test/prior-result.png",
+        creativeSessionId: "session-1",
+        rawInstruction: "Remove the logo",
+      });
+
+      // The prompt must never contain a "without logo"-style clause — it
+      // would directly contradict the identity instruction's own
+      // "do not alter any visible logos" a few sentences earlier.
+      expect(plan.creativeDirection.prompt).not.toMatch(/without\s+logo/i);
+      expect(plan.creativeIntent!.creative.removeElements).not.toContain("logo");
+      expect(plan.creativeIntent!.creative.blockedRemovals).toContain("logo");
+      // The immutable branding fact is still asserted, unconditionally.
+      expect(plan.creativeIntent!.identityConstraints.immutable.some((i) => i.startsWith("branding:"))).toBe(true);
+    });
+
+    it("still allows removing a non-protected element (e.g. a shadow) alongside a blocked one", async () => {
+      const parsedIntent = await intent("Remove the shadow", 1);
+      const plan = buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence(),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction: "Remove the shadow",
+      });
+
+      expect(plan.creativeIntent!.creative.removeElements).toContain("shadow");
+      expect(plan.creativeIntent!.creative.blockedRemovals).toEqual([]);
+      expect(plan.creativeDirection.prompt).toMatch(/without\s+shadow/i);
+    });
+  });
 });

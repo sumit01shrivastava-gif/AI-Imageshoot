@@ -195,7 +195,7 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
       ...(referenceImagesBase64.length === 1 ? { image: referenceImagesBase64[0] } : {}),
       ...(referenceImagesBase64.length > 1 ? { images: referenceImagesBase64 } : {}),
       n: input.outputCount,
-      size: sizeForAspectRatio(input.aspectRatio),
+      size: sizeForAspectRatio(input.aspectRatio, input.maxResolutionPx ?? undefined),
       quality: qualityForTier(input.quality),
       response_format: "b64_json",
     };

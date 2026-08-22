@@ -319,7 +319,7 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
     shop: context.shop,
     creativeSessionId: session.id,
     role: "ASSISTANT",
-    content: assistantAcknowledgement(effectiveIntent),
+    content: assistantAcknowledgement(effectiveIntent, plan.creativeIntent?.creative.blockedRemovals ?? []),
     generationJobId: job.id,
   });
 
@@ -333,9 +333,15 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
   return { ok: true, generationJobId: job.id, parsedIntent: effectiveIntent };
 }
 
-function assistantAcknowledgement(intent: ParsedIntent): string {
-  if (intent.variationCount > 1) return `Creating ${intent.variationCount} variations…`;
-  return "Creating your image…";
+/** `blockedRemovals` surfaces Part 4's "Remove the logo" worked example
+ * back to the merchant — a requested removal that named a protected
+ * brand/identity element (services/creative-studio/identity-constraints.ts's
+ * `filterProtectedRemovals`) is declined, not silently no-op'd, so the
+ * merchant sees why the next result still has it. */
+function assistantAcknowledgement(intent: ParsedIntent, blockedRemovals: string[]): string {
+  const base = intent.variationCount > 1 ? `Creating ${intent.variationCount} variations…` : "Creating your image…";
+  if (blockedRemovals.length === 0) return base;
+  return `${base} Note: I can't remove ${blockedRemovals.join(", ")} — branding and logos are preserved to keep this an accurate product photo.`;
 }
 
 /** "Use this" — the merchant explicitly picks one of the latest job's

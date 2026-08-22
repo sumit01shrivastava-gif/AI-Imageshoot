@@ -82,6 +82,16 @@ describe("HeuristicIntentParser", () => {
     expect(result.mode).toBe("VARIATION");
   });
 
+  // Part 4 worked example: "keep everything the same but make it premium"
+  // must produce an image-EDIT instruction (working forward from the
+  // existing result) rather than being miscategorized as an unrelated
+  // fresh TEXT_TO_IMAGE generation.
+  it("classifies 'keep everything the same but make it premium' as an edit (VARIATION mode) when a current result exists, carrying the style forward", async () => {
+    const result = await parse("Keep everything the same but make it premium", 1);
+    expect(result.mode).toBe("VARIATION");
+    expect(result.style).toContain("premium");
+  });
+
   it("classifies 'make it brighter' as CHANGE_LIGHTING with a lighting phrase", async () => {
     const result = await parse("Make it brighter", 1);
     expect(result.intent).toBe("CHANGE_LIGHTING");
@@ -91,6 +101,15 @@ describe("HeuristicIntentParser", () => {
 
   it("extracts an ordinal reference for 'use the second one'", async () => {
     const result = await parse("Use the second one", 3);
+    expect(result.targetResultReference).toBe("second");
+  });
+
+  // Part 4 worked example: "use the second image" — the noun after the
+  // ordinal varies ("one"/"version"/"image"/...); the ordinal word itself
+  // is the only thing that matters for resolution (see
+  // creative-context.ts's `resolveTargetResult`).
+  it("extracts an ordinal reference for 'use the second image' (a noun ORDINAL_PATTERN's optional group doesn't list)", async () => {
+    const result = await parse("Use the second image", 3);
     expect(result.targetResultReference).toBe("second");
   });
 
@@ -152,6 +171,28 @@ describe("HeuristicIntentParser", () => {
     it("leaves both overrides null for a message that doesn't request one", async () => {
       const result = await parse("Put it in a luxury bathroom");
       expect(result.attributeOverrides).toEqual({ color: null, material: null });
+    });
+
+    // Part 4 worked example: a genuine gap found during the final
+    // production-integration audit — the original pattern only matched
+    // "make it/the X [color]" and missed "turn X into Y" phrasing
+    // entirely, so this message fell through every classifier rule to
+    // the generic VARIATION/CREATE_LIFESTYLE default instead of being
+    // recognized as a color override at all.
+    it("extracts the TARGET color (not the product's current color) from 'Turn this red bottle into a blue bottle'", async () => {
+      const result = await parse("Turn this red bottle into a blue bottle");
+      expect(result.attributeOverrides.color).toBe("blue");
+      expect(result.intent).toBe("CHANGE_COLOR");
+    });
+
+    it("extracts a color override from 'change it to blue' ('to' phrasing, no 'into')", async () => {
+      const result = await parse("change it to blue");
+      expect(result.attributeOverrides.color).toBe("blue");
+    });
+
+    it("extracts a color override from 'turn the bottle blue' (direct-object form with 'turn')", async () => {
+      const result = await parse("turn the bottle blue");
+      expect(result.attributeOverrides.color).toBe("blue");
     });
   });
 });
