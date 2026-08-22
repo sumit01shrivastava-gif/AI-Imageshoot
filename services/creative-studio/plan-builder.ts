@@ -27,7 +27,7 @@ import type { ProductDetail } from "../../db/repositories/shopify-product.reposi
 import type { ProductIntelligenceRow } from "../../db/repositories/product-intelligence.repository";
 import { IdentityAnchorsSchema } from "../intelligence/schema";
 import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes } from "../generation/schema";
-import { toBrandStyleContext } from "../generation/build-plan";
+import { toBrandStyleContext, buildProductFactsContext } from "../generation/build-plan";
 import type { AspectRatioValue } from "../generation/types";
 import type { ParsedIntent } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
@@ -200,6 +200,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
 
     productFacts: {
       identityAnchors,
+      ...buildProductFactsContext(product),
     },
 
     creativeDirection: {

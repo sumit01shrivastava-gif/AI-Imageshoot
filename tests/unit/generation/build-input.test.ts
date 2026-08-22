@@ -56,6 +56,13 @@ describe("buildGenerateImageInput", () => {
         brandingVisible: false,
         brandingDescription: null,
       },
+      // Not supplied by this test's manually-constructed plan — defaults
+      // to null via GenerationPlanSchema's productFacts shape (see
+      // services/generation/build-plan.ts's buildProductFactsContext,
+      // exercised for real by build-plan.test.ts).
+      title: null,
+      description: null,
+      attributes: null,
     });
     expect(input.creativeDirection.prompt).toBe("Clean product photography of the red leather handbag.");
     expect(input.creativeDirection.negativeConstraints).toEqual(["no watermark"]);

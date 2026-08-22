@@ -64,3 +64,6 @@ tmp/
 # Lockfiles for package managers we don't use (npm is canonical)
 yarn.lock
 pnpm-lock.yaml
+
+# Vercel CLI project link/local env (see docs/production-deployment.md)
+.vercel

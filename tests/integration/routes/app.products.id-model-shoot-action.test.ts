@@ -74,6 +74,7 @@ function requestFor(shop: string): Request {
 
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: SHOP_A } });
+  await prisma.creditReservation.deleteMany({ where: { shop: SHOP_A } });
 }
 
 let worker: Worker | undefined;

@@ -20,16 +20,45 @@ Studio for Shopify merchants. Eventually it will let merchants:
 
 ## Current phase
 
+**Live-deployment pass — complete** (see docs/production-deployment.md
+and docs/commercial-launch.md for full detail). This pass connected a
+real, production commercial AI vendor (OpenAI's `gpt-image-1` —
+`services/ai/openai-image-provider.server.ts`, see docs/ai-pipeline.md
+"Provider selection") and deployed the web app to a live Vercel URL:
+**https://ai-imageshoot.vercel.app**. The deployment PIPELINE is fully
+verified working (Vercel correctly builds/deploys this React Router 7
+app via `@vercel/react-router`'s preset); the app does **not yet
+function live** — every request 500s until the required production
+Postgres/Redis/S3-compatible-storage/Shopify-app/AI-key configuration
+is added (docs/production-deployment.md is the exact, ordered checklist
+for that — none of it could be provisioned unilaterally: it either needs
+credentials this environment doesn't have, or (for Vercel-native
+Postgres/Redis add-ons) explicit interactive human confirmation the
+Vercel CLI itself requires and refuses to skip). No new Prisma
+migration this pass. Also added this pass: `productFacts.title`/
+`description`/`attributes` (the product's real Shopify catalog facts,
+not just identity-preservation anchors, now reach every real provider
+call — `services/generation/build-plan.ts`'s `buildProductFactsContext`,
+`services/ai/prompt-composition.ts`) and a real bug fix found via full
+-suite testing (several integration test files that exercise the
+generation/processing/analysis pipeline at the ROUTE layer — not just
+the service layer already covered — were missing the
+`CreditReservation` cleanup every other such test file already has,
+causing the FREE plan's 40-credit monthly allowance to exhaust
+partway through a full test run; fixed in 8 files).
+
 **Commercial-readiness pass — complete** (see docs/usage.md and
 docs/billing.md for full detail; this section summarizes the history
 leading up to it, including the Creative Studio pass this one builds
-directly on). After this pass, what remains before commercial launch is
-narrowly: Shopify product-media publishing authorization
-(`write_products` scope — deliberately still not requested),
-billing-provider *final* configuration (real Partners/Dev Dashboard
-pricing setup — the Shopify Billing API integration itself is real and
-working), Shopify App Store submission, and production deployment — not
-another round of architectural foundations. **One new Prisma migration**
+directly on). What remained before commercial launch after THAT pass
+was narrowly: Shopify product-media publishing authorization
+(`write_products` scope — deliberately STILL not requested — see
+docs/production-deployment.md "Known limitations" for why this pass
+left that decision alone too), billing-provider *final* configuration
+(real Partners/Dev Dashboard pricing setup — the Shopify Billing API
+integration itself is real and working), Shopify App Store submission,
+and finishing production deployment (now underway — see above). **One
+new Prisma migration**
 (`add_billing_and_credit_costs` — `ShopSubscription`/`BillingEvent`
 models, two new enums (`PlanId`/`SubscriptionStatus`/`BillingEventType`),
 `CreditReservation.operationType` added, `CreditReservationStatus.SETTLED`
@@ -930,3 +959,63 @@ non-semantic. Publishing still not live (`write_products` not
 requested). Per-plan resolution/output-count/batch-size limits are
 cataloged policy, not yet enforced by a request-side clamp — see
 docs/billing.md "Known limitations". See docs/roadmap.md.
+
+Live-deployment pass — complete, **zero new Prisma migrations**:
+
+- [x] `services/ai/openai-image-provider.server.ts` — a real, tested
+      `ImageGenerationProvider` speaking OpenAI's actual `gpt-image-1`
+      wire contract (JSON `/v1/images/generations`, multipart
+      `/v1/images/edits` with real multi-reference-image file uploads,
+      OpenAI's real `quality`/`size` enums) — selected via
+      `AI_PROVIDER=openai`; `services/generation/provider.server.ts`'s
+      resolver extended to a four-way selection (deterministic-test →
+      openai → generic contract → unconfigured). See docs/ai-pipeline.md
+      "Provider selection" for the full evaluation against Gemini 2.5
+      Flash Image and others.
+- [x] `services/ai/prompt-composition.ts` — the shared
+      `composeProviderPrompt`/`composeProductGroundingPrefix` helpers
+      both real providers now use, folding
+      `GenerationPlan.productFacts.title`/`description`/`attributes`
+      (new — `services/generation/build-plan.ts`'s
+      `buildProductFactsContext`, populated by both
+      `buildGenerationPlan` and `services/creative-studio/plan-builder.ts`)
+      into every real provider call as grounding context, not just
+      identity-preservation anchors
+- [x] Vercel deployment: project `xentra1/ai-imageshoot` linked to this
+      repo's GitHub remote, `@vercel/react-router`'s `vercelPreset()`
+      wired in `react-router.config.ts` (applied ONLY when
+      `process.env.VERCEL` is set, so the non-Vercel `npm run build`/
+      `npm start`/`docker-start` path is unaffected), deployed to
+      **https://ai-imageshoot.vercel.app**. Confirmed: the build/deploy
+      pipeline genuinely works; the app does NOT yet function (every
+      request 500s) until the production Postgres/Redis/storage/
+      Shopify-app/AI-key configuration in docs/production-deployment.md
+      is added — none of which could be provisioned unilaterally (real
+      external credentials needed, or — for Vercel-native Postgres/Redis
+      marketplace add-ons — the Vercel CLI itself requires interactive
+      human confirmation and refuses to run those non-interactively)
+- [x] A real bug found via full-suite testing (not guessed at): 8
+      integration test files exercising the generation/processing/
+      product-analysis pipeline at the ROUTE layer (not the service
+      layer, which already had this) were missing `CreditReservation`
+      cleanup between tests, silently exhausting the FREE plan's
+      40-credit monthly allowance partway through a full test run —
+      fixed by adding the same cleanup every other such test file
+      already has
+- [x] Full test coverage: unit (the OpenAI provider's real wire format —
+      JSON vs. multipart, model/quality/size mapping, multi-reference
+      field naming, auth-error classification; the shared
+      prompt-composition helpers; `buildProductFactsContext`; the
+      4-way provider resolver), the pre-existing full suite re-verified
+      green (743 unit+integration, up from 708; 16/16 Playwright E2E
+      unaffected)
+- [x] docs/production-deployment.md, docs/commercial-launch.md added;
+      docs/ai-pipeline.md, docs/creative-studio.md, CLAUDE.md updated
+
+**A real, live, publicly-reachable deployment now exists, but is not
+yet functional** — see docs/production-deployment.md for the exact,
+ordered list of external credentials/services still required
+(production Postgres, Redis, S3-compatible object storage, a real
+Shopify Partners app, an OpenAI API key) and docs/commercial-launch.md
+for the production smoke test to run once they're in place. `write_products`
+remains deliberately not requested. See docs/roadmap.md.

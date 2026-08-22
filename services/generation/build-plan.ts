@@ -235,6 +235,44 @@ export function toBrandStyleContext(attributes: BrandStylePresetAttributes) {
   return hasAnyField ? context : null;
 }
 
+/** Truncated to a short excerpt, not the full Shopify listing copy — a
+ * provider request should be concise and structured, not "paste the
+ * whole product description into the prompt" (see docs/ai-pipeline.md
+ * "Provider-input composition" and CLAUDE.md "no arbitrary prompts": this
+ * is grounding CONTEXT, not a place a merchant's raw catalog text gets
+ * forwarded verbatim without a length bound). */
+export const PRODUCT_FACTS_DESCRIPTION_MAX_CHARS = 400;
+
+/** Builds the `productFacts.title`/`description`/`attributes` grounding
+ * context shared by every generation path (this file's `buildGenerationPlan`
+ * AND services/creative-studio/plan-builder.ts's `buildCreativeGenerationPlan`)
+ * — the product's own real Shopify catalog facts, not creative direction,
+ * so a provider genuinely knows what the product IS (a "structured
+ * leather tote with gold hardware," not just an anonymous photo to
+ * transform). Pure, no I/O; a product with an empty description/no tags
+ * still returns a valid (mostly-null) shape, never throws. */
+export function buildProductFactsContext(product: Pick<ProductDetail, "title" | "description" | "productType" | "vendor" | "tags">) {
+  const title = product.title.trim() || null;
+  const trimmedDescription = product.description.trim();
+  const description =
+    trimmedDescription.length === 0
+      ? null
+      : trimmedDescription.length > PRODUCT_FACTS_DESCRIPTION_MAX_CHARS
+        ? `${trimmedDescription.slice(0, PRODUCT_FACTS_DESCRIPTION_MAX_CHARS).trimEnd()}…`
+        : trimmedDescription;
+
+  const productType = product.productType.trim() || null;
+  const vendor = product.vendor.trim() || null;
+  const tags = product.tags.filter((tag) => tag.trim().length > 0);
+  const hasAnyAttribute = productType !== null || vendor !== null || tags.length > 0;
+
+  return {
+    title,
+    description,
+    attributes: hasAnyAttribute ? { productType, vendor, tags } : null,
+  };
+}
+
 /**
  * Builds and validates a `GenerationPlan`. Throws `MissingSourceImagesError`
  * if `sourceMediaIds` doesn't resolve to any of the product's own media, or
@@ -354,6 +392,7 @@ export function buildGenerationPlan(input: BuildGenerationPlanInput): Generation
 
     productFacts: {
       identityAnchors: identityAnchorsResult.data,
+      ...buildProductFactsContext(product),
     },
 
     creativeDirection: {

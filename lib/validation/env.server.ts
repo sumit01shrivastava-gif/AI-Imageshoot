@@ -74,10 +74,17 @@ const envSchema = z.object({
 
   // --- AI provider ---------------------------------------------------------
   // Optional: falls back to `UnconfiguredImageGenerationProvider` (throws
-  // on every call) when `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY` are
-  // unset — see services/generation/provider.server.ts and
-  // docs/ai-providers.md. Never holds real credentials in this repo's
-  // .env.example.
+  // on every call) when unset/incomplete — see
+  // services/generation/provider.server.ts and docs/ai-pipeline.md
+  // "Provider selection". Never holds real credentials in this repo's
+  // .env.example. Set to "openai" to select the real, production-selected
+  // `OpenAIImageGenerationProvider` (services/ai/openai-image-provider.server.ts)
+  // — only AI_PROVIDER_API_KEY is required in that case, not
+  // AI_PROVIDER_BASE_URL (OpenAI's API endpoint is the built-in default).
+  // Any other non-empty value selects the generic, vendor-agnostic
+  // "OpenAI-Images-API-compatible" contract instead
+  // (production-image-generation-provider.server.ts), which DOES require
+  // AI_PROVIDER_BASE_URL.
   AI_PROVIDER: z.string().optional(),
   AI_PROVIDER_API_KEY: z.string().optional(),
   AI_PROVIDER_BASE_URL: z.string().optional(),

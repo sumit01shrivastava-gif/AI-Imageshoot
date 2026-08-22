@@ -1,11 +1,68 @@
 # AI pipeline
 
+## Provider selection (live-deployment pass)
+
+**Selected: OpenAI's `gpt-image-1`**, via `services/ai/openai-image-provider.server.ts`
+(`AI_PROVIDER=openai`). Evaluated against the criteria this pass's
+instructions specified — photorealism, image-to-image editing, reference
+-image input (including multiple references in one edit call), product/
+text/logo preservation, material and lighting realism, resolution,
+commercial-photography suitability, and predictable, well-documented
+production API behavior:
+
+- **Genuinely strong at commercial product photography.** gpt-image-1 is
+  widely regarded (as of this pass's research) as one of the strongest
+  generally-available models for photorealistic, prompt-adherent
+  ecommerce/product imagery specifically — including accurate text/logo
+  rendering, which matters for packaging and branding this app is
+  explicitly trying to preserve.
+- **Real, native multi-reference image editing.** `/v1/images/edits`
+  accepts more than one input image in a single request — directly
+  useful for Creative Studio instructions like "use the second image as
+  reference" or "keep the product but match this background," not just
+  a single before/after edit.
+- **The most standard, best-documented REST API in this space** — a
+  plain API-key-authenticated HTTPS endpoint, no SDK required, well
+  -specified request/response shapes, predictable error codes. Given
+  this environment has no live vendor account to test against, choosing
+  the vendor with the most precisely documented wire contract (rather
+  than one this session would have to guess at from memory) was itself
+  a reliability consideration — see the module doc comment for the
+  specific documented behaviors this adapter implements (quality enum,
+  fixed size options, no `response_format`, etc.).
+- **Simple, single-credential setup** — one API key, no separate base
+  URL/region/project configuration required to get started, which
+  matters for "here's exactly what credential to add" being a short,
+  unambiguous list (see docs/production-deployment.md).
+
+**Considered and not selected this pass**: Google's Gemini 2.5 Flash
+Image ("nano-banana") is a credible, frequently-cited alternative,
+particularly strong at instruction-following multi-turn edits and
+subject consistency — genuinely worth evaluating for a future pass or
+as a second registered provider. Not selected now because doing so well
+would mean implementing and documenting a SECOND full adapter+contract
+without being able to live-test either against a real account in this
+environment; shipping one real, thoroughly-documented, testable
+adapter was judged more valuable than two speculative ones. The
+provider-agnostic architecture (`ImageGenerationProvider`) means adding
+it later is additive — a new file, a new `AI_PROVIDER` value in the
+resolver — never a rewrite.
+
+The existing generic, vendor-agnostic "OpenAI-Images-API-compatible"
+JSON contract (`ProductionImageGenerationProvider`) remains available
+for a self-hosted or differently-branded endpoint that speaks that
+shape (`AI_PROVIDER` set to anything other than `"openai"`, with
+`AI_PROVIDER_BASE_URL` also set) — see "The interfaces" below for the
+resolver's exact four-way selection.
+
 ## Current state
 
 (Originally written for Phase 4; updated for the commercial-readiness
 pass that added real image-to-image/edit support, a real LLM-backed
 intent parser, and credit-cost accounting — see docs/creative-studio.md,
-docs/usage.md, docs/billing.md.)
+docs/usage.md, docs/billing.md — and this live-deployment pass, which
+selected and implemented a real commercial vendor, OpenAI, on top of
+that foundation.)
 
 `services/ai/types.ts` defines three separate, focused provider
 interfaces. `services/ai/unconfigured-provider.ts` provides an
@@ -20,15 +77,25 @@ didn't implement.
   vendor.
 - **`ImageGenerationProvider`** — generative image creation
   (`generateImage`). Called by Phase 3 (image generation foundation) —
-  see docs/generation.md. `ProductionImageGenerationProvider`
-  (`services/ai/production-image-generation-provider.server.ts`) is a
-  real, testable HTTP client against a vendor-agnostic, "OpenAI Images
-  API-compatible" contract — selected only when `AI_PROVIDER_BASE_URL`/
-  `AI_PROVIDER_API_KEY` are configured; `UnconfiguredImageGenerationProvider`
-  remains the default. No live vendor account is configured in this
-  environment, so every generation still runs through the deterministic
-  test provider in practice. **Now supports two request shapes**, not
-  just text-to-image — see "Image-to-image / editing contract" below.
+  see docs/generation.md. Four-way resolver
+  (`services/generation/provider.server.ts`):
+  `OpenAIImageGenerationProvider` (`services/ai/openai-image-provider.server.ts`,
+  `AI_PROVIDER=openai` — see "Provider selection" above, the real
+  selected commercial vendor) → `ProductionImageGenerationProvider`
+  (`services/ai/production-image-generation-provider.server.ts`, the
+  generic vendor-agnostic contract, for any other `AI_PROVIDER` value
+  with a base URL) → `UnconfiguredImageGenerationProvider` (default,
+  throws a clear error). No live vendor account is configured in THIS
+  development environment (see docs/production-deployment.md for what
+  a real deployment needs), so generation still runs through the
+  deterministic test provider in this repo's own test/dev runs — but
+  the real adapter is genuinely implemented, tested, and ready to run
+  the moment `AI_PROVIDER_API_KEY` is set to a real key. **Supports two
+  request shapes**, not just text-to-image — see "Image-to-image /
+  editing contract" below (applies to both real adapters, with
+  vendor-specific wire-format differences — see
+  `openai-image-provider.server.ts`'s own doc comment for exactly how
+  OpenAI's real contract differs from the generic one).
 - **`IntentParsingProvider`** (Creative Studio pass) — turns a merchant's
   natural-language message into a structured instruction
   (`parseIntent`). Called by `services/creative-studio/` — see
@@ -116,6 +183,18 @@ particular; the caller persists it through `lib/storage/`'s
 
 ## Image-to-image / editing contract
 
+This section describes the GENERIC, vendor-agnostic contract
+(`ProductionImageGenerationProvider`, `AI_PROVIDER` set to anything
+other than `"openai"`). The real, selected OpenAI adapter
+(`OpenAIImageGenerationProvider`) follows the same two-request-shape
+IDEA but speaks OpenAI's actual different wire format — see that file's
+own module doc comment for the specific, real differences (multipart
+`/v1/images/edits`, no `response_format`, a `low`/`medium`/`high`/`auto`
+quality enum, three fixed canvas sizes). Both providers share one prompt
+-composition helper, `services/ai/prompt-composition.ts`'s
+`composeProviderPrompt`/`composeProductGroundingPrefix` — see "Provider
+-input composition" below.
+
 `ProductionImageGenerationProvider.generateImage` picks one of two
 request shapes based on `GenerateImageInput.mode`
 (`services/ai/types.ts`'s `GenerationMode`):
@@ -147,6 +226,43 @@ vendor) surfaces as `ProviderResponseError`, not a raw exception —
 merchant-safe error mapping happens the same way as every other provider
 failure (see docs/generation.md "Error handling").
 
+## Provider-input composition
+
+`services/ai/prompt-composition.ts` is the ONE place the final text sent
+to a real vendor is assembled from a `GenerateImageInput`, shared by
+both real providers (never duplicated per-vendor):
+
+- `composeProductGroundingPrefix(productFacts)` — a short "Product:
+  {title} ({type}). {description}" prefix built from
+  `GenerationPlan.productFacts.title`/`description`/`attributes` (see
+  `services/generation/build-plan.ts`'s `buildProductFactsContext` —
+  the product's own real Shopify catalog facts, truncated to a short
+  excerpt, never the full listing copy). Empty when a plan didn't
+  populate these fields.
+- `composeProviderPrompt(input)` — the grounding prefix + the
+  already-fully-synthesized `creativeDirection.prompt` (built upstream
+  by `build-plan.ts`/`plan-builder.ts` — category, scene, identity
+  -preservation instruction, creative-override clause, etc. are ALL
+  already baked in there; this module never re-derives any of that) +
+  an explicit "Avoid: ..." clause for negative constraints, as ONE
+  string — used by `OpenAIImageGenerationProvider`, whose contract has a
+  single `prompt` field.
+- The generic provider uses `composeProductGroundingPrefix` alone
+  (prepended to `prompt`) and keeps `negative_prompt` as that contract's
+  own separate field, rather than merging it into one string — see that
+  file's request-body construction.
+
+Everything upstream of this module — `services/generation/build-plan.ts`,
+`services/creative-studio/plan-builder.ts`,
+`services/creative-studio/identity-constraints.ts` — is where the actual
+structured composition happens (product identity, identity anchors,
+brand style, scene/environment/lighting/composition/camera direction,
+creative overrides, negative constraints); `services/ai/` only ever
+receives the ALREADY-STRUCTURED result and decides how to phrase it for
+one specific vendor's wire format. See docs/creative-studio.md
+"Identity preservation" / "Creative overrides" for that upstream
+composition in full.
+
 ## Rules for a real provider
 
 - Lives in `services/ai/`, implements one of the interfaces above. No
@@ -167,16 +283,21 @@ failure (see docs/generation.md "Error handling").
 
 ## Not yet designed / explicitly deferred
 
-- **No specific commercial vendor is named or credentialed anywhere in
-  this repository.** `ProductionImageGenerationProvider`/
-  `ProductionIntentParsingProvider` are real, working HTTP clients
-  against documented, vendor-agnostic JSON contracts — a merchant with
-  an endpoint speaking either contract gets a genuinely working
-  integration with zero code changes — but no live vendor account exists
-  in this environment, so every generation/intent-parse in this
-  environment still runs through the deterministic/heuristic providers
-  in practice. A vendor with a materially different wire shape needs its
-  own adapter file behind the same interface.
+- **A specific commercial image-generation vendor (OpenAI, `gpt-image-1`)
+  IS now selected and implemented** — see "Provider selection" above —
+  but no live API key is configured in THIS development/CI environment,
+  so generation here still runs through the deterministic test provider
+  in practice; a real deployment (docs/production-deployment.md) needs
+  a real `AI_PROVIDER_API_KEY` to actually call it. Intent parsing
+  (`ProductionIntentParsingProvider`) still speaks a generic,
+  self-defined contract, not a specific named vendor's real API —
+  genuinely working against any endpoint that implements it, but not
+  verified against one specific commercial LLM API the way the image
+  provider now is. The generic `ProductionImageGenerationProvider`
+  contract remains available for a self-hosted/other vendor with a
+  materially different wire shape (needs its own adapter file behind
+  the same interface, same pattern `openai-image-provider.server.ts`
+  itself follows).
 - `upscale`/`generateShadow`/`crop` (`ImageProcessingProvider`) remain
   unimplemented.
 - Cost/usage accounting per call is now real — see docs/usage.md's

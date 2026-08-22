@@ -63,6 +63,7 @@ function requestFor(shop: string): Request {
 
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: { in: [SHOP_A, SHOP_B] } } });
+  await prisma.creditReservation.deleteMany({ where: { shop: { in: [SHOP_A, SHOP_B] } } });
 }
 
 let scratchDir: string;

@@ -1,5 +1,7 @@
-# services/publishing (placeholder)
+# services/publishing
 
-Future home of publishing approved assets back to Shopify (`Publication`).
-Will depend on `services/shopify`, never call the Shopify SDK directly. Not
-implemented in Phase 0 — see docs/roadmap.md.
+Publishing an approved AI-generated/processed result back to a
+merchant's Shopify product media gallery. Fully implemented — see
+docs/publishing.md for the complete architecture, the `write_products`
+scope decision (deliberately still not requested), idempotency, error
+handling, and security notes.

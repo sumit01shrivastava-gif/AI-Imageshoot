@@ -210,10 +210,29 @@ export const GenerationPlanSchema = z.object({
    * time — see services/intelligence/schema.ts's `IdentityAnchorsSchema`.
    * Reused directly (not redefined) so the two stay in lockstep by
    * construction. Mandatory whenever Product Intelligence has run for
-   * this product; null only when it hasn't (see build-plan.ts). */
+   * this product; null only when it hasn't (see build-plan.ts).
+   *
+   * `title`/`description`/`attributes` are the product's own Shopify
+   * catalog facts (grounding context, not creative direction) — added so
+   * a provider genuinely has "what this product actually is" available,
+   * not just its identity-preservation anchors. `description` is
+   * truncated to a short excerpt (see build-plan.ts's `PRODUCT_FACTS_DESCRIPTION_MAX_CHARS`)
+   * — enough to ground the model, not enough to overwhelm a concise,
+   * structured provider request with paragraphs of marketing copy (see
+   * docs/ai-pipeline.md "Provider-input composition"). */
   productFacts: z
     .object({
       identityAnchors: IdentityAnchorsSchema.nullable(),
+      title: z.string().min(1).nullable().default(null),
+      description: z.string().min(1).nullable().default(null),
+      attributes: z
+        .object({
+          productType: z.string().min(1).nullable().default(null),
+          vendor: z.string().min(1).nullable().default(null),
+          tags: z.array(z.string()).default([]),
+        })
+        .nullable()
+        .default(null),
     })
     .strict(),
 

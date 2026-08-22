@@ -51,6 +51,7 @@ async function cleanup() {
   await prisma.processingBatch.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.imageSelection.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.shopifyProduct.deleteMany({ where: { shop: TEST_SHOP } });
+  await prisma.creditReservation.deleteMany({ where: { shop: TEST_SHOP } });
 }
 
 async function seedProducts() {

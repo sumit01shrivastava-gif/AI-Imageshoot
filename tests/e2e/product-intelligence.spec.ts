@@ -48,6 +48,7 @@ let worker: ReturnType<typeof createWorker<ProductIntelligenceJobPayload>> | und
 
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: TEST_SHOP } });
+  await prisma.creditReservation.deleteMany({ where: { shop: TEST_SHOP } });
 }
 
 async function seedProduct() {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGenerationPlan,
+  buildProductFactsContext,
+  PRODUCT_FACTS_DESCRIPTION_MAX_CHARS,
   MissingSourceImagesError,
   ProductNotAnalyzedError,
   ProductNotModelSuitableError,
@@ -104,6 +106,19 @@ describe("buildGenerationPlan", () => {
       brandingVisible: false,
       brandingDescription: null,
     });
+  });
+
+  it("carries title/description/attributes grounding context into productFacts", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "PRODUCT_CLEANUP",
+    });
+
+    expect(plan.productFacts.title).toBe("Red Leather Handbag");
+    expect(plan.productFacts.description).toBe("A handcrafted red leather handbag.");
+    expect(plan.productFacts.attributes).toEqual({ productType: "Handbags", vendor: "Acme", tags: ["leather", "bestseller"] });
   });
 
   it("only includes the requested source images, never trusting an unrelated id", () => {
@@ -467,5 +482,38 @@ describe("CTA generation type", () => {
     expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
     expect(plan.brandStyle).not.toBeNull();
     expect(plan.aspectRatio).toBe("1:1"); // no BANNER-style wide default
+  });
+});
+
+describe("buildProductFactsContext", () => {
+  it("carries title/description/attributes straight through for a normal product", () => {
+    const result = buildProductFactsContext(product());
+    expect(result).toEqual({
+      title: "Red Leather Handbag",
+      description: "A handcrafted red leather handbag.",
+      attributes: { productType: "Handbags", vendor: "Acme", tags: ["leather", "bestseller"] },
+    });
+  });
+
+  it("truncates a long description to a short excerpt, never the full catalog copy", () => {
+    const longDescription = "A ".repeat(500).trim();
+    const result = buildProductFactsContext(product({ description: longDescription }));
+    expect(result.description!.length).toBeLessThanOrEqual(PRODUCT_FACTS_DESCRIPTION_MAX_CHARS + 1); // +1 for the trailing ellipsis
+    expect(result.description).toMatch(/…$/);
+  });
+
+  it("returns null fields (not empty strings) for a product with no description/type/vendor/tags", () => {
+    const result = buildProductFactsContext(product({ description: "   ", productType: "", vendor: "", tags: [] }));
+    expect(result.description).toBeNull();
+    expect(result.attributes).toBeNull();
+  });
+
+  it("filters out blank tags without dropping real ones", () => {
+    const result = buildProductFactsContext(product({ tags: ["leather", "", "  ", "bestseller"] }));
+    expect(result.attributes?.tags).toEqual(["leather", "bestseller"]);
+  });
+
+  it("never throws for a fully empty product", () => {
+    expect(() => buildProductFactsContext(product({ title: "", description: "", productType: "", vendor: "", tags: [] }))).not.toThrow();
   });
 });

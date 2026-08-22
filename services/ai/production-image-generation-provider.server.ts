@@ -62,6 +62,7 @@
 import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
+import { composeProductGroundingPrefix } from "./prompt-composition";
 import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider } from "./types";
 
 /** Generous enough for a multi-output generative request under normal
@@ -189,7 +190,7 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
 
     const requestBody = {
       model: resolveModel(env, editMode && referenceImagesBase64.length > 0),
-      prompt: input.creativeDirection.prompt,
+      prompt: `${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`,
       ...(negativeConstraints.length > 0 ? { negative_prompt: negativeConstraints.join(", ") } : {}),
       ...(referenceImagesBase64.length === 1 ? { image: referenceImagesBase64[0] } : {}),
       ...(referenceImagesBase64.length > 1 ? { images: referenceImagesBase64 } : {}),

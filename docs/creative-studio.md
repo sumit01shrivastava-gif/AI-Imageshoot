@@ -287,6 +287,25 @@ implement.
 version (the version thumbnails on the canvas, or any prior job in the
 session's history).
 
+**Reference images are fetched server-side, never exposed publicly to
+satisfy a provider.** A source/reference image's URL is always a signed,
+time-limited storage URL (`lib/storage`'s `getSignedUrl`) or a
+Shopify-hosted CDN URL — both this app's own real providers
+(`OpenAIImageGenerationProvider`/`ProductionImageGenerationProvider`)
+fetch server-side (via `fetchWithTimeout`, never the browser) before
+forwarding the bytes to the vendor. Nothing in this pipeline makes a
+storage object PUBLICLY readable merely because a generation needs it —
+the signed URL's own short expiry and the server-side fetch are what
+authorize the read, not a public bucket ACL.
+
+**Real, product-aware grounding is now folded into every provider
+call** — `GenerationPlan.productFacts` carries the product's own
+title/description/category/attributes (not just identity-preservation
+anchors) all the way to the provider, via
+`services/ai/prompt-composition.ts` — see docs/ai-pipeline.md "Provider
+-input composition" for the full breakdown of what a real vendor call
+actually receives.
+
 ## Reuse, not a second pipeline
 
 The one deliberate extension point in the shared primitive

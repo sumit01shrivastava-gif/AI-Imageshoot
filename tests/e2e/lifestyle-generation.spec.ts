@@ -59,6 +59,11 @@ async function cleanup() {
   await prisma.generationBatch.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.imageSelection.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.shopifyProduct.deleteMany({ where: { shop: TEST_SHOP } });
+  // Every generation now reserves real credits (services/usage/credit-costs.ts)
+  // — cleared between runs so this spec's several generations within the
+  // same shop/calendar-month don't exhaust the FREE plan's monthly
+  // allowance across repeated local test runs.
+  await prisma.creditReservation.deleteMany({ where: { shop: TEST_SHOP } });
 }
 
 async function seedAnalyzedProduct(shopifyProductId: string, title: string, { modelSuitable = false }: { modelSuitable?: boolean } = {}) {
