@@ -41,10 +41,10 @@ import { buildCreativeContext, resolveTargetResult, type CreativeContext } from 
 import { buildCreativeGenerationPlan, ProductNotAnalyzedError, MissingSourceImagesError } from "./plan-builder";
 import { createAndEnqueueGenerationJob, ProductNotFoundError, reviewGenerationResult, GenerationResultNotFoundError } from "../generation/request-generation.server";
 import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
-import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, type EntitlementCheck } from "../usage/entitlement.server";
+import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, PlanLimitExceededError, type EntitlementCheck } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 
-export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError };
+export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError, PlanLimitExceededError };
 
 /** Deliberately the same "not found" shape a missing/foreign-shop
  * session gets — see ProductNotFoundError's own doc comment

@@ -161,11 +161,20 @@ function synthesizePrompt(input: {
   const descriptor = [input.primaryColor, input.material, input.category].filter(Boolean).join(" ").trim();
   const subject = descriptor || "product";
 
+  // Identity/preservation always leads (see the module-level "provider
+  // prompt hierarchy" doc comment above `PRESERVE_PRODUCT_INSTRUCTION`)
+  // — every branch below states it FIRST, then the creative direction,
+  // never the reverse. Applies to every generationType, including the
+  // generic fallback at the bottom — a request for a taxonomy value with
+  // no dedicated branch (e.g. CAMPAIGN/CATEGORY_BANNER/BACKGROUND_REMOVAL/
+  // BACKGROUND_REPLACEMENT, all schema-valid — see services/generation/types.ts's
+  // GENERATION_TYPES — even though none currently has a merchant-facing
+  // UI entry point) must never reach a real provider with zero identity
+  // protection. A real, once-caught gap: the fallback branch previously
+  // had no preservation instruction at all.
+
   if (input.generationType === "PRODUCT_CLEANUP") {
-    return (
-      `Clean, evenly lit product photography of the ${subject}. ${PRESERVE_PRODUCT_INSTRUCTION} ` +
-      `Neutral, distraction-free background.`
-    );
+    return `${PRESERVE_PRODUCT_INSTRUCTION} Clean, evenly lit product photography of the ${subject}. Neutral, distraction-free background.`;
   }
 
   if (input.generationType === "LIFESTYLE") {
@@ -177,7 +186,7 @@ function synthesizePrompt(input: {
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     if (input.scene?.mood) parts.push(`${input.scene.mood} mood`);
     if (input.scene?.colorDirection) parts.push(`${input.scene.colorDirection} color palette`);
-    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
+    return `${PRESERVE_PRODUCT_INSTRUCTION} ${parts.join(", ")}.`;
   }
 
   if (input.generationType === "MODEL_SHOOT") {
@@ -190,7 +199,7 @@ function synthesizePrompt(input: {
     if (input.environment) parts.push(`set in ${input.environment}`);
     if (input.modelStyle) parts.push(`${input.modelStyle} model styling`);
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
-    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION}`;
+    return `${PRESERVE_PRODUCT_INSTRUCTION} ${parts.join(", ")}.`;
   }
 
   if (input.generationType === "BANNER") {
@@ -201,7 +210,7 @@ function synthesizePrompt(input: {
     parts.push("composed with clear open space for text overlay");
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     if (input.mood) parts.push(`${input.mood} mood`);
-    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography.`;
+    return `${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography. ${parts.join(", ")}.`;
   }
 
   if (input.generationType === "CTA") {
@@ -210,14 +219,14 @@ function synthesizePrompt(input: {
     else if (input.environment) parts.push(`set in ${input.environment}`);
     if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
     if (input.mood) parts.push(`${input.mood} mood`);
-    return `${parts.join(", ")}. ${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography.`;
+    return `${PRESERVE_PRODUCT_INSTRUCTION} Do not render any text, logos, or typography. ${parts.join(", ")}.`;
   }
 
   const parts = [`${GENERATION_TYPE_LABEL[input.generationType]} photography of the ${subject}`];
   if (input.style) parts.push(`${input.style} style`);
   if (input.environment) parts.push(`set in ${input.environment}`);
   if (input.photographyStyle) parts.push(`${input.photographyStyle} photography style`);
-  return `${parts.join(", ")}.`;
+  return `${PRESERVE_PRODUCT_INSTRUCTION} ${parts.join(", ")}.`;
 }
 
 // The subset of BrandStylePresetAttributes that GenerateImageInput.brandStyle

@@ -25,6 +25,8 @@ import {
   requestStoreVisual,
   InvalidStoreVisualRequestError,
   ProductNotFoundError,
+  InsufficientCreditsError,
+  PlanLimitExceededError,
 } from "../../services/store-visuals/request-store-visual.server";
 import { STORE_VISUAL_TYPES, ASPECT_RATIOS, type StoreVisualTypeValue, type AspectRatioValue } from "../../services/store-visuals/types";
 import { logger } from "../../lib/logging/logger.server";
@@ -98,6 +100,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     if (error instanceof ProductNotFoundError) {
       return { ok: false as const, error: "One of the selected products could not be found. Please try again." };
+    }
+    if (error instanceof InsufficientCreditsError || error instanceof PlanLimitExceededError) {
+      return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
     }
     logger.error("store_visuals.create_failed", {
       shop: context.shop,

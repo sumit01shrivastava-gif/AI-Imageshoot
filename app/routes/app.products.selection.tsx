@@ -13,12 +13,14 @@ import {
   startBatchProcessing,
   InvalidBatchRequestError as InvalidProcessingBatchRequestError,
   SelectionNotFoundError as ProcessingSelectionNotFoundError,
+  PlanLimitExceededError as ProcessingPlanLimitExceededError,
 } from "../../services/processing/batch.server";
 import { IMPLEMENTED_OPERATIONS, type ImageOperationValue } from "../../services/processing/types";
 import {
   startBatchGeneration,
   InvalidBatchRequestError as InvalidGenerationBatchRequestError,
   SelectionNotFoundError as GenerationSelectionNotFoundError,
+  PlanLimitExceededError as GenerationPlanLimitExceededError,
 } from "../../services/generation/batch.server";
 import { listAvailablePresets } from "../../services/generation/brand-style-preset.server";
 import { useSelection } from "../components/selection-context";
@@ -77,6 +79,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const { batchId } = await startBatchProcessing(context, { selectionId, operation });
       return redirect(`/app/processing/${batchId}`);
     } catch (error) {
+      if (error instanceof ProcessingPlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
+      }
       const message =
         error instanceof InvalidProcessingBatchRequestError || error instanceof ProcessingSelectionNotFoundError
           ? error.message
@@ -104,6 +109,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       return redirect(`/app/generation/${batchId}`);
     } catch (error) {
+      if (error instanceof GenerationPlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
+      }
       const message =
         error instanceof InvalidGenerationBatchRequestError || error instanceof GenerationSelectionNotFoundError
           ? error.message

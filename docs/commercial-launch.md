@@ -91,9 +91,9 @@ just passing tests against mocked providers.
   `services/billing/plans.ts` matches what you actually intend to
   charge (this pass's numbers — FREE/$19/$49/$149 — are a reasonable
   starting catalog, not a validated pricing decision).
-- **Per-plan resolution/output-count/batch-size enforcement** — see
-  docs/billing.md "Known limitations": these limits are cataloged in
-  `PlanDefinition` but not yet enforced by a request-side clamp.
+- **Per-plan resolution enforcement** — output-count and batch-size ARE
+  now enforced (see docs/billing.md "Known limitations"); resolution
+  (`maxGenerationResolutionPx`) is still not.
 - **A real vision-capable `AIProvider` for Product Intelligence**, if
   you want genuine semantic identity validation instead of the current
   honest "not yet possible" result — see

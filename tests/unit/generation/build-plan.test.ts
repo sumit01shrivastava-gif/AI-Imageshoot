@@ -108,6 +108,26 @@ describe("buildGenerationPlan", () => {
     });
   });
 
+  it("leads the synthesized prompt with the identity-preservation instruction, before any creative direction (Part 5's hierarchy)", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+    });
+    expect(plan.creativeDirection.prompt.indexOf("Preserve the product exactly")).toBe(0);
+  });
+
+  it("a generationType with no dedicated branch (e.g. CAMPAIGN) still gets the identity-preservation instruction — a real, once-caught gap (the generic fallback previously had none at all)", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "CAMPAIGN",
+    });
+    expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+  });
+
   it("carries title/description/attributes grounding context into productFacts", () => {
     const plan = buildGenerationPlan({
       product: product(),

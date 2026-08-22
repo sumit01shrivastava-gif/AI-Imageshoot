@@ -97,6 +97,15 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => worker!.on("ready", () => resolve()));
 
   await cleanup();
+
+  // One test requests multiple outputs from a single job — the FREE
+  // plan's maxOutputsPerGeneration is 1 (services/billing/plans.ts), so
+  // this shop needs a real plan that allows more.
+  await prisma.shopSubscription.upsert({
+    where: { shop: SHOP },
+    create: { shop: SHOP, planId: "STARTER", status: "ACTIVE" },
+    update: { planId: "STARTER", status: "ACTIVE" },
+  });
 });
 
 afterEach(async () => {
@@ -106,6 +115,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: SHOP } });
   await worker?.close();
   await closeRedisConnection();
   await prisma.$disconnect();

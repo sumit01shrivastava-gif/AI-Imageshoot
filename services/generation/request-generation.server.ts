@@ -30,11 +30,11 @@ import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
 import { GenerationTypeSchema, AspectRatioSchema, type GenerationPlan } from "./schema";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
-import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 import type { GenerationMode } from "../ai/types";
 
-export { InsufficientCreditsError };
+export { InsufficientCreditsError, PlanLimitExceededError };
 
 /**
  * Deliberately the SAME error for "doesn't exist" and "belongs to another
@@ -195,6 +195,15 @@ export async function createAndEnqueueGenerationJob(
       aspectRatioOverride: input.aspectRatioOverride,
     });
   }
+
+  // Plan output-count limit — applies to EVERY generationType,
+  // including Creative Studio (unlike the credit-gate block below, this
+  // isn't skipped for a Creative-Studio-managed request; output-count
+  // enforcement is a different concern from credit-reservation
+  // ownership). See services/usage/entitlement.server.ts's
+  // `assertWithinOutputLimit` and docs/billing.md "Plan limit
+  // enforcement".
+  await assertWithinOutputLimit(context.shop, plan.outputCount);
 
   // Credit-gate every generationType EXCEPT Creative Studio, which
   // already checks/reserves its own credits (services/creative-studio/session.server.ts,

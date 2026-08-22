@@ -122,6 +122,57 @@ describe("buildCreativeGenerationPlan", () => {
     expect(plan.creativeDirection.prompt).toContain(plan.creativeIntent!.identityConstraints.instruction);
   });
 
+  it("leads the synthesized prompt with the identity instruction, before the creative direction (Part 5's hierarchy)", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+
+    const identityIndex = plan.creativeDirection.prompt.indexOf(plan.creativeIntent!.identityConstraints.instruction);
+    const creativeIndex = plan.creativeDirection.prompt.indexOf("premium lifestyle scene");
+    expect(identityIndex).toBe(0); // identity is the very first thing in the prompt
+    expect(creativeIndex).toBeGreaterThan(identityIndex);
+  });
+
+  it("states explicit reference-image fidelity for an image-to-image follow-up, positioned after identity and before the creative direction", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/prior-result.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "Make it brighter",
+    });
+
+    expect(plan.creativeDirection.prompt).toMatch(/exact starting point/i);
+    const identityIndex = plan.creativeDirection.prompt.indexOf(plan.creativeIntent!.identityConstraints.instruction);
+    const referenceIndex = plan.creativeDirection.prompt.indexOf("exact starting point");
+    expect(identityIndex).toBe(0);
+    expect(referenceIndex).toBeGreaterThan(identityIndex);
+  });
+
+  it("states no reference-fidelity clause for a fresh TEXT_TO_IMAGE request (nothing to be faithful to yet)", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+    expect(plan.creativeDirection.prompt).not.toMatch(/exact starting point/i);
+  });
+
   it("never sends the merchant's raw message as the prompt verbatim", async () => {
     const rawInstruction = "asdkjf make it look totally amazeballs pls!!1";
     const parsedIntent = await intent(rawInstruction);

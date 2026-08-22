@@ -71,6 +71,33 @@ const INTENT_FRAMING: Record<CreativeIntentValue, (subject: string) => string> =
   REGENERATE: (s) => `A refreshed rendition of the existing composition featuring ${s}`,
 };
 
+/**
+ * The explicit provider-prompt hierarchy (see docs/ai-pipeline.md
+ * "Provider-input composition" for the full, documented reasoning):
+ *
+ *   1. Product identity / immutable characteristics — `identityInstruction`,
+ *      stated FIRST, before any creative direction, so the constraint
+ *      anchors the request rather than being an afterthought a model
+ *      might weight less once a wall of scene/style description
+ *      precedes it.
+ *   2. Reference-image fidelity — an explicit "this is the exact image
+ *      to edit forward from" clause, only for IMAGE_TO_IMAGE/IMAGE_EDIT/
+ *      VARIATION (when `referenceNoun` is non-null).
+ *   3. Product facts — added separately, upstream of this function, by
+ *      services/ai/prompt-composition.ts's `composeProductGroundingPrefix`
+ *      (title/description/category — what this product actually IS,
+ *      voiced by the ai/ layer since `services/creative-studio/` doesn't
+ *      own the final wire-level assembly).
+ *   4. The user-requested creative transformation (intent framing +
+ *      scene/style/add/remove/overrides).
+ *   5–6. Composition/environment and lighting/camera/color direction
+ *      (folded into the same clause list as 4 — they're all "what MAY
+ *      change" and read naturally as one sentence, not artificially
+ *      split into separate sentences).
+ *   7. Output requirements — handled outside this function entirely, as
+ *      real API parameters (`size`/`quality`/`n`), never restated as
+ *      prose the model might contradict.
+ */
 function synthesizeCreativePrompt(
   intent: CreativeIntentValue,
   category: string,
@@ -87,6 +114,11 @@ function synthesizeCreativePrompt(
     materialOverride: string | null;
   },
   identityInstruction: string,
+  /** A short noun phrase for what's being edited forward from — e.g.
+   * "the previous result" — when this turn is IMAGE_TO_IMAGE/IMAGE_EDIT/
+   * VARIATION; `null` for a fresh TEXT_TO_IMAGE request (no reference
+   * image exists yet, so there's nothing to state fidelity to). */
+  referenceNoun: string | null,
 ): string {
   const subject = `the ${category}`;
   const parts = [INTENT_FRAMING[intent](subject)];
@@ -105,7 +137,11 @@ function synthesizeCreativePrompt(
   if (creative.colorOverride) parts.push(`the ${subject} recolored to ${creative.colorOverride}`);
   if (creative.materialOverride) parts.push(`the ${subject} rendered in ${creative.materialOverride}`);
 
-  return `${parts.join(", ")}. ${identityInstruction}`;
+  const referenceFidelity = referenceNoun
+    ? ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
+    : "";
+
+  return `${identityInstruction}${referenceFidelity} ${parts.join(", ")}.`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -183,12 +219,18 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     materialOverride: parsedIntent.attributeOverrides.material,
   };
 
-  const prompt = synthesizeCreativePrompt(parsedIntent.intent, category, creative, identityConstraints.instruction);
+  const isEditTurn =
+    Boolean(previousResultUrl) && (parsedIntent.mode === "IMAGE_TO_IMAGE" || parsedIntent.mode === "IMAGE_EDIT" || parsedIntent.mode === "VARIATION");
 
-  const referenceImages =
-    previousResultUrl && (parsedIntent.mode === "IMAGE_TO_IMAGE" || parsedIntent.mode === "IMAGE_EDIT" || parsedIntent.mode === "VARIATION")
-      ? [{ url: previousResultUrl, role: "previous_result" as const }]
-      : [];
+  const prompt = synthesizeCreativePrompt(
+    parsedIntent.intent,
+    category,
+    creative,
+    identityConstraints.instruction,
+    isEditTurn ? "the reference image provided" : null,
+  );
+
+  const referenceImages = isEditTurn ? [{ url: previousResultUrl!, role: "previous_result" as const }] : [];
 
   const plan = {
     generationType: "CREATIVE_STUDIO" as const,

@@ -108,8 +108,8 @@ export class InsufficientCreditsError extends Error {
   constructor(check: EntitlementCheck) {
     super(
       check.reason === "OPERATION_NOT_ON_PLAN"
-        ? "This feature isn't included on your current plan."
-        : `Not enough credits available (${check.available} available, ${check.required} required).`,
+        ? "This feature isn't included on your current plan. Visit Billing to upgrade."
+        : `Not enough credits available (${check.available} available, ${check.required} required). Visit Billing to upgrade or wait for your next monthly renewal.`,
     );
     this.name = "InsufficientCreditsError";
     this.check = check;
@@ -168,4 +168,52 @@ export async function refundGenerationCredits(context: AuthContext, jobId: strin
 
 export async function getReservationStatus(context: AuthContext, jobId: string): Promise<CreditReservationRow | null> {
   return getReservationForJob(context.shop, jobId);
+}
+
+/**
+ * Minimum plan-limit enforcement (Part 6): `PlanDefinition.maxOutputsPerGeneration`/
+ * `maxProcessingBatchSize` were previously cataloged policy only — see
+ * docs/billing.md "Known limitations" (now updated). Enforced here, at
+ * the same request-side boundary credits are already checked at, so a
+ * request that exceeds its plan's limit is rejected BEFORE any credit
+ * reservation or job creation — never a partial/clamped-without-
+ * explanation result.
+ */
+export class PlanLimitExceededError extends Error {
+  readonly limitType: "maxOutputsPerGeneration" | "maxProcessingBatchSize";
+  readonly limit: number;
+  readonly requested: number;
+
+  constructor(limitType: "maxOutputsPerGeneration" | "maxProcessingBatchSize", limit: number, requested: number) {
+    const humanLabel = limitType === "maxOutputsPerGeneration" ? "outputs per generation" : "images per batch";
+    super(`Your current plan allows up to ${limit} ${humanLabel} (requested ${requested}). Upgrade your plan for a higher limit.`);
+    this.name = "PlanLimitExceededError";
+    this.limitType = limitType;
+    this.limit = limit;
+    this.requested = requested;
+  }
+}
+
+/** Caps a single generation/store-visual request's requested output
+ * count against the shop's real plan — reused across both domains (they
+ * share the same "how many images does one job produce" concept; see
+ * services/billing/plans.ts's `maxOutputsPerGeneration` doc comment). A
+ * no-op (never throws) when `requestedOutputCount` is within the limit. */
+export async function assertWithinOutputLimit(shop: string, requestedOutputCount: number): Promise<void> {
+  const plan = await getPlan(shop);
+  if (requestedOutputCount > plan.maxOutputsPerGeneration) {
+    throw new PlanLimitExceededError("maxOutputsPerGeneration", plan.maxOutputsPerGeneration, requestedOutputCount);
+  }
+}
+
+/** Caps a batch request's image count against the shop's real plan —
+ * reused across processing AND generation batches (both are "how many
+ * images does one batch operation touch," the same concept
+ * `maxProcessingBatchSize` already names — see docs/billing.md "Known
+ * limitations" for why this isn't a second, generation-specific field). */
+export async function assertWithinBatchLimit(shop: string, requestedBatchSize: number): Promise<void> {
+  const plan = await getPlan(shop);
+  if (requestedBatchSize > plan.maxProcessingBatchSize) {
+    throw new PlanLimitExceededError("maxProcessingBatchSize", plan.maxProcessingBatchSize, requestedBatchSize);
+  }
 }

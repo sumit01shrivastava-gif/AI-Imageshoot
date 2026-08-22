@@ -228,6 +228,45 @@ failure (see docs/generation.md "Error handling").
 
 ## Provider-input composition
 
+### The explicit prompt hierarchy
+
+Every real provider call's final text follows the same documented,
+intentional order — never the merchant's raw message concatenated with
+whatever else happened to be handy:
+
+1. **Product identity / immutable characteristics** — stated FIRST,
+   ahead of any creative direction, so the constraint anchors the
+   request rather than reading as an afterthought a model might weight
+   less once a wall of scene/style description precedes it
+   (`services/creative-studio/identity-constraints.ts`'s
+   `buildIdentityConstraints`, `services/generation/build-plan.ts`'s
+   `PRESERVE_PRODUCT_INSTRUCTION` — both now lead their respective
+   `creativeDirection.prompt`, not trail it).
+2. **Reference-image fidelity** — an explicit "use this exact image as
+   the starting point" clause, only present for a Creative Studio
+   IMAGE_TO_IMAGE/IMAGE_EDIT/VARIATION turn (`plan-builder.ts`'s
+   `synthesizeCreativePrompt`) — never silently omitted when a
+   reference image exists (see docs/creative-studio.md "Image-to-image
+   flow").
+3. **Product facts** — `composeProductGroundingPrefix` (below):
+   title/category/description, what the product actually IS.
+4. **The user-requested creative transformation** — intent framing +
+   scene/style/add/remove/creative-overrides.
+5–6. **Composition/environment and lighting/camera/color direction** —
+   folded into the same clause list as 4 (one natural sentence, not
+   artificially split).
+7. **Output requirements** — resolution/quality/output-count are real
+   API parameters (`size`/`quality`/`n`), never restated as prose a
+   model could contradict; negative constraints are the one exception,
+   stated explicitly as an "Avoid: ..." clause.
+
+This hierarchy is category-agnostic by construction — nothing here
+special-cases cosmetics vs. electronics vs. jewelry; the SAME structure
+is populated from whatever Product Intelligence actually determined for
+that product (its real category, material, identity anchors), so the
+resulting prompt adapts per-product without any hardcoded per-category
+branch to maintain.
+
 `services/ai/prompt-composition.ts` is the ONE place the final text sent
 to a real vendor is assembled from a `GenerateImageInput`, shared by
 both real providers (never duplicated per-vendor):

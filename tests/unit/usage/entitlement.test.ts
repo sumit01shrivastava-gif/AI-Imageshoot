@@ -210,3 +210,41 @@ describe("InsufficientCreditsError", () => {
     expect(error.message).toMatch(/plan/i);
   });
 });
+
+describe("plan limit enforcement (Part 6)", () => {
+  it("assertWithinOutputLimit allows a request within the FREE plan's maxOutputsPerGeneration (1)", async () => {
+    const { assertWithinOutputLimit } = await import("../../../services/usage/entitlement.server");
+    await expect(assertWithinOutputLimit(CONTEXT.shop, 1)).resolves.toBeUndefined();
+  });
+
+  it("assertWithinOutputLimit throws PlanLimitExceededError when the request exceeds the plan's limit", async () => {
+    const { assertWithinOutputLimit, PlanLimitExceededError } = await import("../../../services/usage/entitlement.server");
+    await expect(assertWithinOutputLimit(CONTEXT.shop, 2)).rejects.toBeInstanceOf(PlanLimitExceededError);
+  });
+
+  it("assertWithinOutputLimit allows a higher output count on a higher plan", async () => {
+    getShopSubscription.mockResolvedValue({ planId: "PRO", status: "ACTIVE" });
+    const { assertWithinOutputLimit } = await import("../../../services/usage/entitlement.server");
+    await expect(assertWithinOutputLimit(CONTEXT.shop, 6)).resolves.toBeUndefined();
+    await expect(assertWithinOutputLimit(CONTEXT.shop, 7)).rejects.toThrow();
+  });
+
+  it("assertWithinBatchLimit allows a batch within the FREE plan's maxProcessingBatchSize (5)", async () => {
+    const { assertWithinBatchLimit } = await import("../../../services/usage/entitlement.server");
+    await expect(assertWithinBatchLimit(CONTEXT.shop, 5)).resolves.toBeUndefined();
+  });
+
+  it("assertWithinBatchLimit throws PlanLimitExceededError when the batch exceeds the plan's limit", async () => {
+    const { assertWithinBatchLimit, PlanLimitExceededError } = await import("../../../services/usage/entitlement.server");
+    await expect(assertWithinBatchLimit(CONTEXT.shop, 6)).rejects.toBeInstanceOf(PlanLimitExceededError);
+  });
+
+  it("PlanLimitExceededError carries the limit type/limit/requested for callers that want structured detail", async () => {
+    const { PlanLimitExceededError } = await import("../../../services/usage/entitlement.server");
+    const error = new PlanLimitExceededError("maxOutputsPerGeneration", 1, 3);
+    expect(error.limitType).toBe("maxOutputsPerGeneration");
+    expect(error.limit).toBe(1);
+    expect(error.requested).toBe(3);
+    expect(error.message).toMatch(/upgrade/i);
+  });
+});

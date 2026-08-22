@@ -30,10 +30,10 @@ import { resolveBrandStylePreset } from "../generation/brand-style-preset.server
 import { enqueueStoreVisualJob } from "./queue.server";
 import { StoreVisualTypeSchema, AspectRatioSchema } from "./schema";
 import type { AspectRatioValue } from "./types";
-import { checkEntitlement, reserveCredits, InsufficientCreditsError } from "../usage/entitlement.server";
+import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 
-export { InsufficientCreditsError };
+export { InsufficientCreditsError, PlanLimitExceededError };
 
 export class InvalidStoreVisualRequestError extends Error {
   constructor(message: string) {
@@ -129,6 +129,11 @@ export async function requestStoreVisual(
     brandStylePreset,
     aspectRatioOverride,
   });
+
+  // Plan output-count limit — same field/reasoning as
+  // services/generation/request-generation.server.ts's identical check
+  // (see services/usage/entitlement.server.ts's `assertWithinOutputLimit`).
+  await assertWithinOutputLimit(context.shop, plan.outputCount);
 
   // Checked BEFORE creating the job row — see
   // services/processing/request-processing.server.ts's identical

@@ -20,6 +20,9 @@ import { createBatch, getBatch, getBatchProgress, type BatchProgress } from "../
 import { listProcessingJobsForBatch, type ProcessingJobRow } from "../../db/repositories/processing-job.repository";
 import { createAndEnqueueProcessingJob, ProductNotFoundError } from "./request-processing.server";
 import { ImageOperationSchema, parseProcessingOptions } from "./schema";
+import { assertWithinBatchLimit, PlanLimitExceededError } from "../usage/entitlement.server";
+
+export { PlanLimitExceededError };
 
 export class SelectionNotFoundError extends Error {
   constructor() {
@@ -68,6 +71,10 @@ export async function startBatchProcessing(
   if (summary.imageCount === 0) {
     throw new InvalidBatchRequestError("This selection has no images.");
   }
+  // Plan batch-size limit — checked BEFORE creating the batch row or any
+  // job (see services/usage/entitlement.server.ts's `assertWithinBatchLimit`
+  // and docs/billing.md "Plan limit enforcement").
+  await assertWithinBatchLimit(context.shop, summary.imageCount);
 
   const batch = await createBatch({
     shop: context.shop,

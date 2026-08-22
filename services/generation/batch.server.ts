@@ -21,6 +21,9 @@ import { listGenerationJobsForBatch, type GenerationJobRow } from "../../db/repo
 import { createAndEnqueueGenerationJob, ProductNotFoundError } from "./request-generation.server";
 import { GenerationTypeSchema, AspectRatioSchema } from "./schema";
 import type { AspectRatioValue } from "./types";
+import { assertWithinBatchLimit, PlanLimitExceededError } from "../usage/entitlement.server";
+
+export { PlanLimitExceededError };
 
 export class SelectionNotFoundError extends Error {
   constructor() {
@@ -83,6 +86,13 @@ export async function startBatchGeneration(
   if (summary.imageCount === 0) {
     throw new InvalidBatchRequestError("This selection has no images.");
   }
+  // Plan batch-size limit — see services/processing/batch.server.ts's
+  // identical check; reuses the same `maxProcessingBatchSize` field (a
+  // generation batch and a processing batch are the same "how many
+  // images does one batch operation touch" concept — see
+  // services/usage/entitlement.server.ts's `assertWithinBatchLimit` doc
+  // comment).
+  await assertWithinBatchLimit(context.shop, summary.imageCount);
 
   const batch = await createGenerationBatch({
     shop: context.shop,

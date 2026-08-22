@@ -20,6 +20,8 @@ import {
   reviewStoreVisualResult,
   requestStoreVisual,
   StoreVisualResultNotFoundError,
+  InsufficientCreditsError,
+  PlanLimitExceededError,
 } from "../../services/store-visuals/request-store-visual.server";
 import { startCreativeSession, ProductNotFoundError as CreativeStudioProductNotFoundError } from "../../services/creative-studio/session.server";
 import {
@@ -104,6 +106,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     } catch (error) {
       if (error instanceof TenantMismatchError) {
         throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof InsufficientCreditsError || error instanceof PlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       return { ok: false as const, error: GENERIC_ERROR };
     }

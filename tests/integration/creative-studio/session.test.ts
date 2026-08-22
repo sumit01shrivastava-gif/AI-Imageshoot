@@ -80,6 +80,19 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => worker!.on("ready", () => resolve()));
 
   await cleanup();
+
+  // Several tests below request more than one output (MULTI_VARIATION,
+  // multi-image regeneration) — the FREE plan's maxOutputsPerGeneration
+  // is 1 (see services/billing/plans.ts), so this suite needs a real
+  // plan that allows more, same as every other domain's identical
+  // pattern (see tests/integration/store-visuals/store-visual-queue.test.ts).
+  for (const shop of [SHOP, OTHER_SHOP]) {
+    await prisma.shopSubscription.upsert({
+      where: { shop },
+      create: { shop, planId: "STARTER", status: "ACTIVE" },
+      update: { planId: "STARTER", status: "ACTIVE" },
+    });
+  }
 });
 
 afterEach(async () => {
@@ -89,6 +102,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await cleanup();
+  await prisma.shopSubscription.deleteMany({ where: { shop: { in: [SHOP, OTHER_SHOP] } } });
   await worker?.close();
   await closeRedisConnection();
   await prisma.$disconnect();

@@ -29,6 +29,7 @@ import {
   ProductNotAnalyzedError,
   MissingSourceImagesError,
   InsufficientCreditsError,
+  PlanLimitExceededError,
   GenerationResultNotFoundError,
 } from "../../services/creative-studio/session.server";
 import {
@@ -101,6 +102,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         return { ok: false as const, error: error.message };
       }
       if (error instanceof InsufficientCreditsError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
+      }
+      if (error instanceof PlanLimitExceededError) {
         return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       logger.error("creative.send_message_failed", {

@@ -15,6 +15,7 @@ import {
   getProductIntelligence,
   getIntelligenceDisplayState,
   ProductNotFoundError,
+  InsufficientCreditsError,
   type IntelligenceDisplayState,
 } from "../../services/intelligence/product-intelligence.server";
 import {
@@ -29,6 +30,8 @@ import {
   ProductNotModelSuitableError,
   InvalidGenerationRequestError,
   GenerationResultNotFoundError,
+  InsufficientCreditsError as GenerationInsufficientCreditsError,
+  PlanLimitExceededError as GenerationPlanLimitExceededError,
 } from "../../services/generation/request-generation.server";
 import { listAvailablePresets } from "../../services/generation/brand-style-preset.server";
 import { ASPECT_RATIOS, type AspectRatioValue } from "../../services/generation/types";
@@ -44,6 +47,7 @@ import {
   SourceImageNotFoundError,
   InvalidProcessingRequestError,
   ProcessingResultNotFoundError,
+  InsufficientCreditsError as ProcessingInsufficientCreditsError,
 } from "../../services/processing/request-processing.server";
 import { parseProcessingOptions } from "../../services/processing/schema";
 import { IMPLEMENTED_OPERATIONS, type ImageOperationValue } from "../../services/processing/types";
@@ -226,6 +230,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         });
         throw NOT_FOUND_RESPONSE();
       }
+      if (error instanceof InsufficientCreditsError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
+      }
       logger.error("products.detail.analyze_request_failed", {
         shop: context.shop,
         productId: params.id,
@@ -259,6 +266,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       }
       if (error instanceof MissingSourceImagesError || error instanceof InvalidGenerationRequestError) {
         return { ok: false as const, error: error.message };
+      }
+      if (error instanceof GenerationInsufficientCreditsError || error instanceof GenerationPlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       logger.error("products.detail.generate_request_failed", {
         shop: context.shop,
@@ -302,6 +312,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       }
       if (error instanceof MissingSourceImagesError || error instanceof InvalidGenerationRequestError) {
         return { ok: false as const, error: error.message };
+      }
+      if (error instanceof GenerationInsufficientCreditsError || error instanceof GenerationPlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       logger.error("products.detail.generate_product_imagery_request_failed", {
         shop: context.shop,
@@ -353,6 +366,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       ) {
         return { ok: false as const, error: error.message };
       }
+      if (error instanceof GenerationInsufficientCreditsError || error instanceof GenerationPlanLimitExceededError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
+      }
       return { ok: false as const, error: "Couldn't start generation right now. Please try again." };
     }
   }
@@ -395,6 +411,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       }
       if (error instanceof SourceImageNotFoundError || error instanceof InvalidProcessingRequestError) {
         return { ok: false as const, error: error.message };
+      }
+      if (error instanceof ProcessingInsufficientCreditsError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       logger.error("products.detail.process_request_failed", {
         shop: context.shop,
@@ -448,6 +467,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     } catch (error) {
       if (error instanceof TenantMismatchError || error instanceof ProcessingProductNotFoundError) {
         throw NOT_FOUND_RESPONSE();
+      }
+      if (error instanceof ProcessingInsufficientCreditsError) {
+        return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
       return { ok: false as const, error: "Couldn't start processing right now. Please try again." };
     }

@@ -249,6 +249,7 @@ vendor account exists in this environment, so generation/intent-parsing
 still run through the deterministic/heuristic providers in practice.
 Still no homepage/collection banners or campaign generation, still no
 Shopify product-media publishing (`write_products` deliberately not
-requested), and per-plan resolution/output-count/batch-size limits are
-cataloged policy not yet enforced by a request-side clamp (see
-docs/billing.md "Known limitations").
+requested). Per-plan output-count/batch-size limits are enforced
+(live-deployment pass); resolution is still cataloged policy, not yet
+enforced by a request-side clamp (see docs/billing.md "Known
+limitations").

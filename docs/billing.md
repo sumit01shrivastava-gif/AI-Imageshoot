@@ -190,14 +190,28 @@ docs/usage.md "Security".
   second, unconfirmed one expires on Shopify's side. Not actively
   prevented client-side beyond disabling the button while a request is
   in flight.
-- **`PlanDefinition.maxGenerationResolutionPx`/`maxOutputsPerGeneration`/
-  `maxProcessingBatchSize` are stated plan limits, not yet enforced** by
-  any request-side clamp — `services/generation/build-input.ts` doesn't
-  currently read a plan's resolution cap, and a batch request isn't
-  capped at its plan's `maxProcessingBatchSize`. The credit/entitlement
-  gate (docs/usage.md) IS enforced; these secondary per-plan limits are
-  documented policy, catalogued and ready to wire in, not yet connected.
-  Flagging explicitly rather than leaving it to be discovered later.
+- **`PlanDefinition.maxOutputsPerGeneration`/`maxProcessingBatchSize` are
+  now enforced** (live-deployment pass) — `services/usage/entitlement.server.ts`'s
+  `assertWithinOutputLimit`/`assertWithinBatchLimit`, checked at every
+  request-side entry point BEFORE any job/batch is created or credits
+  reserved: `services/generation/request-generation.server.ts`'s shared
+  `createAndEnqueueGenerationJob` primitive (covers every generationType,
+  including Creative Studio), `services/store-visuals/request-store-visual.server.ts`
+  (reuses `maxOutputsPerGeneration` — the same "how many images does one
+  job produce" concept), and both `services/processing/batch.server.ts`/
+  `services/generation/batch.server.ts` (reuse `maxProcessingBatchSize` —
+  the same "how many images does one batch operation touch" concept,
+  deliberately not a second, generation-specific field). A request that
+  exceeds its plan's limit is rejected outright (`PlanLimitExceededError`,
+  "Upgrade your plan for a higher limit"), never silently clamped to a
+  smaller count without telling the merchant.
+- **`PlanDefinition.maxGenerationResolutionPx` is still NOT enforced** —
+  `services/generation/build-input.ts` doesn't read a plan's resolution
+  cap; every plan currently gets whatever resolution the provider itself
+  defaults to for a given aspect ratio/quality tier (see
+  docs/ai-pipeline.md). Flagging explicitly rather than leaving it to be
+  discovered later — closing this gap needs the provider layer to accept
+  an explicit max-dimension parameter per plan, not yet wired.
 - **No proration, no invoices/transactions UI** — Shopify's Billing API
   exposes transaction history; this pass's `/app/billing` doesn't
   surface it (out of scope: "invoices/transactions if available" was
