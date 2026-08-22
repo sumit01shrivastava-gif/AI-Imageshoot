@@ -1,0 +1,429 @@
+/**
+ * Global presentation layer for AI Product Shoot — layered ON TOP of
+ * Shopify's Polaris web components (<s-page>, <s-button>, ...), never
+ * replacing them. Polaris web components own their own internal styling;
+ * these classes only style the plain HTML we render alongside them for
+ * the handful of moments (hero, image galleries, generation states, chat
+ * bubbles, suggestion chips) that need a more visual, image-forward
+ * treatment than Polaris's default form-and-table vocabulary gives us.
+ *
+ * Design tokens are intentionally restrained — a small, warm neutral
+ * palette plus one accent, generous spacing, no gradients/glassmorphism.
+ * See the UI polish pass's final report for the rationale.
+ */
+
+:root {
+  --aps-ink: #1a1a1a;
+  --aps-ink-subdued: #6b6f76;
+  --aps-surface: #ffffff;
+  --aps-surface-subtle: #faf9f7;
+  --aps-border: #e4e2de;
+  --aps-border-strong: #d1cec7;
+  --aps-accent: #6c47ff;
+  --aps-accent-ink: #ffffff;
+  --aps-accent-soft: #f1edff;
+  --aps-success: #0f7a3d;
+  --aps-radius-sm: 8px;
+  --aps-radius-md: 14px;
+  --aps-radius-lg: 20px;
+  --aps-shadow-sm: 0 1px 2px rgba(20, 18, 14, 0.06);
+  --aps-shadow-md: 0 6px 24px rgba(20, 18, 14, 0.08);
+  --aps-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* ---------- Hero (home dashboard) ---------- */
+
+.aps-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 2.5rem 2rem;
+  border-radius: var(--aps-radius-lg);
+  background: linear-gradient(180deg, var(--aps-surface-subtle) 0%, var(--aps-surface) 100%);
+  border: 1px solid var(--aps-border);
+  margin-bottom: 1.5rem;
+}
+
+.aps-hero-eyebrow {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--aps-accent);
+}
+
+.aps-hero-title {
+  font-family: var(--aps-font);
+  font-size: 1.75rem;
+  line-height: 1.2;
+  font-weight: 650;
+  color: var(--aps-ink);
+  margin: 0;
+  max-width: 34rem;
+}
+
+.aps-hero-subtitle {
+  font-size: 1rem;
+  color: var(--aps-ink-subdued);
+  max-width: 32rem;
+  margin: 0;
+}
+
+.aps-hero-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- Recent creations / image galleries ---------- */
+
+.aps-creation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.aps-creation-card {
+  position: relative;
+  display: block;
+  border-radius: var(--aps-radius-md);
+  overflow: hidden;
+  aspect-ratio: 1 / 1;
+  background: var(--aps-surface-subtle);
+  border: 1px solid var(--aps-border);
+  box-shadow: var(--aps-shadow-sm);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  text-decoration: none;
+}
+
+.aps-creation-card:hover,
+.aps-creation-card:focus-visible {
+  box-shadow: var(--aps-shadow-md);
+  transform: translateY(-2px);
+  outline: 2px solid var(--aps-accent);
+  outline-offset: 2px;
+}
+
+.aps-creation-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.aps-creation-card-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+  color: #fff;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 100%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Empty states ---------- */
+
+.aps-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  padding: 3rem 1.5rem;
+  border-radius: var(--aps-radius-lg);
+  border: 1px dashed var(--aps-border-strong);
+  background: var(--aps-surface-subtle);
+}
+
+.aps-empty-state-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  background: var(--aps-accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.aps-empty-state-title {
+  font-family: var(--aps-font);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--aps-ink);
+  margin: 0;
+}
+
+.aps-empty-state-body {
+  color: var(--aps-ink-subdued);
+  max-width: 26rem;
+  margin: 0;
+}
+
+.aps-empty-state-steps {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 0.75rem 0;
+}
+
+.aps-empty-state-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 9rem;
+}
+
+.aps-empty-state-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--aps-surface);
+  border: 1px solid var(--aps-border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--aps-accent);
+}
+
+.aps-empty-state-step-text {
+  font-size: 0.8125rem;
+  color: var(--aps-ink-subdued);
+}
+
+/* ---------- Suggestion chips ---------- */
+
+.aps-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.aps-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4375rem 0.8125rem;
+  border-radius: 999px;
+  border: 1px solid var(--aps-border-strong);
+  background: var(--aps-surface);
+  color: var(--aps-ink);
+  font-size: 0.8125rem;
+  font-family: var(--aps-font);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  min-height: 32px;
+}
+
+.aps-chip:hover {
+  background: var(--aps-accent-soft);
+  border-color: var(--aps-accent);
+}
+
+.aps-chip:focus-visible {
+  outline: 2px solid var(--aps-accent);
+  outline-offset: 2px;
+}
+
+.aps-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Generation stage / result canvas ---------- */
+
+.aps-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--aps-radius-lg);
+  background: var(--aps-surface-subtle);
+  border: 1px solid var(--aps-border);
+  overflow: hidden;
+  min-height: 320px;
+}
+
+.aps-stage img,
+.aps-stage s-image {
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
+.aps-stage-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3rem 1.5rem;
+  color: var(--aps-ink-subdued);
+  text-align: center;
+}
+
+/* ---------- Generation loading state ---------- */
+
+.aps-generating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.aps-generating-orb {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, var(--aps-accent), var(--aps-accent-soft), var(--aps-accent));
+  animation: aps-spin 2.2s linear infinite;
+  position: relative;
+}
+
+.aps-generating-orb::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 999px;
+  background: var(--aps-surface-subtle);
+}
+
+@keyframes aps-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.aps-generating-title {
+  font-family: var(--aps-font);
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--aps-ink);
+}
+
+.aps-generating-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+.aps-generating-step {
+  font-size: 0.8125rem;
+  color: var(--aps-ink-subdued);
+  transition: color 0.2s ease, font-weight 0.2s ease;
+}
+
+.aps-generating-step[data-active="true"] {
+  color: var(--aps-ink);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aps-generating-orb {
+    animation: none;
+  }
+}
+
+/* ---------- Thumbnail strip (versions) ---------- */
+
+.aps-thumb-row {
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.aps-thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--aps-radius-sm);
+  overflow: hidden;
+  border: 2px solid transparent;
+  cursor: pointer;
+  background: var(--aps-surface-subtle);
+  padding: 0;
+}
+
+.aps-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.aps-thumb[data-selected="true"] {
+  border-color: var(--aps-accent);
+}
+
+.aps-thumb:focus-visible {
+  outline: 2px solid var(--aps-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Credit pill ---------- */
+
+.aps-credit-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3125rem 0.75rem;
+  border-radius: 999px;
+  background: var(--aps-accent-soft);
+  color: var(--aps-accent);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: var(--aps-font);
+  white-space: nowrap;
+}
+
+.aps-credit-pill[data-low="true"] {
+  background: #fff4e5;
+  color: #a15c00;
+}
+
+.aps-credit-pill[data-empty="true"] {
+  background: #fdecec;
+  color: #b42318;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 640px) {
+  .aps-hero {
+    padding: 1.75rem 1.25rem;
+  }
+  .aps-hero-title {
+    font-size: 1.375rem;
+  }
+  .aps-creation-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 0.625rem;
+  }
+  .aps-stage img {
+    max-height: 50vh;
+  }
+}
+
+/* Never allow the page to scroll horizontally because of wide inline
+   content (chip rows, thumbnail strips) — see the polish pass's
+   responsive requirement. */
+.aps-chip-row,
+.aps-thumb-row {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}

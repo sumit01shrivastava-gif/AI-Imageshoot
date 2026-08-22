@@ -1,6 +1,13 @@
 import type { ReactNode } from "react";
+import type { LinksFunction } from "react-router";
 import { Links, Meta, Outlet, ScrollRestoration, Scripts, useRouteError } from "react-router";
 import { describeRouteError } from "./route-error-display";
+import globalStylesHref from "./styles/global.css?url";
+
+/** The one global stylesheet for the app's premium presentation layer —
+ * see app/styles/global.css's doc comment. Everything else stays on
+ * Polaris web components' own built-in styling. */
+export const links: LinksFunction = () => [{ rel: "stylesheet", href: globalStylesHref }];
 
 /**
  * Shared document shell for both the normal render (`App`, below) and the
@@ -60,9 +67,23 @@ export function ErrorBoundary() {
   const { heading, message } = describeRouteError(error);
 
   return (
-    <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
-      <h1>{heading}</h1>
-      <p>{message}</p>
+    <div style={{ padding: "3rem 1.5rem", fontFamily: "var(--aps-font, sans-serif)", maxWidth: "28rem", margin: "0 auto", textAlign: "center" }}>
+      <h1 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>{heading}</h1>
+      <p style={{ color: "var(--aps-ink-subdued, #6b6f76)", marginBottom: "1.5rem" }}>{message}</p>
+      <a
+        href="/app"
+        style={{
+          display: "inline-block",
+          padding: "0.625rem 1.25rem",
+          borderRadius: "999px",
+          background: "var(--aps-accent, #6c47ff)",
+          color: "#fff",
+          textDecoration: "none",
+          fontWeight: 600,
+        }}
+      >
+        Back to AI Product Shoot
+      </a>
     </div>
   );
 }

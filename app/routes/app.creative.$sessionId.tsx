@@ -43,6 +43,7 @@ import {
   PublishSourceNotFoundError,
 } from "../../services/publishing/request-publish.server";
 import { PublishControl } from "../components/publish-control";
+import { GenerationLoading } from "../components/generation-loading";
 import { getPlan } from "../../services/usage/entitlement.server";
 
 const NOT_FOUND_RESPONSE = () => new Response("Creative session not found", { status: 404 });
@@ -190,6 +191,18 @@ const EXAMPLE_PROMPTS = [
   "Create 3 variations",
 ];
 
+// Short, persistent quick-suggestion chips (Phase 6) — distinct from
+// EXAMPLE_PROMPTS above, which are longer, one-time onboarding examples
+// shown only before the first message.
+const SUGGESTION_CHIPS = [
+  "Change background",
+  "Change lighting",
+  "Change setting",
+  "Change color",
+  "Add lifestyle scene",
+  "Make it more premium",
+];
+
 // Part 10's discrete, honest status phrases — derived from the existing
 // GenerationStatus lifecycle, never a fake progress percentage.
 function jobStatusPhrase(status: string, outputCount: number): string {
@@ -276,48 +289,59 @@ export default function CreativeStudio() {
             )}
 
             {!currentResult ? (
-              <s-paragraph color="subdued">
-                Nothing generated yet — send an instruction to get started.
-              </s-paragraph>
+              <div className="aps-stage">
+                {isInFlight ? (
+                  <GenerationLoading title={jobStatusPhrase(latestJob!.status, latestJob!.results.length || 1)} activeStep={latestJob!.status === "PROCESSING" ? 2 : 0} />
+                ) : (
+                  <div className="aps-stage-placeholder">
+                    <p>Nothing generated yet — describe what you want below to get started.</p>
+                  </div>
+                )}
+              </div>
             ) : (
               <s-stack direction="block" gap="small-200">
-                {currentResult.url && <s-image src={currentResult.url} alt="Current Creative Studio result" />}
+                <div className="aps-stage">
+                  {currentResult.url && <s-image src={currentResult.url} alt="Current Creative Studio result" />}
+                </div>
+                {isInFlight && (
+                  <s-text color="subdued">{jobStatusPhrase(latestJob!.status, latestJob!.results.length || 1)}</s-text>
+                )}
                 <s-stack direction="inline" gap="base" alignItems="center">
                   <s-text color="subdued">
-                    {currentResult.format ?? "—"}
-                    {currentResult.width && currentResult.height ? ` · ${currentResult.width}×${currentResult.height}` : ""} ·{" "}
+                    {currentResult.width && currentResult.height ? `${currentResult.width}×${currentResult.height}` : "—"} ·{" "}
                     {currentResult.reviewStatus === "APPROVED" ? "Approved" : currentResult.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
                   </s-text>
-                  {currentResult.url && (
-                    <s-link href={currentResult.url} target="_blank">
-                      View full size
-                    </s-link>
-                  )}
                 </s-stack>
               </s-stack>
             )}
 
             {latestJob && latestJob.results.length > 1 && (
               <s-stack direction="block" gap="small-200">
-                <s-text color="subdued">Variations</s-text>
-                <s-stack direction="inline" gap="small-200">
+                <s-text color="subdued">Versions</s-text>
+                <div className="aps-thumb-row">
                   {latestJob.results.map((result, index) => (
-                    <s-clickable
+                    <button
                       key={result.id}
+                      type="button"
+                      className="aps-thumb"
+                      data-selected={result.id === currentResult?.id}
+                      aria-label={`Show version ${index + 1}${result.id === currentResult?.id ? " (currently shown)" : ""}`}
                       onClick={() => selectFetcher.submit({ intent: "select-result", resultId: result.id }, { method: "POST" })}
                     >
-                      <s-stack direction="block" gap="small-200" alignItems="center">
-                        {result.url && <s-thumbnail src={result.url} alt={`Variation ${index + 1}`} size="small" />}
-                        {result.id === currentResult?.id && <s-badge tone="info">Selected</s-badge>}
-                      </s-stack>
-                    </s-clickable>
+                      {result.url && <img src={result.url} alt="" />}
+                    </button>
                   ))}
-                </s-stack>
+                </div>
               </s-stack>
             )}
 
             {currentResult && (
               <s-stack direction="inline" gap="base">
+                {currentResult.url && (
+                  <s-button variant="primary" href={currentResult.url} target="_blank" download="product-shoot.png">
+                    Download
+                  </s-button>
+                )}
                 <s-button
                   variant="tertiary"
                   disabled={currentResult.reviewStatus === "APPROVED"}
@@ -356,25 +380,29 @@ export default function CreativeStudio() {
         <s-section heading="Conversation">
           <s-stack direction="block" gap="base">
             <s-stack direction="inline" gap="small-200" alignItems="center">
-              <s-text color="subdued">
-                {entitlement.available} of {entitlement.limit} credits remaining this month · {planName} plan
-              </s-text>
+              <span
+                className="aps-credit-pill"
+                data-low={entitlement.available > 0 && entitlement.available <= entitlement.limit * 0.15}
+                data-empty={entitlement.available <= 0}
+              >
+                {entitlement.available} credits remaining
+              </span>
+              <s-text color="subdued">{planName} plan</s-text>
               <s-link href="/app/billing">Manage plan</s-link>
             </s-stack>
 
             {messages.length === 0 ? (
               <s-stack direction="block" gap="small-200">
                 <s-paragraph color="subdued">
-                  Describe what you want — the product itself is always preserved exactly as-is unless you ask
-                  otherwise. Try:
+                  The product itself is always preserved exactly as-is unless you ask otherwise. Try:
                 </s-paragraph>
-                <s-stack direction="block" gap="small-200">
+                <div className="aps-chip-row">
                   {EXAMPLE_PROMPTS.map((prompt) => (
-                    <s-button key={prompt} variant="tertiary" onClick={() => submitMessage(prompt)}>
+                    <button key={prompt} type="button" className="aps-chip" onClick={() => submitMessage(prompt)}>
                       {prompt}
-                    </s-button>
+                    </button>
                   ))}
-                </s-stack>
+                </div>
               </s-stack>
             ) : (
               <s-stack direction="block" gap="small-200">
@@ -386,7 +414,7 @@ export default function CreativeStudio() {
                     background={message.role === "USER" ? "subdued" : undefined}
                   >
                     <s-text color={message.role === "USER" ? undefined : "subdued"}>
-                      {message.role === "USER" ? "You: " : "Studio: "}
+                      {message.role === "USER" ? "You: " : "AI Product Shoot: "}
                       {message.content}
                     </s-text>
                   </s-box>
@@ -408,18 +436,24 @@ export default function CreativeStudio() {
               <s-banner tone="warning">
                 <s-stack direction="block" gap="small-200">
                   <s-paragraph>{messageFetcher.data && !messageFetcher.data.ok ? messageFetcher.data.error : ""}</s-paragraph>
-                  <s-link href="/app/billing">Upgrade plan or buy more credits</s-link>
+                  <s-link href="/app/billing">Upgrade plan</s-link>
                 </s-stack>
               </s-banner>
             )}
 
-            <s-text color="subdued">Each generation typically costs 2–3 credits (more for edits/variations).</s-text>
+            <div className="aps-chip-row">
+              {SUGGESTION_CHIPS.map((chip) => (
+                <button key={chip} type="button" className="aps-chip" disabled={isSending} onClick={() => submitMessage(chip)}>
+                  {chip}
+                </button>
+              ))}
+            </div>
 
             <s-stack direction="inline" gap="base">
               <s-text-field
                 label="Message"
                 labelAccessibilityVisibility="exclusive"
-                placeholder="Describe what you want…"
+                placeholder="Place this product in a premium modern bathroom with soft morning light…"
                 value={draft}
                 // `onInput` (fires on every keystroke), NOT `onChange`
                 // (this component only dispatches a native `change` event
@@ -442,6 +476,7 @@ export default function CreativeStudio() {
                 Send
               </s-button>
             </s-stack>
+            <s-text color="subdued">This generation typically costs 2–3 credits (more for edits/variations).</s-text>
           </s-stack>
         </s-section>
       </s-grid>

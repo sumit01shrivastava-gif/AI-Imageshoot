@@ -1479,17 +1479,17 @@ function IntelligenceField({ label, value }: { label: string; value: string | nu
  */
 function GenerationResultCard({ result, index }: { result: GenerationResultRow; index: number }) {
   return (
-    <s-box padding="small-200" borderWidth="base" borderRadius="base" borderColor="subdued">
-      <s-stack direction="block" gap="small-200">
-        <s-text type="strong">Result {index + 1}</s-text>
-        {result.url && <s-image src={result.url} alt={`Generated result ${index + 1}`} />}
-        <s-text color="subdued">
-          {result.format ?? "—"}
-          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""}
-        </s-text>
-        <s-text color="subdued">{result.providerName ?? "—"}</s-text>
-      </s-stack>
-    </s-box>
+    <s-stack direction="block" gap="small-200">
+      <s-text type="strong">Result {index + 1}</s-text>
+      <div className="aps-creation-card" style={{ aspectRatio: "auto", cursor: "default" }}>
+        {result.url && <img src={result.url} alt={`Version ${index + 1}`} style={{ width: "100%", display: "block" }} />}
+        {result.width && result.height && (
+          <span className="aps-creation-card-label">
+            {result.width}×{result.height}
+          </span>
+        )}
+      </div>
+    </s-stack>
   );
 }
 
@@ -1536,32 +1536,27 @@ function ProductImageryResultDetail({
           <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
         </s-stack>
 
-        <s-grid gridTemplateColumns="repeat(2, minmax(160px, 1fr))" gap="base">
-          <s-stack direction="block" gap="small-200">
+        <s-text color="subdued">Result</s-text>
+        <div className="aps-stage">{result.url ? <img src={result.url} alt={productTitle} /> : <div className="aps-stage-placeholder">Not available.</div>}</div>
+
+        {original && (
+          <s-stack direction="inline" gap="small-200" alignItems="center">
             <s-text color="subdued">Original</s-text>
-            {original ? (
-              <s-image src={original.url} alt={original.altText ?? "Original image"} />
-            ) : (
-              <s-paragraph color="subdued">Not available.</s-paragraph>
-            )}
+            <s-thumbnail src={original.url} alt={original.altText ?? "Original product image"} size="small" />
           </s-stack>
-          <s-stack direction="block" gap="small-200">
-            <s-text color="subdued">Result</s-text>
-            {result.url ? (
-              <s-image src={result.url} alt="Generation result" />
-            ) : (
-              <s-paragraph color="subdued">Not available.</s-paragraph>
-            )}
-          </s-stack>
-        </s-grid>
+        )}
 
         <s-text color="subdued">
-          {result.format ?? "—"}
-          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""} ·{" "}
+          {result.width && result.height ? `${result.width}×${result.height}` : "—"} ·{" "}
           {result.reviewStatus === "APPROVED" ? "Approved" : result.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
         </s-text>
 
         <s-stack direction="inline" gap="base">
+          {result.url && (
+            <s-button variant="primary" href={result.url} target="_blank" download="product-shoot.png">
+              Download
+            </s-button>
+          )}
           <s-button
             variant="tertiary"
             disabled={result.reviewStatus === "APPROVED"}
@@ -1581,7 +1576,7 @@ function ProductImageryResultDetail({
             Regenerate
           </s-button>
           <s-button variant="tertiary" onClick={() => onContinueEditing(result.id)}>
-            Continue editing
+            Edit
           </s-button>
         </s-stack>
 
@@ -1635,28 +1630,26 @@ function ProcessingResultDetail({
           <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
         </s-stack>
 
-        <s-grid gridTemplateColumns="repeat(2, minmax(160px, 1fr))" gap="base">
-          <s-stack direction="block" gap="small-200">
-            <s-text color="subdued">Original</s-text>
-            <s-image src={job.sourceMedia.originalUrl} alt={job.sourceMedia.altText ?? "Original image"} />
-          </s-stack>
-          <s-stack direction="block" gap="small-200">
-            <s-text color="subdued">Processed</s-text>
-            {result.url ? (
-              <s-image src={result.url} alt={`Processed — ${OPERATION_LABEL[job.operation]}`} />
-            ) : (
-              <s-paragraph color="subdued">Not available.</s-paragraph>
-            )}
-          </s-stack>
-        </s-grid>
+        <div className="aps-stage">
+          {result.url ? <img src={result.url} alt={`Processed — ${OPERATION_LABEL[job.operation]}`} /> : <div className="aps-stage-placeholder">Not available.</div>}
+        </div>
+
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          <s-text color="subdued">Original</s-text>
+          <s-thumbnail src={job.sourceMedia.originalUrl} alt={job.sourceMedia.altText ?? "Original product image"} size="small" />
+        </s-stack>
 
         <s-text color="subdued">
-          {result.format ?? "—"}
-          {result.width && result.height ? ` · ${result.width}×${result.height}` : ""} ·{" "}
+          {result.width && result.height ? `${result.width}×${result.height}` : "—"} ·{" "}
           {result.reviewStatus === "APPROVED" ? "Approved" : result.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
         </s-text>
 
         <s-stack direction="inline" gap="base">
+          {result.url && (
+            <s-button variant="primary" href={result.url} target="_blank" download="product-shoot.png">
+              Download
+            </s-button>
+          )}
           <s-button
             variant="tertiary"
             disabled={result.reviewStatus === "APPROVED"}

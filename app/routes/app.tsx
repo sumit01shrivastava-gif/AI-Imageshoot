@@ -28,11 +28,11 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Home</s-link>
         <s-link href="/app/products">Products</s-link>
+        <s-link href="/app/assets">Creative Studio</s-link>
         <s-link href="/app/store-visuals">Store Visuals</s-link>
-        <s-link href="/app/assets">AI Assets</s-link>
         <s-link href="/app/presets">Brand Styles</s-link>
         <s-link href="/app/publishing">Publishing</s-link>
-        <s-link href="/app/usage">Usage</s-link>
+        <s-link href="/app/usage">Usage &amp; Credits</s-link>
         <s-link href="/app/billing">Billing</s-link>
       </s-app-nav>
       <Outlet />
