@@ -1,3 +1,8 @@
+/**
+ * Standalone account page — kept minimal per this phase's scope (no
+ * settings dashboard; see CLAUDE.md's "do not overbuild" instruction),
+ * just redesigned to match the new studio look.
+ */
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
@@ -16,22 +21,17 @@ export default function StudioAccount() {
   const { email, memberSince, workspaceName } = useLoaderData<typeof loader>();
 
   return (
-    <div className="account">
-      <h1>Account</h1>
-      <dl>
+    <div className="studio-page">
+      <h1 className="studio-page-heading">Account</h1>
+      <p className="studio-page-sub">Your login and workspace.</p>
+      <dl className="studio-dl">
         <dt>Email</dt>
         <dd>{email}</dd>
         <dt>Workspace</dt>
         <dd>{workspaceName}</dd>
         <dt>Member since</dt>
-        <dd>{new Date(memberSince).toLocaleDateString()}</dd>
+        <dd>{new Date(memberSince).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</dd>
       </dl>
-      <style>{`
-        .account h1 { font-size: 24px; margin: 0 0 24px; }
-        .account dl { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; max-width: 460px; }
-        .account dt { color: #7c877f; font-size: 13px; }
-        .account dd { margin: 0; font-size: 14.5px; }
-      `}</style>
     </div>
   );
 }

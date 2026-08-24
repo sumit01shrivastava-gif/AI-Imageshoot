@@ -87,4 +87,24 @@ export async function listCreativeSessionsForProduct(context: AuthContext, produ
   });
 }
 
+/** Most-recently-active-first sessions for the WHOLE shop — the standalone
+ * workspace's "conversation history" (sidebar) and "creations" (gallery)
+ * views, where a session isn't scoped to any one product (most have
+ * `productId: null`; see prisma/schema.prisma's CreativeSession.productId
+ * comment). Ordered by `updatedAt` (not `createdAt`) so a conversation
+ * that just received a new message/result rises back to the top, the
+ * same "most recently active" ordering a chat product's sidebar always
+ * uses. `limit` bounds the fetch — a workspace's own conversation list is
+ * inherently small, but this is still a real cap, not a raw unbounded
+ * scan, mirroring every other "list for shop" function in this codebase
+ * (e.g. generation-job.repository.ts's `listGenerationResultsForShop`). */
+export async function listCreativeSessionsForShop(context: AuthContext, limit: number): Promise<CreativeSessionRow[]> {
+  return prisma.creativeSession.findMany({
+    where: { shop: context.shop },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take: limit,
+    select: SESSION_SELECT,
+  });
+}
+
 export type { CreativeSessionStatus, CreativeSourceType };

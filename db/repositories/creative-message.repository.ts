@@ -57,4 +57,17 @@ export async function listCreativeMessages(shop: string, creativeSessionId: stri
   });
 }
 
+/** The very first USER message of a session — used to derive a
+ * human-readable conversation title (e.g. for the standalone workspace's
+ * conversation history/creations views) without requiring the merchant
+ * to name every conversation manually. `null` for a session with no
+ * messages yet. */
+export async function getFirstUserMessage(shop: string, creativeSessionId: string): Promise<CreativeMessageRow | null> {
+  return prisma.creativeMessage.findFirst({
+    where: { shop, creativeSessionId, role: "USER" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: MESSAGE_SELECT,
+  });
+}
+
 export type { CreativeMessageRole };

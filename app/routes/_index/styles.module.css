@@ -24,6 +24,35 @@
   gap: 2rem;
 }
 
+.standaloneCta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.5rem;
+}
+
+.primaryLink {
+  display: inline-block;
+  background: #17171a;
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0.75rem 1.4rem;
+  border-radius: 999px;
+  font-size: 0.95rem;
+}
+
+.standaloneSwitch {
+  font-size: 0.85rem;
+  color: #6b6b70;
+}
+
+.standaloneSwitch a {
+  color: #17171a;
+  font-weight: 600;
+}
+
 .form {
   display: flex;
   align-items: center;

@@ -4,10 +4,20 @@
  * lib/auth/standalone-session.server.ts.
  */
 import { useState } from "react";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LinksFunction, LoaderFunctionArgs } from "react-router";
 import { Form, Link, redirect, useActionData, useNavigation } from "react-router";
 import { signUp, EmailAlreadyRegisteredError, WeakPasswordError } from "../../services/workspace/signup.server";
 import { createUserSession, getWorkspaceContext } from "../../lib/auth/standalone-session.server";
+import { Logo } from "../components/logo";
+import studioStylesHref from "../styles/studio.css?url";
+
+export const links: LinksFunction = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" },
+  { rel: "stylesheet", href: studioStylesHref },
+  { rel: "icon", type: "image/svg+xml", href: "/favicon-studio.svg" },
+];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Already signed in — no reason to see the signup form again.
@@ -45,11 +55,13 @@ export default function SignUp() {
   const isSubmitting = navigation.state === "submitting";
 
   return (
-    <div className="auth-page">
+    <div className="studio-root auth-page">
       <div className="auth-card">
-        <p className="auth-brand">AI Imageshoot</p>
+        <div className="auth-logo">
+          <Logo variant="full" size={19} />
+        </div>
         <h1>Create your workspace</h1>
-        <p className="auth-sub">Generate and edit product photography with AI — no Shopify store required.</p>
+        <p className="auth-sub">Describe what you want — AI Imageshoot creates it. No Shopify store required.</p>
 
         {actionData?.error && <div className="auth-error">{actionData.error}</div>}
 
@@ -80,29 +92,6 @@ export default function SignUp() {
           Already have an account? <Link to="/login">Log in</Link>
         </p>
       </div>
-      <AuthStyles />
     </div>
-  );
-}
-
-function AuthStyles() {
-  return (
-    <style>{`
-      .auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f7f8f6; font-family: "IBM Plex Sans", -apple-system, sans-serif; padding: 24px; }
-      .auth-card { width: 100%; max-width: 380px; background: #fff; border: 1px solid #dde2de; border-radius: 12px; padding: 36px 32px; }
-      .auth-brand { font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #c1531f; margin: 0 0 14px; }
-      .auth-card h1 { font-size: 22px; margin: 0 0 8px; }
-      .auth-sub { color: #5b655f; font-size: 14px; margin: 0 0 24px; }
-      .auth-error { background: #f6e0df; color: #8a3030; border-radius: 6px; padding: 10px 14px; font-size: 13.5px; margin-bottom: 18px; }
-      .auth-form { display: flex; flex-direction: column; gap: 16px; }
-      .auth-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-weight: 600; }
-      .auth-form input { font-size: 15px; padding: 10px 12px; border: 1px solid #d5dbd7; border-radius: 8px; font-family: inherit; }
-      .auth-form input:focus { outline: 2px solid #c1531f; outline-offset: 1px; }
-      .auth-hint { font-weight: 400; color: #7c877f; font-size: 12px; }
-      .auth-form button { margin-top: 6px; background: #c1531f; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
-      .auth-form button:disabled { opacity: .6; cursor: default; }
-      .auth-switch { text-align: center; font-size: 13.5px; color: #5b655f; margin: 22px 0 0; }
-      .auth-switch a { color: #c1531f; font-weight: 600; text-decoration: none; }
-    `}</style>
   );
 }
