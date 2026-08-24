@@ -1207,8 +1207,16 @@ model CreativeSession {
   // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
   shop String
 
-  productId String
-  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Optional as of the standalone workspace foundation (see
+  // prisma/schema.prisma's "Standalone identity / workspace foundation"
+  // section) — null for a session started from an uploaded image with no
+  // Shopify product (a standalone workspace, which has no ShopifyProduct
+  // rows at all), present exactly as before for every Shopify-context
+  // session. onDelete stays Cascade: a session's product being deleted
+  // still means the session itself no longer makes sense, same as today
+  // — this column merely became optional, not less strict when present.
+  productId String?
+  product   ShopifyProduct? @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   sourceType     CreativeSourceType @default(PRODUCT_IMAGE)
   // Soft reference into GenerationResult.id / ProcessingResult.id /

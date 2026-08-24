@@ -27,7 +27,9 @@ export type CreativeSessionRow = Prisma.CreativeSessionGetPayload<{ select: type
 
 export interface CreateCreativeSessionInput {
   shop: string;
-  productId: string;
+  /** Null for a standalone (no Shopify product) session — see this
+   * model's schema comment. */
+  productId: string | null;
   sourceType: CreativeSourceType;
   sourceResultId?: string | null;
   sourceMediaId?: string | null;

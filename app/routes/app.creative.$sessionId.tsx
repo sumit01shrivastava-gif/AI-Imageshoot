@@ -275,9 +275,16 @@ export default function CreativeStudio() {
 
   return (
     <s-page heading="Creative Studio">
-      <s-link slot="breadcrumb-actions" href={`/app/products/${session.productId}`}>
-        {session.product.title}
-      </s-link>
+      {/* This Shopify-embedded route is only ever reached for a
+          product-grounded session today — session.product is only ever
+          null for a standalone (no Shopify product) session, which has
+          no entry point into this route. Guarded anyway now that the
+          type allows it, rather than assuming. */}
+      {session.product && (
+        <s-link slot="breadcrumb-actions" href={`/app/products/${session.productId}`}>
+          {session.product.title}
+        </s-link>
+      )}
 
       <s-grid gridTemplateColumns="3fr 2fr" gap="base">
         <s-section heading="Canvas">
@@ -366,11 +373,14 @@ export default function CreativeStudio() {
               </s-stack>
             )}
 
-            {currentResult?.reviewStatus === "APPROVED" && (
+            {/* Publishing targets a Shopify product, which a standalone
+                (no Shopify product) session doesn't have — see
+                session.product's schema comment. */}
+            {currentResult?.reviewStatus === "APPROVED" && session.product && (
               <PublishControl
                 sourceType="GENERATION_RESULT"
                 sourceResultId={currentResult.id}
-                candidateProducts={[{ productId: session.productId, title: session.product.title }]}
+                candidateProducts={[{ productId: session.product.id, title: session.product.title }]}
                 publishStatus={publishStatus}
               />
             )}

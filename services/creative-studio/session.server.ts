@@ -63,8 +63,25 @@ export class EmptyMessageError extends Error {
   }
 }
 
+/** Thrown by `sendCreativeMessage` for a session with no Shopify product
+ * (a standalone workspace session). Honest boundary, not a bug: image
+ * generation for a product-less session needs its own plan-building path
+ * (no product record to ground identity against, no Product Intelligence
+ * profile to require) — real, separate work, not built yet. See
+ * docs/roadmap.md "Two experiences, one core", Phase 2. Never silently
+ * produces a fake/placeholder result. */
+export class StandaloneGenerationNotYetSupportedError extends Error {
+  constructor() {
+    super("Image generation for standalone (no-product) sessions isn't available yet.");
+    this.name = "StandaloneGenerationNotYetSupportedError";
+  }
+}
+
 export interface StartCreativeSessionInput {
-  productId: string;
+  /** A Shopify product to ground this session in — omit for a standalone
+   * (no Shopify product) session, e.g. one started from an uploaded
+   * image in a workspace with no Shopify connection. */
+  productId?: string;
   sourceType?: CreativeSourceType;
   /** A specific GenerationResult/ProcessingResult/StoreVisualResult id
    * this session continues from ("Continue editing") — required when
@@ -87,11 +104,16 @@ export interface StartCreativeSessionInput {
  * subsequent instruction goes through `sendCreativeMessage` against the
  * SAME session id. */
 export async function startCreativeSession(context: AuthContext, input: StartCreativeSessionInput): Promise<{ id: string }> {
-  const product = await loadOwnedProduct(context, input.productId);
+  // `input.productId` omitted -> a standalone session with no Shopify
+  // product at all (see StartCreativeSessionInput's doc comment). Every
+  // existing caller (product detail page, assets library, store visual
+  // detail page) always passes a real productId today — this branch is
+  // new surface, not a behavior change for any of them.
+  const productId = input.productId ? (await loadOwnedProduct(context, input.productId)).id : null;
 
   return createCreativeSession({
     shop: context.shop,
-    productId: product.id,
+    productId,
     sourceType: input.sourceType ?? "PRODUCT_IMAGE",
     sourceResultId: input.sourceResultId ?? null,
     sourceMediaId: input.sourceMediaId ?? null,
@@ -220,6 +242,15 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
 
   const session = await getCreativeSession(context, sessionId);
   if (!session) throw new CreativeSessionNotFoundError();
+
+  // A standalone (no Shopify product) session — see
+  // StartCreativeSessionInput's doc comment and
+  // StandaloneGenerationNotYetSupportedError's own doc comment for why
+  // this stops here honestly rather than attempting a plan-building path
+  // that doesn't exist yet.
+  if (!session.productId) {
+    throw new StandaloneGenerationNotYetSupportedError();
+  }
 
   const product = await loadOwnedProduct(context, session.productId);
   const intelligence = await getProductIntelligence(context, product.id);
