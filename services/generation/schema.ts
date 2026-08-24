@@ -212,8 +212,21 @@ export const GenerationPlanSchema = z.object({
    * LIFESTYLE (useful context regardless). */
   category: z.string().min(1).nullable(),
 
-  sourceProductId: z.string().min(1),
-  sourceImages: z.array(SourceImageSchema).min(1),
+  /** Null for a standalone (no Shopify product) Creative Studio plan —
+   * see prisma/schema.prisma's GenerationJob.productId comment. Present
+   * (non-null) for every Shopify-context plan, enforced below by
+   * `.superRefine` rather than a plain `.min(1)` here, since this field
+   * alone can't tell a genuinely product-less plan from a malformed one. */
+  sourceProductId: z.string().min(1).nullable(),
+  /** At least one image whenever `sourceProductId` is non-null (a
+   * Shopify-context plan always has real product media to ground
+   * against — enforced below, not weakened by this field's own bound).
+   * May be empty for a standalone plan: there is no ShopifyProductMedia
+   * to reference at all; an uploaded reference image (if any) lives in
+   * `referenceImages` instead — see
+   * services/creative-studio/plan-builder.ts's
+   * `buildStandaloneCreativeGenerationPlan`. */
+  sourceImages: z.array(SourceImageSchema).default([]),
 
   /** Snapshot of the product's identity-critical attributes at plan-build
    * time — see services/intelligence/schema.ts's `IdentityAnchorsSchema`.
@@ -300,6 +313,24 @@ export const GenerationPlanSchema = z.object({
   referenceImages: z.array(ReferenceImageSchema).default([]),
 
   constraints: z.array(z.string()).default([]),
+}).superRefine((plan, ctx) => {
+  // A Shopify-context plan (`sourceProductId` present) must still have at
+  // least one real product source image — the exact same requirement
+  // `sourceImages: z.array(...).min(1)` enforced unconditionally before
+  // this field became nullable for standalone plans. Never weakened for
+  // the Shopify path: only a genuinely product-less (standalone) plan is
+  // allowed an empty `sourceImages`. See services/generation/build-plan.ts
+  // (which already throws `MissingSourceImagesError` before a plan ever
+  // reaches this validation) and
+  // services/creative-studio/plan-builder.ts's `buildCreativeGenerationPlan`
+  // (same).
+  if (plan.sourceProductId && plan.sourceImages.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sourceImages"],
+      message: "sourceImages must have at least one image for a product-grounded (sourceProductId non-null) plan",
+    });
+  }
 });
 
 export type GenerationPlan = z.infer<typeof GenerationPlanSchema>;

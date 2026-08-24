@@ -60,6 +60,24 @@ describe("parseGenerationPlan", () => {
     expect(() => parseGenerationPlan(validPlan({ sourceImages: [] }))).toThrow(InvalidGenerationPlanError);
   });
 
+  it("still rejects a product-grounded (sourceProductId non-null) plan with no source images — the standalone allowance never weakens the Shopify path", () => {
+    expect(() =>
+      parseGenerationPlan(validPlan({ sourceProductId: "product-1", sourceImages: [] })),
+    ).toThrow(InvalidGenerationPlanError);
+  });
+
+  it("accepts a standalone (sourceProductId: null) plan with zero source images — no ShopifyProductMedia to reference", () => {
+    const plan = parseGenerationPlan(
+      validPlan({
+        sourceProductId: null,
+        sourceImages: [],
+        productFacts: { identityAnchors: null, title: null, description: null, attributes: null },
+      }),
+    );
+    expect(plan.sourceProductId).toBeNull();
+    expect(plan.sourceImages).toEqual([]);
+  });
+
   it("rejects an unknown generationType", () => {
     expect(() => parseGenerationPlan(validPlan({ generationType: "NOT_A_REAL_TYPE" }))).toThrow(
       InvalidGenerationPlanError,
@@ -85,8 +103,12 @@ describe("parseGenerationPlan", () => {
   });
 
   it("reports every validation issue, not just the first", () => {
+    // Two independent field-level violations (not the cross-field
+    // sourceProductId/sourceImages rule below, which — like every Zod
+    // `.superRefine` — only runs once the base schema itself is
+    // otherwise valid; see the dedicated tests for that rule above).
     try {
-      parseGenerationPlan(validPlan({ sourceImages: [], generationType: "BOGUS" }));
+      parseGenerationPlan(validPlan({ outputCount: 0, generationType: "BOGUS" }));
       expect.fail("expected parseGenerationPlan to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(InvalidGenerationPlanError);

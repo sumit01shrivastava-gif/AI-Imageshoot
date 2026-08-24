@@ -458,3 +458,138 @@ describe("selectCreativeResult and reviewCreativeResult", () => {
     );
   });
 });
+
+describe("Shopify-context regression — still requires/uses its product correctly", () => {
+  it("still gates on Product Intelligence and still stamps the real productId onto the GenerationJob", async () => {
+    const row = await seedAnalyzedProduct(SHOP, "session-product-11");
+    const created = await session.startCreativeSession(CONTEXT, { productId: row.id });
+    const sent = await session.sendCreativeMessage(CONTEXT, created.id, "Put my product in a studio scene");
+
+    const jobRow = await prisma.generationJob.findUniqueOrThrow({ where: { id: sent.generationJobId } });
+    // Never null for a Shopify-context session — this is the exact
+    // regression the standalone (productId: null) path must never cause.
+    expect(jobRow.productId).toBe(row.id);
+
+    await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+  });
+});
+
+describe("standalone (no Shopify product) sessions", () => {
+  it("creates a session with productId null, no Shopify product involved", async () => {
+    const created = await session.startCreativeSession(CONTEXT, {});
+    expect(created.id).toBeTruthy();
+
+    const detail = await session.getCreativeSessionDetail(CONTEXT, created.id);
+    expect(detail.session.productId).toBeNull();
+    expect(detail.session.status).toBe("ACTIVE");
+    expect(detail.messages).toEqual([]);
+    expect(detail.jobs).toEqual([]);
+  });
+
+  it(
+    "sendCreativeMessage on a standalone session creates a GenerationJob with productId null, reaches the real queue, and produces a SUCCEEDED result",
+    async () => {
+      const created = await session.startCreativeSession(CONTEXT, {});
+
+      const sent = await session.sendCreativeMessage(CONTEXT, created.id, "Create a clean product photo on a white background");
+      expect(sent.ok).toBe(true);
+
+      const jobRow = await prisma.generationJob.findUniqueOrThrow({ where: { id: sent.generationJobId } });
+      expect(jobRow.productId).toBeNull();
+      expect(jobRow.creativeSessionId).toBe(created.id);
+
+      await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+
+      const detail = await session.getCreativeSessionDetail(CONTEXT, created.id);
+      expect(detail.jobs).toHaveLength(1);
+      expect(detail.jobs[0].status).toBe("SUCCEEDED");
+      expect(detail.jobs[0].results.length).toBeGreaterThan(0);
+      // Never never a fabricated product — the plan snapshotted on the job
+      // has no sourceProductId/product facts at all.
+      const plan = detail.jobs[0].plan as { sourceProductId: string | null; productFacts: { identityAnchors: unknown } };
+      expect(plan.sourceProductId).toBeNull();
+      expect(plan.productFacts.identityAnchors).toBeNull();
+    },
+    15000,
+  );
+
+  it(
+    "conversation/version history works the same as a Shopify-context session — USER/ASSISTANT messages persisted, current result tracked",
+    async () => {
+      const created = await session.startCreativeSession(CONTEXT, {});
+      await session.sendCreativeMessage(CONTEXT, created.id, "Create a clean product photo on a white background");
+      await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+
+      const detail = await session.getCreativeSessionDetail(CONTEXT, created.id);
+      expect(detail.messages).toHaveLength(2);
+      expect(detail.messages[0].role).toBe("USER");
+      expect(detail.messages[0].content).toBe("Create a clean product photo on a white background");
+      expect(detail.messages[1].role).toBe("ASSISTANT");
+      expect(detail.session.currentResultId).toBe(detail.jobs[0].results[0].id);
+
+      // A follow-up turn behaves the same way it does for a Shopify-context
+      // session — a NEW job, previous result carried forward as the
+      // reference image.
+      const secondSend = await session.sendCreativeMessage(CONTEXT, created.id, "Make it brighter");
+      expect(secondSend.parsedIntent.mode).toBe("IMAGE_TO_IMAGE");
+      await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+
+      const finalDetail = await session.getCreativeSessionDetail(CONTEXT, created.id);
+      expect(finalDetail.jobs).toHaveLength(2);
+      expect(finalDetail.messages).toHaveLength(4);
+    },
+    20000,
+  );
+
+  it(
+    "an uploaded reference image is stored through the real StorageProvider and included as a referenceImage on the plan",
+    async () => {
+      const created = await session.startCreativeSession(CONTEXT, {});
+      const fakeImageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]); // PNG magic bytes — content is never inspected
+
+      const sent = await session.sendCreativeMessage(CONTEXT, created.id, "Make the background pure white", {
+        referenceImages: [{ data: fakeImageBytes, contentType: "image/png" }],
+      });
+
+      const jobRow = await prisma.generationJob.findUniqueOrThrow({ where: { id: sent.generationJobId } });
+      const plan = jobRow.plan as { referenceImages: Array<{ url: string; role: string }> };
+      expect(plan.referenceImages).toHaveLength(1);
+      expect(plan.referenceImages[0].role).toBe("product_original");
+      expect(plan.referenceImages[0].url).toBeTruthy();
+
+      // A real object was actually written through the configured
+      // StorageProvider — never a fabricated/placeholder URL.
+      // LocalFilesystemStorageProvider's signed URL is a relative
+      // `/media/<encoded-key>?expires=...&sig=...` path (see that file's
+      // getSignedUrl), not an absolute URL — decode it back to the raw
+      // storage key.
+      const pathOnly = plan.referenceImages[0].url.split("?")[0].replace(/^\/media\//, "");
+      const storageKey = pathOnly.split("/").map(decodeURIComponent).join("/");
+      expect(await getConfiguredStorageProvider().exists(storageKey)).toBe(true);
+
+      await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+    },
+    15000,
+  );
+
+  it("never calls findProductForShop/getProductIntelligence — a standalone session works even though no product exists for this shop at all", async () => {
+    // No seedAnalyzedProduct call anywhere in this test — if
+    // sendCreativeMessage tried to load a Shopify product for this
+    // session, there would be nothing to find and it would throw.
+    const created = await session.startCreativeSession(CONTEXT, {});
+    const sent = await session.sendCreativeMessage(CONTEXT, created.id, "Generate a lifestyle scene");
+    expect(sent.ok).toBe(true);
+    await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+  });
+
+  it("standalone generation is credit-gated exactly like a Shopify-context request (not free)", async () => {
+    const created = await session.startCreativeSession(CONTEXT, {});
+    const sent = await session.sendCreativeMessage(CONTEXT, created.id, "Create a clean product photo");
+    await waitForJobStatus(CONTEXT, created.id, "SUCCEEDED");
+
+    const reservation = await prisma.creditReservation.findFirst({ where: { shop: SHOP, jobId: sent.generationJobId } });
+    expect(reservation).not.toBeNull();
+    expect(reservation!.status).toBe("CONSUMED");
+    expect(reservation!.amount).toBeGreaterThan(0);
+  });
+});

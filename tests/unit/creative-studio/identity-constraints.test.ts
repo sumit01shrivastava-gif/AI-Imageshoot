@@ -3,7 +3,7 @@
  * "the product is the immutable subject" requirement, made structural.
  */
 import { describe, expect, it } from "vitest";
-import { buildIdentityConstraints } from "../../../services/creative-studio/identity-constraints";
+import { buildIdentityConstraints, buildStandaloneIdentityConstraints } from "../../../services/creative-studio/identity-constraints";
 import type { IdentityAnchors } from "../../../services/intelligence/schema";
 
 const FULL_ANCHORS: IdentityAnchors = {
@@ -108,5 +108,30 @@ describe("buildIdentityConstraints", () => {
       expect(result.immutable).not.toContain("material: Leather");
       expect(result.instruction).toMatch(/changes, which are permitted/i);
     });
+  });
+});
+
+describe("buildStandaloneIdentityConstraints", () => {
+  it("never fabricates an immutable list — always empty, with or without a reference image", () => {
+    expect(buildStandaloneIdentityConstraints(true).immutable).toEqual([]);
+    expect(buildStandaloneIdentityConstraints(false).immutable).toEqual([]);
+  });
+
+  it("asserts reference-image fidelity when a reference image exists", () => {
+    const result = buildStandaloneIdentityConstraints(true);
+    expect(result.instruction).toMatch(/uploaded reference image/i);
+    expect(result.instruction).toMatch(/preserved exactly as shown/i);
+  });
+
+  it("states there is nothing to preserve when no reference image exists", () => {
+    const result = buildStandaloneIdentityConstraints(false);
+    expect(result.instruction).toMatch(/no existing image to preserve/i);
+  });
+
+  it("still records a color/material override structurally, same as the Shopify-context path", () => {
+    const result = buildStandaloneIdentityConstraints(true, { color: "black" });
+    expect(result.overridden).toEqual({ color: "black", material: null });
+    expect(result.instruction).toMatch(/explicitly requested/i);
+    expect(result.instruction).toMatch(/color.*black/i);
   });
 });

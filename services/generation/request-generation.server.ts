@@ -72,7 +72,15 @@ export class GenerationResultNotFoundError extends Error {
 export { MissingSourceImagesError, ProductNotAnalyzedError, ProductNotModelSuitableError } from "./build-plan";
 
 export interface CreateAndEnqueueGenerationJobInput {
-  productId: string;
+  /** Null for a standalone (no Shopify product) Creative Studio
+   * generation — see prisma/schema.prisma's GenerationJob.productId
+   * comment. Only ever null when `planOverride` is also provided (there
+   * is no Shopify-only `buildGenerationPlan` path that could run without
+   * a real product to load) — see this function's body. Every
+   * non-Creative-Studio caller (requestGeneration, batch.server.ts)
+   * always passes a real string here, unaffected by this becoming
+   * nullable. */
+  productId: string | null;
   generationType: GenerationTypeValue;
   /** Our internal `ShopifyProductMedia` ids to generate from. Never
    * trusted directly: `buildGenerationPlan` only ever uses ids that
@@ -161,23 +169,40 @@ export async function createAndEnqueueGenerationJob(
   context: AuthContext,
   input: CreateAndEnqueueGenerationJobInput,
 ): Promise<{ id: string }> {
-  let product: Awaited<ReturnType<typeof findProductForShop>>;
-  try {
-    product = await findProductForShop(context, input.productId);
-  } catch (error) {
-    if (error instanceof TenantMismatchError) {
+  // Never call findProductForShop (or anything downstream of it — Product
+  // Intelligence, buildGenerationPlan) when input.productId is null — a
+  // standalone (no Shopify product) Creative Studio job always arrives
+  // here with a null productId AND a pre-built `planOverride` (see
+  // services/creative-studio/session.server.ts); every other caller
+  // always passes a real productId, unaffected by this branch.
+  let product: Awaited<ReturnType<typeof findProductForShop>> | null = null;
+  if (input.productId) {
+    try {
+      product = await findProductForShop(context, input.productId);
+    } catch (error) {
+      if (error instanceof TenantMismatchError) {
+        throw new ProductNotFoundError();
+      }
+      throw error;
+    }
+    if (!product) {
       throw new ProductNotFoundError();
     }
-    throw error;
-  }
-  if (!product) {
-    throw new ProductNotFoundError();
   }
 
   let plan: GenerationPlan;
   if (input.planOverride) {
     plan = input.planOverride;
   } else {
+    // Every non-Creative-Studio generationType always builds its plan via
+    // buildGenerationPlan, which is inherently Shopify-product-grounded —
+    // this is a genuine caller invariant violation (a productId is
+    // required unless a pre-built planOverride is given), not a
+    // "not found" case, so it gets its own clear error rather than being
+    // folded into ProductNotFoundError's existence-oracle shape.
+    if (!product) {
+      throw new InvalidGenerationRequestError("productId is required to build a generation plan without an explicit planOverride.");
+    }
     const intelligence = await getProductIntelligence(context, product.id);
 
     // Preset resolution only matters for LIFESTYLE (build-plan.ts ignores
@@ -248,7 +273,7 @@ export async function createAndEnqueueGenerationJob(
 
   const job = await createGenerationJob({
     shop: context.shop,
-    productId: product.id,
+    productId: product ? product.id : null,
     type: input.generationType as GenerationType,
     sourceMediaIds: input.sourceMediaIds,
     plan,

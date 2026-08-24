@@ -176,7 +176,7 @@ describe("job lifecycle", () => {
     expect(succeeded?.results[0].reviewStatus).toBe("PENDING");
     // For the review UI's "original vs. generated" comparison — see
     // db/repositories/generation-job.repository.ts's JOB_SELECT comment.
-    expect(succeeded?.product.title).toBe("Red Leather Handbag");
+    expect(succeeded?.product?.title).toBe("Red Leather Handbag");
   });
 
   it("markProcessing only sets startedAt once, across repeated (retry) calls", async () => {

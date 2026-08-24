@@ -112,6 +112,45 @@ export function buildIdentityConstraints(
   return { immutable, overridden: { color: colorOverride, material: materialOverride }, instruction };
 }
 
+/**
+ * The standalone (no Shopify product, no Product Intelligence) counterpart
+ * to `buildIdentityConstraints` above — see
+ * services/creative-studio/plan-builder.ts's
+ * `buildStandaloneCreativeGenerationPlan`. There is no `IdentityAnchors`
+ * to build a real constraint set from (nothing has been analyzed), so
+ * `immutable` stays permanently empty here — never fabricated to look
+ * like a real, product-derived preservation list. When a reference image
+ * DOES exist for this turn (an uploaded photo, or the session's own
+ * previous result), reference-image fidelity is still asserted
+ * structurally — the one form of "preserve what's there" that's honest
+ * without any analyzed facts, mirroring `buildIdentityConstraints`'s own
+ * reference-fidelity clause (built separately, in
+ * plan-builder.ts's `synthesizeCreativePrompt`, from this function's
+ * `instruction`).
+ */
+export function buildStandaloneIdentityConstraints(
+  hasReferenceImage: boolean,
+  overrides: Partial<AttributeOverrides> = {},
+): IdentityConstraints {
+  const colorOverride = overrides.color ?? null;
+  const materialOverride = overrides.material ?? null;
+
+  const overriddenItems = [
+    colorOverride ? `its color (change to ${colorOverride})` : null,
+    materialOverride ? `its material (change to ${materialOverride})` : null,
+  ].filter((item): item is string => item !== null);
+
+  const instruction = hasReferenceImage
+    ? `The uploaded reference image is the subject of this image and must be preserved exactly as shown, except for what is explicitly requested below.` +
+      (overriddenItems.length > 0
+        ? ` The merchant has explicitly requested the following change${overriddenItems.length > 1 ? "s" : ""}, which ` +
+          `${overriddenItems.length > 1 ? "are" : "is"} permitted: ${overriddenItems.join(", ")}. Every other aspect must remain exactly as shown.`
+        : "")
+    : `There is no existing image to preserve — generate a new image based only on the instructions below.`;
+
+  return { immutable: [], overridden: { color: colorOverride, material: materialOverride }, instruction };
+}
+
 /** Terms that name a protected brand/identity element — mirrors
  * `CATEGORY_ITEMS`'s unconditional "any visible logos"/"any visible
  * labels or text printed on the product" protection above (that

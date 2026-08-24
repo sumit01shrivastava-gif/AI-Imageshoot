@@ -38,11 +38,12 @@ import { resignResultUrls, getConfiguredStorageProvider } from "../../lib/storag
 import { getConfiguredIntentParser } from "./provider.server";
 import { parseParsedIntent, type ParsedIntent } from "./intent-schema";
 import { buildCreativeContext, resolveTargetResult, type CreativeContext } from "./creative-context";
-import { buildCreativeGenerationPlan, ProductNotAnalyzedError, MissingSourceImagesError } from "./plan-builder";
+import { buildCreativeGenerationPlan, buildStandaloneCreativeGenerationPlan, ProductNotAnalyzedError, MissingSourceImagesError } from "./plan-builder";
 import { createAndEnqueueGenerationJob, ProductNotFoundError, reviewGenerationResult, GenerationResultNotFoundError } from "../generation/request-generation.server";
 import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
 import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, PlanLimitExceededError, type EntitlementCheck } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
+import { uploadReferenceImages, type UploadedReferenceImageInput } from "./reference-images.server";
 
 export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError, PlanLimitExceededError };
 
@@ -60,20 +61,6 @@ export class EmptyMessageError extends Error {
   constructor() {
     super("Message cannot be empty.");
     this.name = "EmptyMessageError";
-  }
-}
-
-/** Thrown by `sendCreativeMessage` for a session with no Shopify product
- * (a standalone workspace session). Honest boundary, not a bug: image
- * generation for a product-less session needs its own plan-building path
- * (no product record to ground identity against, no Product Intelligence
- * profile to require) — real, separate work, not built yet. See
- * docs/roadmap.md "Two experiences, one core", Phase 2. Never silently
- * produces a fake/placeholder result. */
-export class StandaloneGenerationNotYetSupportedError extends Error {
-  constructor() {
-    super("Image generation for standalone (no-product) sessions isn't available yet.");
-    this.name = "StandaloneGenerationNotYetSupportedError";
   }
 }
 
@@ -228,6 +215,16 @@ export interface SendCreativeMessageResult {
   parsedIntent: ParsedIntent;
 }
 
+export interface SendCreativeMessageOptions {
+  /** Raw bytes for any images the merchant attached to THIS message —
+   * only meaningful for a standalone (no Shopify product) session; a
+   * Shopify-context session already has real product media to ground
+   * against and ignores this. Uploaded (via
+   * reference-images.server.ts's `uploadReferenceImages`) BEFORE the
+   * plan is built, so their durable URLs can be included in it. */
+  referenceImages?: UploadedReferenceImageInput[];
+}
+
 /**
  * The core conversational entry point — one merchant message in, one new
  * `GenerationJob` enqueued (never overwriting a prior result; see
@@ -235,25 +232,34 @@ export interface SendCreativeMessageResult {
  * `InsufficientCreditsError`/`ProductNotAnalyzedError`/
  * `MissingSourceImagesError`/`EmptyMessageError` for the merchant-facing
  * preconditions a route action maps to safe messages — see Part 11.
+ *
+ * Handles BOTH session contexts through this single function, branching
+ * only where they're genuinely different (product/intelligence loading,
+ * which plan-builder function runs) — everything else (context building,
+ * intent parsing, target-result resolution, credit gating, job creation,
+ * message persistence) is the exact same code/pipeline for both, per
+ * CLAUDE.md's "the generation engine is not duplicated" rule. A
+ * Shopify-context session (`session.productId` set) NEVER calls
+ * `findProductForShop`/`getProductIntelligence` for a standalone session,
+ * and vice versa — see the ternary below.
  */
-export async function sendCreativeMessage(context: AuthContext, sessionId: string, message: string): Promise<SendCreativeMessageResult> {
+export async function sendCreativeMessage(
+  context: AuthContext,
+  sessionId: string,
+  message: string,
+  options: SendCreativeMessageOptions = {},
+): Promise<SendCreativeMessageResult> {
   const trimmed = message.trim();
   if (trimmed.length === 0) throw new EmptyMessageError();
 
   const session = await getCreativeSession(context, sessionId);
   if (!session) throw new CreativeSessionNotFoundError();
 
-  // A standalone (no Shopify product) session — see
-  // StartCreativeSessionInput's doc comment and
-  // StandaloneGenerationNotYetSupportedError's own doc comment for why
-  // this stops here honestly rather than attempting a plan-building path
-  // that doesn't exist yet.
-  if (!session.productId) {
-    throw new StandaloneGenerationNotYetSupportedError();
-  }
-
-  const product = await loadOwnedProduct(context, session.productId);
-  const intelligence = await getProductIntelligence(context, product.id);
+  // Never call findProductForShop/getProductIntelligence (or anything
+  // Shopify-only) for a standalone (no Shopify product) session — see
+  // prisma/schema.prisma's CreativeSession.productId comment.
+  const product = session.productId ? await loadOwnedProduct(context, session.productId) : null;
+  const intelligence = product ? await getProductIntelligence(context, product.id) : null;
 
   const [jobsRaw, messages] = await Promise.all([
     listGenerationJobsForCreativeSession(context.shop, session.id),
@@ -273,6 +279,7 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
   // Parse the raw message → structured intent. See
   // services/ai/heuristic-intent-parser.ts's doc comment for why this
   // always succeeds today (a real, non-AI default, not gated to tests).
+  // Fully generic — intent parsing never depends on a Shopify product.
   const parser = getConfiguredIntentParser();
   const rawOutput = await parser.parseIntent({
     message: trimmed,
@@ -294,17 +301,31 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
   }
 
   const previousResultUrl = editSourceResult?.url ?? startingImageUrl;
+
+  // A standalone session has no ShopifyProductMedia to ground against —
+  // any image attached to THIS turn is uploaded here, through the same
+  // StorageProvider abstraction every generated result already uses (see
+  // reference-images.server.ts). Only ever runs for a standalone session
+  // (`!product`); a Shopify-context session ignores `options.referenceImages`
+  // entirely (it always has real product media instead).
+  const uploadedReferenceImageUrls = product ? [] : await uploadReferenceImages(context.shop, session.id, options.referenceImages ?? []);
+
   // The parser may have guessed TEXT_TO_IMAGE (nothing in THIS session's
-  // own history yet), but a "Continue editing" session genuinely does
-  // have something to edit forward from — correct that here rather than
-  // inside the parser, which has no notion of a foreign starting result.
+  // own history yet), but a "Continue editing" session — or a standalone
+  // turn with a freshly uploaded image — genuinely does have something to
+  // edit forward from; correct that here rather than inside the parser,
+  // which has no notion of a foreign starting result or this turn's own
+  // upload.
+  const hasImageToGroundThisTurn = Boolean(previousResultUrl) || uploadedReferenceImageUrls.length > 0;
   const effectiveIntent: ParsedIntent =
-    parsedIntent.mode === "TEXT_TO_IMAGE" && previousResultUrl ? { ...parsedIntent, mode: "IMAGE_TO_IMAGE" } : parsedIntent;
+    parsedIntent.mode === "TEXT_TO_IMAGE" && hasImageToGroundThisTurn ? { ...parsedIntent, mode: "IMAGE_TO_IMAGE" } : parsedIntent;
 
   // Cost is mode-aware (an edit/image-to-image request costs more per
   // output than a fresh text-to-image one) — see
   // services/usage/credit-costs.ts's documented rule, not a flat
-  // 1-credit-per-output guess.
+  // 1-credit-per-output guess. Identical for both session contexts — a
+  // standalone generation is not somehow cheaper/free just because there's
+  // no Shopify product.
   const requiredCredits = getCreditCost({
     operationType: "IMAGE_GENERATION",
     mode: effectiveIntent.mode,
@@ -315,19 +336,32 @@ export async function sendCreativeMessage(context: AuthContext, sessionId: strin
     throw new InsufficientCreditsError(entitlement);
   }
 
-  const plan = buildCreativeGenerationPlan({
-    product,
-    intelligence,
-    sourceMediaIds: session.sourceMediaId ? [session.sourceMediaId] : [],
-    parsedIntent: effectiveIntent,
-    previousResultUrl,
-    brandStylePreset: null,
-    creativeSessionId: session.id,
-    rawInstruction: trimmed,
-  });
+  // The one other genuinely different step: which plan-builder function
+  // runs. Both produce the exact same `GenerationPlan` shape — see
+  // plan-builder.ts's `buildStandaloneCreativeGenerationPlan` doc comment
+  // for why this is "the same generation engine, two entry points," not a
+  // second generation system.
+  const plan = product
+    ? buildCreativeGenerationPlan({
+        product,
+        intelligence,
+        sourceMediaIds: session.sourceMediaId ? [session.sourceMediaId] : [],
+        parsedIntent: effectiveIntent,
+        previousResultUrl,
+        brandStylePreset: null,
+        creativeSessionId: session.id,
+        rawInstruction: trimmed,
+      })
+    : buildStandaloneCreativeGenerationPlan({
+        parsedIntent: effectiveIntent,
+        uploadedReferenceImageUrls,
+        previousResultUrl,
+        creativeSessionId: session.id,
+        rawInstruction: trimmed,
+      });
 
   const job = await createAndEnqueueGenerationJob(context, {
-    productId: product.id,
+    productId: product ? product.id : null,
     generationType: "CREATIVE_STUDIO",
     sourceMediaIds: plan.sourceImages.map((image) => image.mediaId),
     planOverride: plan,

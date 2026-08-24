@@ -31,7 +31,7 @@ import { toBrandStyleContext, buildProductFactsContext } from "../generation/bui
 import type { AspectRatioValue } from "../generation/types";
 import type { ParsedIntent } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
-import { buildIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
+import { buildIdentityConstraints, buildStandaloneIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
 
 export class ProductNotAnalyzedError extends Error {
   constructor() {
@@ -280,6 +280,163 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
           },
 
     brandStyle: brandStylePreset ? toBrandStyleContext(brandStylePreset) : null,
+    lifestyleScene: null,
+
+    creativeIntent: {
+      intent: parsedIntent.intent,
+      mode: parsedIntent.mode as GenerationModeValue,
+      creative,
+      identityConstraints,
+      creativeSessionId,
+      rawInstruction,
+    },
+    referenceImages,
+
+    constraints: [],
+  };
+
+  return parseGenerationPlan(plan);
+}
+
+export interface BuildStandaloneCreativeGenerationPlanInput {
+  parsedIntent: ParsedIntent;
+  /** Signed URLs of any images the merchant attached to THIS turn,
+   * already durably stored via reference-images.server.ts's
+   * `uploadReferenceImages` — never raw bytes at this layer. Empty for a
+   * from-scratch text-to-image request with nothing to ground against. */
+  uploadedReferenceImageUrls: string[];
+  /** The prior result (or the session's own "Continue editing" starting
+   * image) this turn edits forward from, if any — the exact same
+   * resolution session.server.ts performs for the Shopify path,
+   * `resolveSessionStartingImage`/`editSourceResult`. */
+  previousResultUrl: string | null;
+  creativeSessionId: string;
+  /** The merchant's own raw message — recorded on the plan for
+   * traceability ONLY, same rule as `BuildCreativeGenerationPlanInput`. */
+  rawInstruction: string;
+  aspectRatioOverride?: AspectRatioValue;
+}
+
+/**
+ * The standalone (no Shopify product) counterpart to
+ * `buildCreativeGenerationPlan` above — produces the EXACT SAME
+ * `GenerationPlan` shape, validated the same way, flowing through the
+ * exact same `GenerationJob`/queue/worker/storage pipeline every other
+ * generationType already uses (see module doc comment) — just grounded in
+ * whatever the merchant uploaded/instructed THIS conversation rather than
+ * a Shopify product + Product Intelligence profile. Never fabricates
+ * product metadata:
+ *
+ *   - `productFacts` stays entirely null — there is no catalog fact to
+ *     report (see services/generation/schema.ts's `productFacts` doc
+ *     comment: "mandatory whenever Product Intelligence has run... null
+ *     only when it hasn't").
+ *   - `sourceProductId`/`sourceImages` stay null/empty — there is no
+ *     `ShopifyProduct`/`ShopifyProductMedia` to reference at all; any
+ *     uploaded/prior-result image lives in `referenceImages` instead
+ *     (mirroring how the Shopify path already treats a conversational
+ *     follow-up's prior result — see `referenceImages` above).
+ *   - `category` uses the same plain "product" fallback noun
+ *     services/generation/build-plan.ts's Shopify path already falls
+ *     back to when a real product has no `productType` either — a
+ *     grammatical placeholder, never a guessed/invented category.
+ *   - `identityConstraints.immutable` stays empty — nothing was ever
+ *     analyzed to assert as immutable (see identity-constraints.ts's
+ *     `buildStandaloneIdentityConstraints`); reference-image fidelity
+ *     (when an image exists to ground against) is still asserted
+ *     structurally, mirroring the Shopify path's own reference-fidelity
+ *     clause.
+ */
+export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCreativeGenerationPlanInput): GenerationPlan {
+  const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction } = input;
+
+  const category = "product";
+  const hasReferenceImage = uploadedReferenceImageUrls.length > 0 || Boolean(previousResultUrl);
+  const identityConstraints = buildStandaloneIdentityConstraints(hasReferenceImage, parsedIntent.attributeOverrides);
+
+  // Same protected-removal rule as the Shopify path (Part 4 worked
+  // example) — a standalone photo can still depict a real branded
+  // product the merchant owns; "remove the logo" must be declined here
+  // too, not just when Product Intelligence happens to be involved.
+  const { allowed: removeElements, blocked: blockedRemovals } = filterProtectedRemovals(parsedIntent.removeElements);
+
+  const creative = {
+    scene: parsedIntent.scene,
+    style: parsedIntent.style,
+    lighting: parsedIntent.lighting,
+    composition: parsedIntent.composition,
+    camera: parsedIntent.camera,
+    colorDirection: parsedIntent.colorDirection,
+    addElements: parsedIntent.addElements,
+    removeElements,
+    blockedRemovals,
+    colorOverride: parsedIntent.attributeOverrides.color,
+    materialOverride: parsedIntent.attributeOverrides.material,
+  };
+
+  const isEditTurn =
+    hasReferenceImage &&
+    (parsedIntent.mode === "IMAGE_TO_IMAGE" || parsedIntent.mode === "IMAGE_EDIT" || parsedIntent.mode === "VARIATION");
+
+  const referenceNoun = previousResultUrl
+    ? "the reference image provided"
+    : uploadedReferenceImageUrls.length > 0
+      ? "the uploaded reference image"
+      : null;
+
+  const prompt = synthesizeCreativePrompt(
+    parsedIntent.intent,
+    category,
+    creative,
+    identityConstraints.instruction,
+    isEditTurn ? referenceNoun : null,
+  );
+
+  // Ground-truth reference for the actual PROVIDER call —
+  // services/ai/openai-image-provider.server.ts's `resolveReferenceImageUrls`
+  // prefers `referenceImages` over `sourceImages`, so an empty
+  // `sourceImages` above is never a problem: every reference this plan
+  // has lives here. `previousResultUrl` (this session's own prior
+  // result) is listed last so it stays the primary "edit forward from"
+  // reference when both a fresh upload and a prior result exist in the
+  // same turn — mirrors the Shopify path's own ordering intent (the most
+  // recently produced image is what "editing forward" means).
+  const referenceImages: GenerationPlan["referenceImages"] = [
+    ...uploadedReferenceImageUrls.map((url) => ({ url, role: "product_original" as const })),
+    ...(previousResultUrl ? [{ url: previousResultUrl, role: "previous_result" as const }] : []),
+  ];
+
+  const plan = {
+    generationType: "CREATIVE_STUDIO" as const,
+    assetType: null,
+    category,
+
+    sourceProductId: null,
+    sourceImages: [],
+
+    productFacts: {
+      identityAnchors: null,
+      title: null,
+      description: null,
+      attributes: null,
+    },
+
+    creativeDirection: {
+      prompt,
+      negativeConstraints: [],
+      environment: creative.scene,
+      lighting: creative.lighting,
+      composition: creative.composition,
+    },
+
+    aspectRatio: input.aspectRatioOverride ?? DEFAULT_ASPECT_RATIO,
+    outputFormat: "png",
+    quality: "standard",
+    outputCount: parsedIntent.variationCount,
+
+    modelConfiguration: null,
+
+    brandStyle: null,
     lifestyleScene: null,
 
     creativeIntent: {

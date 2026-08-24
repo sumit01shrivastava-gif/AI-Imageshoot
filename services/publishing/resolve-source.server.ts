@@ -48,13 +48,20 @@ export async function resolvePublishSource(
     return {
       storageKey: row.storageKey,
       reviewStatus: row.reviewStatus,
-      candidateProducts: [
-        {
-          productId: row.generationJob.productId,
-          shopifyProductId: row.generationJob.product.shopifyProductId,
-          title: row.generationJob.product.title,
-        },
-      ],
+      // A standalone (no Shopify product) Creative Studio result has no
+      // candidate product to publish to — the same "zero candidates" shape
+      // STORE_VISUAL_RESULT already documents above (this interface's own
+      // doc comment), never an error. See prisma/schema.prisma's
+      // GenerationJob.productId comment.
+      candidateProducts: row.generationJob.product
+        ? [
+            {
+              productId: row.generationJob.product.id,
+              shopifyProductId: row.generationJob.product.shopifyProductId,
+              title: row.generationJob.product.title,
+            },
+          ]
+        : [],
     };
   }
 

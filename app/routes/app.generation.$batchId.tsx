@@ -238,7 +238,12 @@ function GenerationJobCard({
       <s-stack direction="block" gap="base">
         <s-stack direction="inline" gap="base" alignItems="center" justifyContent="space-between">
           <s-stack direction="inline" gap="base" alignItems="center">
-            <s-text type="strong">{job.product.title}</s-text>
+            {/* Batches are always Shopify-driven (services/generation/batch.server.ts
+                never runs for a standalone/Creative Studio job) — job.product
+                is only ever null for a standalone session, which has no
+                entry point into batch generation. Guarded anyway now that
+                the type allows it. */}
+            <s-text type="strong">{job.product?.title ?? "Untitled product"}</s-text>
             <s-badge tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</s-badge>
           </s-stack>
           <s-text color="subdued">{new Date(job.createdAt).toLocaleString()}</s-text>
@@ -254,7 +259,7 @@ function GenerationJobCard({
           <s-stack direction="block" gap="small-200">
             <s-text color="subdued">Original</s-text>
             {original ? (
-              <s-image src={original.url} alt={original.altText ?? job.product.title} />
+              <s-image src={original.url} alt={original.altText ?? job.product?.title ?? "Original"} />
             ) : (
               <s-paragraph color="subdued">Not available.</s-paragraph>
             )}
@@ -262,7 +267,7 @@ function GenerationJobCard({
           <s-stack direction="block" gap="small-200">
             <s-text color="subdued">Generated</s-text>
             {latestResult ? (
-              <s-image src={latestResult.url ?? undefined} alt={`Generated — ${job.product.title}`} />
+              <s-image src={latestResult.url ?? undefined} alt={`Generated — ${job.product?.title ?? "product"}`} />
             ) : (
               <s-paragraph color="subdued">Not available yet.</s-paragraph>
             )}

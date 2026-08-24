@@ -166,7 +166,12 @@ function fromGenerationRow(row: {
   format: string | null;
   reviewStatus: ReviewStatus;
   createdAt: Date;
-  generationJob: { id: string; type: GenerationType; productId: string; product: { title: string } };
+  // productId/product are null for a standalone (no Shopify product)
+  // Creative Studio result — see prisma/schema.prisma's
+  // GenerationJob.productId comment. AssetItem.productId/productTitle
+  // were already nullable (STORE_VISUAL's own "no product reference"
+  // case), so this needs no change downstream.
+  generationJob: { id: string; type: GenerationType; productId: string | null; product: { title: string } | null };
 }): AssetItemWithKey {
   return {
     id: row.id,
@@ -175,7 +180,7 @@ function fromGenerationRow(row: {
     scope: "PRODUCT",
     jobId: row.generationJob.id,
     productId: row.generationJob.productId,
-    productTitle: row.generationJob.product.title,
+    productTitle: row.generationJob.product?.title ?? null,
     url: row.url,
     width: row.width,
     height: row.height,

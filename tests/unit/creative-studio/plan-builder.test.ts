@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCreativeGenerationPlan,
+  buildStandaloneCreativeGenerationPlan,
   MissingSourceImagesError,
   ProductNotAnalyzedError,
 } from "../../../services/creative-studio/plan-builder";
@@ -347,5 +348,99 @@ describe("buildCreativeGenerationPlan", () => {
       expect(plan.creativeIntent!.creative.blockedRemovals).toEqual([]);
       expect(plan.creativeDirection.prompt).toMatch(/without\s+shadow/i);
     });
+  });
+});
+
+describe("buildStandaloneCreativeGenerationPlan", () => {
+  it("builds a valid CREATIVE_STUDIO plan with no Shopify product/Product Intelligence at all", async () => {
+    const parsedIntent = await intent("Put it in a premium lifestyle scene");
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: [],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put it in a premium lifestyle scene",
+    });
+
+    expect(plan.generationType).toBe("CREATIVE_STUDIO");
+    // Never fabricated — no product, no catalog facts, no analyzed
+    // identity anchors.
+    expect(plan.sourceProductId).toBeNull();
+    expect(plan.sourceImages).toEqual([]);
+    expect(plan.productFacts).toEqual({ identityAnchors: null, title: null, description: null, attributes: null });
+    expect(plan.creativeIntent).not.toBeNull();
+    expect(plan.creativeIntent!.identityConstraints.immutable).toEqual([]);
+  });
+
+  it("includes an uploaded reference image in referenceImages and asserts its fidelity in the prompt", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: ["https://signed.example.test/uploaded-1.png"],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Make it brighter",
+    });
+
+    expect(plan.referenceImages).toEqual([{ url: "https://signed.example.test/uploaded-1.png", role: "product_original" }]);
+    expect(plan.creativeDirection.prompt).toMatch(/uploaded reference image/i);
+  });
+
+  it("carries a session's own previous result forward as the reference image for a follow-up turn", async () => {
+    const parsedIntent = await intent("Make it brighter", 1);
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: [],
+      previousResultUrl: "https://signed.example.test/prior-result.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "Make it brighter",
+    });
+
+    expect(plan.referenceImages).toEqual([{ url: "https://signed.example.test/prior-result.png", role: "previous_result" }]);
+    expect(plan.creativeDirection.prompt).toMatch(/exact starting point/i);
+  });
+
+  it("states no reference-fidelity clause for a fresh request with nothing uploaded and no prior result", async () => {
+    const parsedIntent = await intent("Create a clean product photo");
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: [],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a clean product photo",
+    });
+
+    expect(plan.referenceImages).toEqual([]);
+    expect(plan.creativeDirection.prompt).toMatch(/no existing image to preserve/i);
+  });
+
+  it("still blocks a protected removal (e.g. \"remove the logo\") even with no Product Intelligence involved", async () => {
+    const parsedIntent = await intent("Remove the logo", 1);
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: ["https://signed.example.test/uploaded-1.png"],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Remove the logo",
+    });
+
+    expect(plan.creativeIntent!.creative.removeElements).not.toContain("logo");
+    expect(plan.creativeIntent!.creative.blockedRemovals).toContain("logo");
+    expect(plan.creativeDirection.prompt).not.toMatch(/without\s+logo/i);
+  });
+
+  it("never sends the merchant's raw message as the prompt verbatim", async () => {
+    const rawInstruction = "asdkjf make it look totally amazeballs pls!!1";
+    const parsedIntent = await intent(rawInstruction);
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: [],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction,
+    });
+
+    expect(plan.creativeDirection.prompt).not.toContain(rawInstruction);
+    expect(plan.creativeIntent!.rawInstruction).toBe(rawInstruction);
   });
 });

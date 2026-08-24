@@ -461,8 +461,19 @@ model GenerationJob {
   // lib/auth/tenant.server.ts and CLAUDE.md "Security requirements".
   shop String
 
-  productId String
-  product   ShopifyProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Optional as of the standalone generation-pipeline foundation (see
+  // prisma/schema.prisma's CreativeSession.productId comment for the
+  // identical prior change to that model) — null for a standalone (no
+  // Shopify product) Creative Studio generation, grounded in the
+  // conversation/uploaded reference images instead of a Shopify product +
+  // Product Intelligence profile. Present exactly as before for every
+  // Shopify-context generation (every generationType other than a
+  // standalone CREATIVE_STUDIO request). onDelete stays Cascade: a job's
+  // product being deleted still means the job's own product-scoped
+  // history no longer makes sense, same as today — this column merely
+  // became optional, not less strict when present.
+  productId String?
+  product   ShopifyProduct? @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   type   GenerationType
   status GenerationStatus @default(PENDING)

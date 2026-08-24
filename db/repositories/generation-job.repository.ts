@@ -77,7 +77,10 @@ export type GenerationAssetResultRow = Prisma.GenerationResultGetPayload<{ selec
 
 export interface CreateGenerationJobInput {
   shop: string;
-  productId: string;
+  /** Null for a standalone (no Shopify product) Creative Studio
+   * generation — see prisma/schema.prisma's GenerationJob.productId
+   * comment. */
+  productId: string | null;
   type: GenerationType;
   sourceMediaIds: string[];
   plan: GenerationPlan;
@@ -311,7 +314,15 @@ const PUBLISH_RESULT_SELECT = {
   shop: true,
   storageKey: true,
   reviewStatus: true,
-  generationJob: { select: { productId: true, product: { select: { shopifyProductId: true, title: true } } } },
+  // `product.id` (not just `productId`) is selected directly so a
+  // consumer can read the product's real id off the (guaranteed non-null
+  // when checked) `product` object itself, rather than needing to
+  // correlate two independently-nullable sibling fields — same pattern
+  // db/repositories/creative-session.repository.ts's SESSION_SELECT
+  // established for CreativeSession.product. `product` is null for a
+  // standalone (no Shopify product) Creative Studio result — see
+  // prisma/schema.prisma's GenerationJob.productId comment.
+  generationJob: { select: { productId: true, product: { select: { id: true, shopifyProductId: true, title: true } } } },
 } satisfies Prisma.GenerationResultSelect;
 
 export type GenerationPublishSourceRow = Prisma.GenerationResultGetPayload<{ select: typeof PUBLISH_RESULT_SELECT }>;
