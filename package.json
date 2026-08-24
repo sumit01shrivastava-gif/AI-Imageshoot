@@ -75,14 +75,6 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.11"
   },
-  "workspaces": {
-    "packages": [
-      "extensions/*"
-    ]
-  },
-  "trustedDependencies": [
-    "@shopify/plugin-cloudflare"
-  ],
   "overrides": {
     "p-map": "^4.0.0"
   }
