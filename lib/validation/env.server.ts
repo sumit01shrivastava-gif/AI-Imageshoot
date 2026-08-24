@@ -72,6 +72,14 @@ const envSchema = z.object({
   // dev/test need no extra configuration; production should set its own.
   MEDIA_SIGNING_SECRET: z.string().optional(),
 
+  // --- Standalone (non-Shopify) authentication ---------------------------
+  // Signs the standalone login session cookie (see
+  // lib/auth/standalone-session.server.ts). Falls back to a
+  // domain-separated derivation of SHOPIFY_API_SECRET when unset — same
+  // "zero extra config for dev/test, set your own in production" pattern
+  // as MEDIA_SIGNING_SECRET above.
+  SESSION_SECRET: z.string().optional(),
+
   // --- AI provider ---------------------------------------------------------
   // Optional: falls back to `UnconfiguredImageGenerationProvider` (throws
   // on every call) when unset/incomplete — see

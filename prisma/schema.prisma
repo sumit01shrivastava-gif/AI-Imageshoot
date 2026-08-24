@@ -1431,3 +1431,98 @@ model BillingEvent {
   @@index([shop, createdAt])
   @@index([shop, type])
 }
+
+// --- Standalone identity / workspace foundation ---------------------------
+//
+// Added for the standalone (non-Shopify) product experience — see
+// docs/roadmap.md "Two experiences, one core". Deliberately additive only:
+// every existing model above is untouched, and every existing repository/
+// service function keeps working unmodified, because of one design choice —
+// `Workspace.tenantKey` is written into the exact same `shop: String` column
+// every existing shop-scoped model already uses as an opaque tenant key
+// (nothing in this codebase validates that string is a real
+// `*.myshopify.com` domain). A standalone user's `AuthContext.shop` resolves
+// to their workspace's `tenantKey`; a Shopify merchant's `AuthContext.shop`
+// continues to be their real shop domain, exactly as before. Both flow
+// through the identical downstream pipeline.
+//
+// Conversations/generations/credits need no new ownership tables — they're
+// already owned by `shop`, which now just has two different real-world
+// meanings depending on which auth path produced it.
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  // Node's built-in `crypto.scrypt` output — see lib/auth/password.server.ts.
+  // Never a plaintext password, never a third-party-library-specific format
+  // that would lock this to one hashing library.
+  passwordHash String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMembership[]
+  sessions    UserSession[]
+}
+
+// A random, unguessable, single-use login token — only its hash is ever
+// persisted (see lib/auth/standalone-session.server.ts), mirroring this
+// codebase's existing "never store the raw secret" convention (media
+// signing, credit reservation idempotency keys, ...).
+model UserSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Workspace {
+  id   String @id @default(cuid())
+  name String
+
+  // The tenant key written into AuthContext.shop for every standalone
+  // request scoped to this workspace — see this section's own doc comment.
+  // A generated opaque id, never a real Shopify domain.
+  tenantKey String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships       WorkspaceMembership[]
+  shopifyConnection WorkspaceShopifyConnection?
+}
+
+// Join table between User and Workspace. `role` exists so "who belongs to
+// this workspace" is answerable later without a migration, but nothing in
+// this phase checks it beyond the default — no RBAC yet, deliberately (see
+// docs/roadmap.md's Phase 1 scoping). Every user gets exactly one workspace
+// (their default) created at signup; this table is what makes "more than
+// one" representable later without another migration.
+model WorkspaceMembership {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role        String    @default("owner")
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+// The seam for "Shopify becomes an integration belonging to a workspace"
+// (see docs/roadmap.md) — declared now, populated by nothing yet. Linking
+// an existing Shopify install to a standalone workspace is explicitly
+// future work, not this phase.
+model WorkspaceShopifyConnection {
+  id          String    @id @default(cuid())
+  workspaceId String    @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shopDomain  String    @unique
+  connectedAt DateTime  @default(now())
+}
