@@ -308,9 +308,19 @@ export async function createAndEnqueueGenerationJob(
     await markQueued(context.shop, job.id);
     await enqueueGenerationJob({ shop: context.shop, generationJobId: job.id });
   } catch (error) {
+    // errorName/errorCode (Node network errors carry a `.code`, e.g.
+    // "ECONNREFUSED"/"ETIMEDOUT") alongside the message — the exact
+    // underlying failure, safe to log (see lib/queue/connection.server.ts's
+    // module doc comment: the logger additionally redacts any
+    // currently-configured secret's literal content regardless of which
+    // field it appears in). Never exposed to the client — see the
+    // "Couldn't queue this request" message written below, which is all
+    // the merchant/end user ever sees.
     logger.error("generation.request.enqueue_failed", {
       shop: context.shop,
       generationJobId: job.id,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode: error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined,
       detail: error instanceof Error ? error.message : "unknown error",
     });
     await refundReservation(context.shop, job.id).catch((refundError: unknown) =>

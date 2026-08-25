@@ -50,7 +50,7 @@
  * than changing this default, since most queues want the behavior above.
  */
 import { Queue, Worker, type DefaultJobOptions, type Processor, type WorkerOptions } from "bullmq";
-import { getRedisConnection } from "./connection.server";
+import { getWorkerRedisConnection, getProducerRedisConnection } from "./connection.server";
 import type { QueueName } from "./names";
 
 /** See the module doc comment above — every queue gets this unless it
@@ -60,12 +60,17 @@ const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
   removeOnFail: true,
 };
 
+/** A queue is always a PRODUCER (`.add()`, called from an ordinary
+ * request handler — Vercel serverless in this app, both the
+ * Shopify-embedded routes and the standalone studio routes) — see
+ * connection.server.ts's module doc comment for why this deliberately
+ * uses a different connection than `createWorker` below. */
 export function createQueue<PayloadType = unknown>(
   name: QueueName,
   options?: { defaultJobOptions?: DefaultJobOptions },
 ): Queue<PayloadType> {
   return new Queue<PayloadType>(name, {
-    connection: getRedisConnection(),
+    connection: getProducerRedisConnection(),
     defaultJobOptions: options?.defaultJobOptions ?? DEFAULT_JOB_OPTIONS,
   });
 }
@@ -77,6 +82,6 @@ export function createWorker<PayloadType = unknown>(
 ): Worker<PayloadType> {
   return new Worker<PayloadType>(name, processor, {
     ...options,
-    connection: getRedisConnection(),
+    connection: getWorkerRedisConnection(),
   });
 }
