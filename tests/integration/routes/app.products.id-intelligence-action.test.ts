@@ -48,6 +48,15 @@ function requestFor(shop: string): Request {
 
 async function cleanup() {
   await prisma.shopifyProduct.deleteMany({ where: { shop: { in: [SHOP_A, SHOP_B] } } });
+  // Missing before this pass — every other credit-consuming test file has
+  // this cleanup (see CLAUDE.md's "Live-deployment pass" writeup for the
+  // same bug found and fixed across 8 route-layer test files). Without
+  // it, consumed credits accumulate across repeated local runs until
+  // SHOP_A's FREE-plan monthly allowance is genuinely exhausted, failing
+  // this test with "Not enough credits available" — a real bug, found via
+  // direct testing while investigating the production Redis/queue crash
+  // loop, not part of that fix itself.
+  await prisma.creditReservation.deleteMany({ where: { shop: { in: [SHOP_A, SHOP_B] } } });
 }
 
 let worker: Worker | undefined;

@@ -48,10 +48,55 @@
  * than "while still in flight" (e.g. "collapse retries within 5 minutes
  * even after completion") should pass its own `defaultJobOptions` rather
  * than changing this default, since most queues want the behavior above.
+ *
+ * ## Every `Queue`/`Worker` MUST have an `'error'` listener (root cause of
+ * the production worker crash-loop this pass fixes)
+ *
+ * BullMQ's own connection layer deliberately re-emits Redis-level
+ * connection errors (a reset, a dropped socket, a reconnect) as an
+ * `'error'` event on the `Queue`/`Worker` instance itself, rather than
+ * swallowing them — see https://docs.bullmq.io/guide/workers#error-handling.
+ * `Queue`/`Worker` extend Node's `EventEmitter`, and EventEmitter's own
+ * contract is that emitting `'error'` with *zero* listeners attached
+ * throws, crashing the process — see
+ * https://nodejs.org/api/events.html#error-events. Neither this file nor
+ * any of its callers (every domain's own `queue.server.ts`,
+ * `workers/index.ts`) was attaching one, anywhere, for either the
+ * producer (`Queue`) or worker (`Worker`) side.
+ *
+ * In production this turned an ordinary, *expected*, ioredis-recoverable
+ * hiccup (a managed Redis provider — e.g. Upstash — resetting an
+ * idle/long-lived connection, surfacing as `ECONNRESET` or ioredis's
+ * generic `"Connection is closed."`) into a full, repeated worker-process
+ * crash: Railway auto-restarts the crashed container (so the service
+ * still shows "ACTIVE" at the platform level), which reconnects, runs
+ * briefly, hits the same class of Redis-level event again, and crashes
+ * again — the exact `connect` → `close` → `reconnecting` cycle observed
+ * in production logs. The fix is centralized here (not duplicated per
+ * domain) so every queue/worker this factory builds is covered
+ * automatically: log the error (never throw it further — that's the
+ * whole point) via the existing redacting `logger`, safe fields only
+ * (queue name, error name/code/message — never Redis credentials).
  */
 import { Queue, Worker, type DefaultJobOptions, type Processor, type WorkerOptions } from "bullmq";
 import { getWorkerRedisConnection, getProducerRedisConnection } from "./connection.server";
 import type { QueueName } from "./names";
+import { logger } from "../logging/logger.server";
+
+/** See the module doc comment's "Every Queue/Worker MUST have an
+ * 'error' listener" section — attached by both `createQueue` and
+ * `createWorker` below so no call site can forget it. */
+function attachErrorListener(emitter: { on(event: "error", listener: (error: NodeJS.ErrnoException) => void): unknown }, kind: "queue" | "worker", queueName: QueueName): void {
+  emitter.on("error", (error) => {
+    logger.error("bullmq.connection_error", {
+      kind,
+      queue: queueName,
+      errorName: error.name,
+      errorCode: error.code,
+      errorMessage: error.message,
+    });
+  });
+}
 
 /** See the module doc comment above — every queue gets this unless it
  * explicitly opts out via `options.defaultJobOptions`. */
@@ -69,10 +114,12 @@ export function createQueue<PayloadType = unknown>(
   name: QueueName,
   options?: { defaultJobOptions?: DefaultJobOptions },
 ): Queue<PayloadType> {
-  return new Queue<PayloadType>(name, {
+  const queue = new Queue<PayloadType>(name, {
     connection: getProducerRedisConnection(),
     defaultJobOptions: options?.defaultJobOptions ?? DEFAULT_JOB_OPTIONS,
   });
+  attachErrorListener(queue, "queue", name);
+  return queue;
 }
 
 export function createWorker<PayloadType = unknown>(
@@ -80,8 +127,10 @@ export function createWorker<PayloadType = unknown>(
   processor: Processor<PayloadType>,
   options?: Omit<WorkerOptions, "connection">,
 ): Worker<PayloadType> {
-  return new Worker<PayloadType>(name, processor, {
+  const worker = new Worker<PayloadType>(name, processor, {
     ...options,
     connection: getWorkerRedisConnection(),
   });
+  attachErrorListener(worker, "worker", name);
+  return worker;
 }
