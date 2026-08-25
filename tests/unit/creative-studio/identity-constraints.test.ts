@@ -117,10 +117,30 @@ describe("buildStandaloneIdentityConstraints", () => {
     expect(buildStandaloneIdentityConstraints(false).immutable).toEqual([]);
   });
 
-  it("asserts reference-image fidelity when a reference image exists", () => {
+  it("asserts identity/appearance fidelity when a reference image exists", () => {
     const result = buildStandaloneIdentityConstraints(true);
     expect(result.instruction).toMatch(/uploaded reference image/i);
-    expect(result.instruction).toMatch(/preserved exactly as shown/i);
+    expect(result.instruction).toMatch(/identity/i);
+    expect(result.instruction).toMatch(/exactly as shown/i);
+  });
+
+  // Regression coverage for a real, previously-fixed gap: the old
+  // wording said "preserved exactly as shown, except for what is
+  // explicitly requested below" — which only worked as well as whatever
+  // ended up in a structured field. Pose/action had no field at all
+  // before intent-schema.ts's `action` was added, so a reference image
+  // implicitly meant "preserve the original pose too," even when the
+  // merchant explicitly asked for a different one. The instruction now
+  // says, unconditionally, that pose/action/environment/composition are
+  // open to reinterpretation — not contingent on every transformation
+  // being perfectly captured as its own field first.
+  it("explicitly scopes preservation to identity/appearance — pose, action, environment, and composition are open to reinterpretation, not preserved by default", () => {
+    const result = buildStandaloneIdentityConstraints(true);
+    expect(result.instruction).toMatch(/pose/i);
+    expect(result.instruction).toMatch(/action/i);
+    expect(result.instruction).toMatch(/environment/i);
+    expect(result.instruction).toMatch(/composition/i);
+    expect(result.instruction).toMatch(/reinterpreted/i);
   });
 
   it("states there is nothing to preserve when no reference image exists", () => {

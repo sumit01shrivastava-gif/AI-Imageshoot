@@ -11,6 +11,7 @@
  * (see CLAUDE.md "Security requirements").
  */
 import type { AuthContext } from "../../lib/auth/types";
+import { logger } from "../../lib/logging/logger.server";
 import { TenantMismatchError } from "../../lib/auth/tenant.server";
 import { findProductForShop } from "../../db/repositories/shopify-product.repository";
 import { getProductIntelligence } from "../intelligence/product-intelligence.server";
@@ -375,7 +376,28 @@ export async function sendCreativeMessage(
         // doesn't restate the subject — see plan-builder.ts's
         // `activeSubject` doc comment.
         activeSubject: creativeContext.activeSubject,
+        activeAction: creativeContext.activeAction,
       });
+
+  // Safe diagnostics: the resolved structural creative decisions for
+  // this turn — never the raw message, the synthesized prompt text, or
+  // any signed/reference URL (those may describe a real, identifiable
+  // person and aren't logged here). Field PRESENCE/mode, not content,
+  // is what makes "why didn't this turn's instruction come through
+  // correctly" diagnosable after the fact without exposing anything
+  // sensitive — see docs/creative-studio.md "Preserve vs. transform".
+  logger.info("creative_studio.plan.built", {
+    creativeSessionId: session.id,
+    isShopifySession: Boolean(product),
+    intent: effectiveIntent.intent,
+    mode: effectiveIntent.mode,
+    hasSubject: Boolean(plan.category && plan.category !== "product"),
+    hasAction: Boolean(plan.creativeIntent?.creative.action),
+    hasScene: Boolean(plan.creativeDirection.environment),
+    hasLighting: Boolean(plan.creativeDirection.lighting),
+    referenceImageCount: plan.referenceImages.length,
+    outputCount: plan.outputCount,
+  });
 
   const job = await createAndEnqueueGenerationJob(context, {
     productId: product ? product.id : null,

@@ -64,8 +64,27 @@ const STYLE_KEYWORDS = [
 ];
 
 const LIGHTING_PATTERN = /\b((?:warm|cool|soft|bright|dim|golden|natural|dramatic|studio)\s+(?:[a-z]+\s+){0,2}?(?:light|lighting|sunlight|sunshine))\b/i;
-const BRIGHTER_PATTERN = /\b(brighter|more light|lighter)\b/i;
-const DARKER_PATTERN = /\b(darker|dimmer|moody lighting)\b/i;
+// Bare "bright"/"dark" (not only their comparative forms) are just as
+// common a way to request a lighting mood ("make the background dark")
+// and were previously missed entirely.
+const BRIGHTER_PATTERN = /\b(brighter|bright|more light|lighter)\b/i;
+const DARKER_PATTERN = /\b(darker|dark|dimmer|dim|moody|moodier|moody lighting|low-key)\b/i;
+
+// Pose/activity extraction (see intent-schema.ts's `action` doc
+// comment) — deliberately verb-TRIGGERED, not an enumerated list of
+// specific activities (never "yoga"-specific): "do/perform/practice/
+// pose" + a noun phrase covers "perform yoga," "do a handstand,"
+// "practice meditation," "pose dramatically," etc. without hardcoding
+// any one activity. A second, gerund-form alternative catches phrasing
+// like "make her sitting on the floor" / "show him meditating."
+// No separate article-consuming group before the capture — a leading
+// "a"/"an" (if present, e.g. "doing a handstand") stays part of the
+// captured phrase so it reads naturally in the prompt ("performing a
+// handstand", not "performing handstand").
+const ACTION_PATTERN =
+  /\b(?:do|does|doing|perform|performs|performing|practice|practices|practicing|pose|poses|posing)\s+([a-z][a-z\s]{2,40}?)(?=[.,!]|\s+(?:with|and|in|at|on|by|while)\b|$)/i;
+const GERUND_ACTION_PATTERN =
+  /\b(?:her|him|them|it|the model)\s+([a-z]+ing(?:\s+[a-z]+){0,4}?)(?=[.,!]|\s+(?:with|and|in|at|on|by|while)\b|$)/i;
 
 const CAMERA_PATTERN = /\b(eye[- ]level|overhead|45[- ]degree|low angle|high angle|macro|close[- ]up|top[- ]down)\b/i;
 const COLOR_DIRECTION_PATTERN = /\b(warm tones|cool tones|monochrome|pastel|vibrant colou?rs?|muted colou?rs?)\b/i;
@@ -125,6 +144,14 @@ const ADD_MODEL_SIMPLE_PATTERN = /\b(add|include)\b.{0,15}\b(a |an )?(model|woma
 const CHANGE_MODEL_PATTERN = /\b(different|another|change the|swap the)\s+model\b/i;
 const REMOVE_PATTERN = /\b(?:remove|get rid of|take out|without)\s+(?:the|a|an)?\s*([a-z][a-z\s]{2,40}?)(?=[.,!]|$)/i;
 const ADD_GENERIC_PATTERN = /\b(?:add|include)\s+(?:a|an|some)?\s*([a-z][a-z\s]{2,40}?)(?=\s+to\b|\s+holding\b|[.,!]|$)/i;
+// "Change her dress to a red evening gown" is a TRANSFORM, not an ADD —
+// captured separately (into `addElements` as "wearing X") since
+// ADD_GENERIC_PATTERN's own "add/include" trigger doesn't match
+// "change...to" phrasing at all. A bounded, common clothing-noun list
+// (not one hardcoded garment) covers the general class of "swap what
+// the subject is wearing" requests without inventing a whole new field.
+const CLOTHING_CHANGE_PATTERN =
+  /\b(?:change|turn|make)\s+(?:her|his|their|the)\s+(?:dress|outfit|clothes|clothing|attire|top|shirt|gown)\s+(?:to|into)\s+([a-z][a-z\s]{2,40}?)(?=[.,!]|\s+(?:with|and)\b|$)/i;
 
 const KEEP_SAME_PATTERN = /\b(keep|leave)\b.{0,15}\b(the )?product\b.{0,20}\b(exactly the same|unchanged|as is|as-is)\b/i;
 const PRESERVE_PATTERN = /\bdon'?t (change|alter|modify)\b.{0,15}\bproduct\b/i;
@@ -255,6 +282,19 @@ function extractColorDirection(message: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
+/** See `ACTION_PATTERN`/`GERUND_ACTION_PATTERN`'s doc comment and
+ * intent-schema.ts's `action` field. Tries the verb-triggered form
+ * first ("perform yoga"); the gerund-after-referent form is a
+ * secondary catch for phrasing that doesn't use one of those trigger
+ * verbs ("make her sitting on the floor"). Returns `null`, never
+ * throws, when neither matches. */
+function extractAction(message: string): string | null {
+  const match = ACTION_PATTERN.exec(message) ?? GERUND_ACTION_PATTERN.exec(message);
+  if (!match) return null;
+  const action = match[1].trim().replace(/\s+/g, " ");
+  return action.length > 0 ? action : null;
+}
+
 function extractAddElements(message: string): string[] {
   const elements: string[] = [];
   const modelMatch = ADD_MODEL_PATTERN.exec(message) ?? ADD_MODEL_SIMPLE_PATTERN.exec(message);
@@ -263,6 +303,8 @@ function extractAddElements(message: string): string[] {
   if (generic && !/model|woman|man|person/i.test(generic[1])) {
     elements.push(generic[1].trim());
   }
+  const clothingChange = CLOTHING_CHANGE_PATTERN.exec(message);
+  if (clothingChange) elements.push(`wearing ${clothingChange[1].trim()}`);
   return elements;
 }
 
@@ -387,6 +429,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
     const mode = inferMode(intent, hasCurrentResult);
 
     const subject = extractSubject(message);
+    const action = extractAction(message);
     const scene = extractScene(message);
     const style = extractStyle(message);
     const lighting = extractLighting(message);
@@ -405,6 +448,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
       intent,
       mode,
       subject,
+      action,
       scene,
       style,
       lighting,

@@ -546,4 +546,89 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
       expect(plan.referenceImages).toEqual([{ url: "https://signed.example.test/uploaded-1.png", role: "product_original" }]);
     });
   });
+
+  describe("reference image: preserve identity, transform what's explicitly requested (the real 'yoga' production case)", () => {
+    it("preserves identity/appearance while transforming pose, environment, and lighting — none of the requested changes get silently dropped", async () => {
+      const rawInstruction = "Make the model perform yoga with a blurred temple in the background and make the background dark.";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/model-photo.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      // Identity/appearance is preserved — but the instruction does NOT
+      // say "preserve the pose/composition" (the real, previously-fixed
+      // bug: a reference image used to implicitly mean "keep the
+      // original pose").
+      expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/identity/i);
+      expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/reinterpreted/i);
+
+      // The requested pose change reaches the actual synthesized prompt
+      // — this is the core fix: previously nothing captured "yoga" at
+      // all, so it never reached the provider.
+      expect(plan.creativeDirection.prompt).toContain("yoga");
+      expect(plan.creativeIntent!.creative.action).toBe("yoga");
+
+      // The lighting change also reaches the prompt.
+      expect(plan.creativeDirection.prompt).toMatch(/dark/i);
+    });
+
+    it("a broad re-creation request ('use this model for a new campaign') still only preserves identity, not the original pose/scene", async () => {
+      const rawInstruction = "Create a completely new campaign image using this model, on a rooftop at night";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/model-photo.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.creativeIntent!.identityConstraints.instruction).not.toMatch(/preserve\s+(?:the\s+)?(?:original\s+)?pose/i);
+      expect(plan.creativeDirection.prompt).toContain("rooftop");
+    });
+
+    it("carries the active action forward on a follow-up that doesn't restate it, exactly like activeSubject", async () => {
+      const rawInstruction = "Make the lighting more cinematic";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: "https://signed.example.test/prior-result.png",
+        creativeSessionId: "session-1",
+        rawInstruction,
+        activeSubject: "the model",
+        activeAction: "yoga",
+      });
+
+      expect(plan.creativeIntent!.creative.action).toBe("yoga");
+      expect(plan.creativeDirection.prompt).toContain("yoga");
+    });
+  });
+
+  describe("Shopify regression — the product path is untouched by the standalone subject/action mechanism", () => {
+    it("never reads parsedIntent.subject/action's carry-forward fallback — category always comes from the real product/Product Intelligence", async () => {
+      const parsedIntent = await intent("Make the product perform a somersault on a beach", 1);
+      const plan = buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence(),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction: "Make the product perform a somersault on a beach",
+      });
+
+      // Category is still the real Shopify category — never overridden
+      // by whatever the (inapplicable, product-context) parser produced.
+      expect(plan.category).toBe("Handbags");
+      expect(plan.creativeDirection.prompt).toContain("the Handbags");
+      // The Shopify identity instruction remains scoped to product
+      // attributes exactly as before — this pass never touched it.
+      expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/shape and proportions/i);
+    });
+  });
 });

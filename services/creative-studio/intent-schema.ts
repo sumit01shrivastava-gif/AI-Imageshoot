@@ -59,6 +59,25 @@ export const ParsedIntentSchema = z.object({
    */
   subject: z.string().min(1).nullable().default(null),
 
+  /**
+   * The subject's requested pose/activity — e.g. "yoga", "sitting on a
+   * chair" — when the instruction describes one. `null` otherwise.
+   *
+   * Exists to close a real, structural gap: a reference image's own
+   * identity-preservation instruction (see identity-constraints.ts's
+   * `buildStandaloneIdentityConstraints`) says "preserved exactly as
+   * shown, except for what is explicitly requested below" — before this
+   * field existed, a request like "make the model perform yoga" had
+   * NOWHERE structured to put "yoga," so it was silently dropped
+   * entirely and the model received an instruction that, in effect,
+   * preserved the ORIGINAL pose too (identity preservation and pose/
+   * composition preservation are different concepts — see
+   * docs/creative-studio.md "Preserve vs. transform"). `null`/
+   * `.default(null)` — same full backward-compatibility reasoning as
+   * `subject` above.
+   */
+  action: z.string().min(1).nullable().default(null),
+
   /** e.g. "luxury bathroom", "kitchen countertop" — null when the
    * instruction doesn't describe a scene/environment. */
   scene: z.string().min(1).nullable().default(null),

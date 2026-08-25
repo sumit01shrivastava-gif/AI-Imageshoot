@@ -109,6 +109,7 @@ function synthesizeCreativePrompt(
    * and "the a pair of sneakers" would not. */
   subjectPhrase: string,
   creative: {
+    action: string | null;
     scene: string | null;
     style: string[];
     lighting: string | null;
@@ -130,6 +131,13 @@ function synthesizeCreativePrompt(
   const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
 
+  // Stated early, right after the subject itself — a requested pose/
+  // activity is a property of the SUBJECT, not the surrounding scene
+  // (see intent-schema.ts's `action` doc comment for why this exists:
+  // without it, a requested pose change had nowhere structured to go
+  // and was silently dropped, leaving the model's own "preserve exactly
+  // as shown" reference-image instruction uncontested for pose too).
+  if (creative.action) parts.push(`performing ${creative.action}`);
   if (creative.scene) parts.push(`placed in ${creative.scene}`);
   if (creative.style.length > 0) parts.push(`${creative.style.join(", ")} style`);
   if (creative.lighting) parts.push(creative.lighting);
@@ -229,6 +237,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
   const { allowed: removeElements, blocked: blockedRemovals } = filterProtectedRemovals(parsedIntent.removeElements);
 
   const creative = {
+    action: parsedIntent.action,
     scene: parsedIntent.scene,
     style: parsedIntent.style,
     lighting: parsedIntent.lighting,
@@ -334,6 +343,11 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
    * generic "product" fallback. `null`/omitted for the session's first
    * turn, where there is nothing yet to carry forward. */
   activeSubject?: string | null;
+  /** This session's own pose/activity from an earlier turn — e.g.
+   * "yoga" — same carry-forward reasoning as `activeSubject`, read from
+   * `CreativeContext.activeAction`. See intent-schema.ts's `action` doc
+   * comment. */
+  activeAction?: string | null;
 }
 
 /**
@@ -407,6 +421,10 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     // keeps carrying forward `null` (never "product" as if it were a
     // genuinely known subject).
     subject: resolvedSubject,
+    // Same carry-forward reasoning as `subject` immediately above — see
+    // intent-schema.ts's `action` doc comment and
+    // creative-context.ts's `activeAction`.
+    action: parsedIntent.action ?? input.activeAction ?? null,
     scene: parsedIntent.scene,
     style: parsedIntent.style,
     lighting: parsedIntent.lighting,

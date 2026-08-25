@@ -106,6 +106,16 @@ export const CreativeStudioPlanSchema = z.object({
      * older persisted `GenerationJob.plan` without this field (from
      * before it existed) still parses fine — no migration needed. */
     subject: z.string().min(1).nullable().default(null),
+    /** The subject's requested pose/activity — e.g. "yoga" — carried
+     * forward the same way as `subject` (see
+     * services/creative-studio/creative-context.ts's `activeAction`) so
+     * a follow-up doesn't need to restate it. See intent-schema.ts's
+     * `action` doc comment for why this exists — identity preservation
+     * and pose/composition preservation are different concepts, and
+     * this is the structured place a requested pose change lives instead
+     * of being silently dropped. `.nullable().default(null)` — same
+     * backward-compatibility reasoning as `subject`. */
+    action: z.string().min(1).nullable().default(null),
     scene: z.string().min(1).nullable().default(null),
     style: z.array(z.string()).default([]),
     lighting: z.string().min(1).nullable().default(null),

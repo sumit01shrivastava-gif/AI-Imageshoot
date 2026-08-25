@@ -72,6 +72,87 @@ describe("HeuristicIntentParser", () => {
     });
   });
 
+  describe("action/pose extraction (see intent-schema.ts's `action` doc comment — the real 'yoga' production case)", () => {
+    // The exact scenario this pass was built for: a reference image
+    // should not implicitly mean "keep the original pose." Verifies the
+    // GENERALIZED verb-triggered extractor, not a yoga-specific rule.
+    it("extracts 'yoga' from the real worked example ('perform yoga')", async () => {
+      const result = await parse(
+        "Make the model perform yoga with a blurred temple in the background and make the background dark.",
+        1,
+      );
+      expect(result.action).toBe("yoga");
+    });
+
+    it("generalizes to an unrelated activity — proves this isn't hardcoded to yoga", async () => {
+      const result = await parse("Have him doing a handstand on the beach", 1);
+      expect(result.action).toBe("a handstand");
+    });
+
+    it("extracts a base-verb 'practice' phrasing", async () => {
+      const result = await parse("Make her practice meditation by a waterfall", 1);
+      expect(result.action).toBe("meditation");
+    });
+
+    it("falls back to the gerund-after-referent form when no trigger verb is present", async () => {
+      const result = await parse("Show her dancing under the city lights", 1);
+      expect(result.action).toBe("dancing under the city lights");
+    });
+
+    it("returns null when the message describes no pose/activity at all", async () => {
+      const result = await parse("Make the background darker", 1);
+      expect(result.action).toBeNull();
+    });
+  });
+
+  describe("lighting extraction — bare 'dark'/'bright', not only their comparative forms", () => {
+    it("recognizes a bare 'dark' request (previously only 'darker' matched)", async () => {
+      const result = await parse("make the background dark", 1);
+      expect(result.lighting).toBe("darker, moodier lighting");
+      expect(result.intent).toBe("CHANGE_LIGHTING");
+    });
+
+    it("recognizes a bare 'bright' request", async () => {
+      const result = await parse("make it bright", 1);
+      expect(result.lighting).toBe("brighter lighting");
+    });
+  });
+
+  describe("clothing-change extraction (generalized 'change X to Y' for a bounded, common set of garment nouns)", () => {
+    it("captures a requested clothing change as an addElement", async () => {
+      const result = await parse("Change her dress to a red evening gown", 1);
+      expect(result.addElements).toContain("wearing a red evening gown");
+    });
+
+    it("generalizes to a different garment noun — proves this isn't hardcoded to 'dress'", async () => {
+      const result = await parse("Turn his outfit into a black tuxedo", 1);
+      expect(result.addElements).toContain("wearing a black tuxedo");
+    });
+  });
+
+  describe("multiple simultaneous transformations in one message", () => {
+    it("extracts action + scene + clothing + lighting all at once, none overwriting another", async () => {
+      const result = await parse(
+        "Make the model perform yoga on a beach and change her dress to a red evening gown, with warm golden lighting",
+        1,
+      );
+      expect(result.action).toBe("yoga");
+      expect(result.scene).toBe("beach");
+      expect(result.addElements).toContain("wearing a red evening gown");
+      expect(result.lighting).toBe("warm golden lighting");
+    });
+  });
+
+  describe("explicit preservation instructions", () => {
+    it("'keep everything the same but make the background darker' only changes lighting — no spurious subject/action/scene extracted", async () => {
+      const result = await parse("Keep everything the same but make the background darker", 1);
+      expect(result.lighting).toMatch(/darker/i);
+      expect(result.subject).toBeNull();
+      expect(result.action).toBeNull();
+      expect(result.scene).toBeNull();
+    });
+  });
+
   it("classifies 'put my product in a premium lifestyle scene' as CREATE_LIFESTYLE", async () => {
     const result = await parse("Put my product in a premium lifestyle scene");
     expect(result.intent).toBe("CREATE_LIFESTYLE");

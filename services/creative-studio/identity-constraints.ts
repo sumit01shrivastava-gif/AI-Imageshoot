@@ -127,6 +127,20 @@ export function buildIdentityConstraints(
  * reference-fidelity clause (built separately, in
  * plan-builder.ts's `synthesizeCreativePrompt`, from this function's
  * `instruction`).
+ *
+ * Deliberately scoped to IDENTITY/APPEARANCE, not "preserve the whole
+ * image": a real, previously-fixed gap had this instruction say
+ * "preserved exactly as shown, except for what is explicitly requested
+ * below" — which is only as good as whatever ended up structurally
+ * captured below, and pose/action had NOWHERE to go before
+ * intent-schema.ts's `action` field existed, so a request like "make the
+ * model perform yoga" silently lost the pose change and the model
+ * received no counter-instruction to the implicit "preserve everything"
+ * default. Identity preservation and pose/composition preservation are
+ * different concepts (see docs/creative-studio.md "Preserve vs.
+ * transform") — this instruction now says so explicitly, rather than
+ * relying on every possible transformation being perfectly captured as
+ * its own structured field first.
  */
 export function buildStandaloneIdentityConstraints(
   hasReferenceImage: boolean,
@@ -141,10 +155,10 @@ export function buildStandaloneIdentityConstraints(
   ].filter((item): item is string => item !== null);
 
   const instruction = hasReferenceImage
-    ? `The uploaded reference image is the subject of this image and must be preserved exactly as shown, except for what is explicitly requested below.` +
+    ? `The uploaded reference image establishes this request's subject — preserve the subject's identity and defining visual characteristics exactly as shown (for a person: face, body, and distinguishing features; for an object: its shape, materials, and design). Everything else about how the subject is presented — pose, action, clothing, environment, background, lighting, and composition — should be reinterpreted according to the instructions below, which take precedence over how they appear in the original image.` +
       (overriddenItems.length > 0
         ? ` The merchant has explicitly requested the following change${overriddenItems.length > 1 ? "s" : ""}, which ` +
-          `${overriddenItems.length > 1 ? "are" : "is"} permitted: ${overriddenItems.join(", ")}. Every other aspect must remain exactly as shown.`
+          `${overriddenItems.length > 1 ? "are" : "is"} permitted: ${overriddenItems.join(", ")}. Every other aspect of the subject's identity/appearance must remain exactly as shown.`
         : "")
     : `There is no existing image to preserve — generate a new image based only on the instructions below.`;
 

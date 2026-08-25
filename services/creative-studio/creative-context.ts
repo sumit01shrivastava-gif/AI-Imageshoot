@@ -44,6 +44,10 @@ export interface CreativeContext {
    * `null` for a Shopify-product session (it has a real category
    * instead). See intent-schema.ts's `subject` doc comment. */
   activeSubject: string | null;
+  /** The subject's active pose/activity from an earlier turn — e.g.
+   * "yoga" — same carry-forward reasoning as `activeSubject`. See
+   * intent-schema.ts's `action` doc comment. */
+  activeAction: string | null;
   activeScene: string | null;
   activeStyle: string[];
   activeLighting: string | null;
@@ -92,6 +96,7 @@ export function buildCreativeContext(input: BuildCreativeContextInput): Creative
     selectedResultId: input.currentResult?.id ?? null,
 
     activeSubject: creative?.subject ?? null,
+    activeAction: creative?.action ?? null,
     activeScene: creative?.scene ?? null,
     activeStyle: creative?.style ?? [],
     activeLighting: creative?.lighting ?? null,
