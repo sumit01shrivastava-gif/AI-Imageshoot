@@ -51,7 +51,14 @@ let workerConnection: Redis | undefined;
 let producerConnection: Redis | undefined;
 
 /** Never includes the URL's user/password — only what's safe to log. */
-function safeConnectionShape(rawUrl: string): { scheme: string | null; host: string | null; port: string | null; tls: boolean } {
+function safeConnectionShape(rawUrl: string): {
+  scheme: string | null;
+  host: string | null;
+  port: string | null;
+  tls: boolean;
+  usernamePresent: boolean;
+  passwordPresent: boolean;
+} {
   try {
     const parsed = new URL(rawUrl);
     const scheme = parsed.protocol.replace(/:$/, "");
@@ -60,21 +67,83 @@ function safeConnectionShape(rawUrl: string): { scheme: string | null; host: str
       host: parsed.hostname || null,
       port: parsed.port || null,
       tls: scheme === "rediss",
+      usernamePresent: parsed.username.length > 0,
+      passwordPresent: parsed.password.length > 0,
     };
   } catch {
-    return { scheme: null, host: null, port: null, tls: false };
+    return { scheme: null, host: null, port: null, tls: false, usernamePresent: false, passwordPresent: false };
   }
+}
+
+/**
+ * Classifies a Redis/ioredis error message against Redis's own
+ * protocol-standard error-reply vocabulary (WRONGPASS, NOAUTH, ...) —
+ * these prefixes are part of the Redis wire protocol itself, not
+ * provider-specific or secret, so matching against them is safe. Purely
+ * to make a production log line self-diagnosing (distinguish "handshake
+ * rejected the credentials/protocol" from "the network dropped the
+ * socket") without requiring a human to re-derive it from the raw
+ * message every time. Returns `null` when nothing recognizable matches
+ * — never asserts a cause it can't support from the message text alone.
+ */
+function classifyRedisError(message: string): string | null {
+  const m = message.toUpperCase();
+  if (m.includes("WRONGPASS") || m.includes("INVALID PASSWORD") || m.includes("INVALID USERNAME-PASSWORD")) {
+    return "authentication_rejected";
+  }
+  if (m.includes("NOAUTH")) {
+    return "authentication_required";
+  }
+  if (m.includes("NOPERM")) {
+    return "authorization_denied";
+  }
+  if (m.includes("NOPROTO") || m.includes("UNSUPPORTED PROTOCOL") || m.includes("WRONG NUMBER OF ARGUMENTS FOR 'AUTH'")) {
+    return "protocol_negotiation_failed";
+  }
+  if (m.includes("CERT") || m.includes("SSL") || m.includes("TLS") || m.includes("SELF SIGNED") || m.includes("SELF-SIGNED")) {
+    return "tls_handshake_failed";
+  }
+  if (m.includes("ECONNREFUSED")) {
+    return "connection_refused";
+  }
+  if (m.includes("ENOTFOUND") || m.includes("EAI_AGAIN")) {
+    return "dns_resolution_failed";
+  }
+  if (m.includes("ETIMEDOUT") || m.includes("TIMED OUT")) {
+    return "connection_timed_out";
+  }
+  if (m.includes("ECONNRESET")) {
+    return "connection_reset_by_peer";
+  }
+  return null;
 }
 
 function attachDiagnostics(client: Redis, kind: "worker" | "producer"): void {
   const shape = safeConnectionShape(getEnv().REDIS_URL);
   logger.info("redis.connection.configured", { kind, ...shape });
 
-  client.on("connect", () => logger.info("redis.connection.event", { kind, event: "connect" }));
-  client.on("ready", () => logger.info("redis.connection.event", { kind, event: "ready" }));
-  client.on("close", () => logger.warn("redis.connection.event", { kind, event: "close" }));
+  // Tracked across this client's lifetime so a `close` log line can
+  // answer, on its own, the two questions that matter most when
+  // diagnosing a connect->close loop: how long did the connection last,
+  // and did it EVER reach `ready` even once since process start.
+  let connectedAt: number | null = null;
+  let everReachedReady = false;
+
+  client.on("connect", () => {
+    connectedAt = Date.now();
+    logger.info("redis.connection.event", { kind, event: "connect" });
+  });
+  client.on("ready", () => {
+    everReachedReady = true;
+    logger.info("redis.connection.event", { kind, event: "ready" });
+  });
+  client.on("close", () => {
+    const msSinceConnect = connectedAt !== null ? Date.now() - connectedAt : null;
+    logger.warn("redis.connection.event", { kind, event: "close", msSinceConnect, everReachedReady });
+    connectedAt = null;
+  });
   client.on("reconnecting", (delayMs: number) => logger.warn("redis.connection.event", { kind, event: "reconnecting", delayMs }));
-  client.on("end", () => logger.warn("redis.connection.event", { kind, event: "end" }));
+  client.on("end", () => logger.warn("redis.connection.event", { kind, event: "end", everReachedReady }));
   client.on("error", (error: NodeJS.ErrnoException) => {
     logger.error("redis.connection.event", {
       kind,
@@ -83,6 +152,7 @@ function attachDiagnostics(client: Redis, kind: "worker" | "producer"): void {
       errorCode: error.code,
       errorMessage: error.message,
       syscall: error.syscall,
+      likelyCause: classifyRedisError(error.message ?? ""),
     });
   });
 }
