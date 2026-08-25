@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
+import { logger } from "../../../lib/logging/logger.server";
 
 const sendMock = vi.fn();
 const presignMock = vi.fn(async () => "https://bucket.s3.example.test/signed?X-Amz-Signature=abc");
@@ -51,6 +52,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   clearS3Env();
+  vi.restoreAllMocks();
 });
 
 describe("S3StorageProvider", () => {
@@ -152,5 +154,46 @@ describe("getConfiguredStorageProvider — resolver", () => {
     const { getConfiguredStorageProvider, resetConfiguredStorageProviderForTests } = await import("../../../lib/storage/provider.server");
     resetConfiguredStorageProviderForTests();
     expect(getConfiguredStorageProvider().name).toBe("local-filesystem");
+  });
+
+  // Regression coverage for the real production incident this logging
+  // exists to make diagnosable: the web app and the worker resolved to
+  // DIFFERENT storage providers because only one host's environment had
+  // full OBJECT_STORAGE_* credentials — every generated image uploaded
+  // successfully (from the worker's own honest point of view) to a
+  // location the web app could never read back from. See
+  // lib/storage/provider.server.ts's module doc comment.
+  it("logs which provider was resolved and whether S3 credentials are complete — safely, without ever being redacted as a secret", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    configureS3Env();
+    const { getConfiguredStorageProvider, resetConfiguredStorageProviderForTests } = await import("../../../lib/storage/provider.server");
+    resetConfiguredStorageProviderForTests();
+    getConfiguredStorageProvider();
+
+    const call = infoSpy.mock.calls.find(([message]) => message === "storage.provider.configured");
+    expect(call).toBeDefined();
+    const fields = call![1] as Record<string, unknown>;
+    expect(fields.provider).toBe("s3");
+    expect(fields.bucketConfigured).toBe(true);
+    expect(fields.s3CredentialsComplete).toBe(true);
+    // The whole point of this test: these must be real booleans, never
+    // the logger's own "[REDACTED]" string — a field literally named
+    // e.g. `secretKeyPresent` would defeat its own purpose here.
+    expect(JSON.stringify(fields)).not.toContain("REDACTED");
+    expect(JSON.stringify(fields)).not.toContain("test-secret-key");
+    expect(JSON.stringify(fields)).not.toContain("test-access-key");
+  });
+
+  it("logs a false s3CredentialsComplete when falling back to local", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    clearS3Env();
+    const { getConfiguredStorageProvider, resetConfiguredStorageProviderForTests } = await import("../../../lib/storage/provider.server");
+    resetConfiguredStorageProviderForTests();
+    getConfiguredStorageProvider();
+
+    const call = infoSpy.mock.calls.find(([message]) => message === "storage.provider.configured");
+    const fields = call![1] as Record<string, unknown>;
+    expect(fields.provider).toBe("local-filesystem");
+    expect(fields.s3CredentialsComplete).toBe(false);
   });
 });
