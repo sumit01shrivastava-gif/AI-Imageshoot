@@ -1,10 +1,11 @@
 /**
  * Unit tests: services/ai/openai-image-provider.server.ts — the real
- * OpenAI `gpt-image-1` adapter. `global.fetch` is faked throughout — see
+ * OpenAI `gpt-image-*` adapter. `global.fetch` is faked throughout — see
  * CLAUDE.md "Never make a real AI API call from a test".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
+import { logger } from "../../../lib/logging/logger.server";
 import { sizeForAspectRatio } from "../../../services/ai/openai-image-provider.server";
 import { ProviderRequestError, ProviderResponseError } from "../../../services/ai/http-provider-utils.server";
 import type { GenerateImageInput } from "../../../services/ai/types";
@@ -79,6 +80,7 @@ describe("OpenAIImageGenerationProvider", () => {
     delete process.env.AI_IMAGE_EDIT_MODEL;
     delete process.env.AI_PROVIDER_MODEL;
     resetEnvCacheForTests();
+    vi.restoreAllMocks();
   });
 
   it("posts JSON to /v1/images/generations for a plain text-to-image request", async () => {
@@ -95,7 +97,7 @@ describe("OpenAIImageGenerationProvider", () => {
     const result = await provider.generateImage(baseInput());
 
     expect(capturedUrl).toBe("https://api.openai.com/v1/images/generations");
-    expect(capturedBody?.model).toBe("gpt-image-1");
+    expect(capturedBody?.model).toBe("gpt-image-2");
     expect(capturedBody?.quality).toBe("medium");
     expect(capturedBody?.size).toBe("1024x1024");
     expect(result.outputs).toHaveLength(1);
@@ -176,7 +178,7 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(editUrl).toBe("https://api.openai.com/v1/images/edits");
     expect(editInit?.body).toBeInstanceOf(FormData);
     const form = editInit!.body as FormData;
-    expect(form.get("model")).toBe("gpt-image-1");
+    expect(form.get("model")).toBe("gpt-image-2");
     expect(form.get("image")).toBeInstanceOf(Blob);
     // Never a manually-set Content-Type — fetch must set its own
     // multipart boundary, or OpenAI can't parse the body at all.
@@ -278,6 +280,52 @@ describe("OpenAIImageGenerationProvider", () => {
     global.fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })) as unknown as typeof fetch;
     const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
     await expect(new OpenAIImageGenerationProvider().generateImage(baseInput())).rejects.toBeInstanceOf(ProviderResponseError);
+  });
+
+  it("logs OpenAI's sanitized error envelope (message/type/code/param) on a non-2xx response, never the raw body or the API key", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    global.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "The model `gpt-image-1` does not exist or you do not have access to it",
+              type: "invalid_request_error",
+              code: "model_not_found",
+              param: "model",
+            },
+          }),
+          { status: 404 },
+        ),
+    ) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    await expect(new OpenAIImageGenerationProvider().generateImage(baseInput())).rejects.toBeInstanceOf(ProviderRequestError);
+
+    const matches = errorSpy.mock.calls.filter(([message]) => message === "ai_provider.generation.request_failed");
+    const call = matches[matches.length - 1];
+    expect(call).toBeDefined();
+    const fields = call![1] as Record<string, unknown>;
+    expect(fields.status).toBe(404);
+    expect(fields.errorCode).toBe("model_not_found");
+    expect(fields.errorType).toBe("invalid_request_error");
+    expect(fields.errorParam).toBe("model");
+    expect(fields.errorMessage).toContain("does not exist");
+    expect(JSON.stringify(fields)).not.toContain("sk-test-key");
+  });
+
+  it("never throws while parsing a non-JSON error body — falls back to null fields", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    global.fetch = vi.fn(async () => new Response("<html>gateway error</html>", { status: 502 })) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    await expect(new OpenAIImageGenerationProvider().generateImage(baseInput())).rejects.toBeInstanceOf(ProviderRequestError);
+
+    const matches = errorSpy.mock.calls.filter(([message]) => message === "ai_provider.generation.request_failed");
+    const call = matches[matches.length - 1];
+    const fields = call![1] as Record<string, unknown>;
+    expect(fields.status).toBe(502);
+    expect(fields.errorMessage).toBeNull();
   });
 
   it("throws when AI_PROVIDER_API_KEY is unset", async () => {

@@ -2,21 +2,27 @@
  * OpenAI `ImageGenerationProvider` — the selected real, production
  * commercial vendor for this deployment (see docs/ai-pipeline.md
  * "Provider selection" for the full evaluation/reasoning). Speaks
- * OpenAI's ACTUAL documented wire format for `gpt-image-1`
- * (https://platform.openai.com/docs/api-reference/images), not the
- * generic "OpenAI-Images-API-compatible" JSON contract
+ * OpenAI's ACTUAL documented wire format for the `gpt-image-*` family
+ * (https://developers.openai.com/api/docs/guides/image-generation —
+ * `gpt-image-2` is the current default, see `DEFAULT_MODEL` below for
+ * why; `gpt-image-1` is still selectable via `AI_PROVIDER_MODEL`/
+ * `AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`), not the generic
+ * "OpenAI-Images-API-compatible" JSON contract
  * `production-image-generation-provider.server.ts` speaks for a
- * self-hosted/other vendor — the two differ in real, load-bearing ways:
+ * self-hosted/other vendor — the two differ in real, load-bearing ways
+ * (true across the whole `gpt-image-*` family, not just one version):
  *
  *   - `/v1/images/edits` is `multipart/form-data`, not JSON — reference
  *     images are uploaded as real file parts, not base64 JSON fields.
- *   - `gpt-image-1` has no `response_format` parameter at all (it always
+ *   - `gpt-image-*` has no `response_format` parameter at all (it always
  *     returns `b64_json`) and no `url` output option.
- *   - `gpt-image-1`'s `quality` enum is `low`/`medium`/`high`/`auto`, not
+ *   - `gpt-image-*`'s `quality` enum is `low`/`medium`/`high`/`auto`, not
  *     DALL·E 3's `standard`/`hd`.
- *   - `gpt-image-1`'s `size` is one of exactly `1024x1024`/`1536x1024`/
- *     `1024x1536`/`auto` — not an arbitrary WxH.
- *   - `gpt-image-1`'s edit endpoint accepts MULTIPLE reference images in
+ *   - `gpt-image-*`'s `size` is one of exactly `1024x1024`/`1536x1024`/
+ *     `1024x1536`/`auto` — not an arbitrary WxH (`gpt-image-2` also
+ *     accepts larger canvases; this app deliberately keeps requesting
+ *     only this curated subset — see `sizeForAspectRatio`).
+ *   - `gpt-image-*`'s edit endpoint accepts MULTIPLE reference images in
  *     one request (composite/multi-reference editing) — genuinely useful
  *     for "use the second image as reference" / "keep the product but
  *     match this background" style Creative Studio instructions.
@@ -35,7 +41,24 @@ import { composeProviderPrompt } from "./prompt-composition";
 import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider } from "./types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com";
-const DEFAULT_MODEL = "gpt-image-1";
+/**
+ * `gpt-image-1` (this file's original default) started returning a real,
+ * reproducible `404` from `/v1/images/generations` in production — a
+ * status OpenAI's own API uses for "this model doesn't exist or you
+ * don't have access to it" (never a 400/403), which OpenAI's community
+ * confirms is the standard signal for a model that's no longer
+ * reachable for a given account/API key. Endpoint path/method are
+ * unchanged and confirmed correct against OpenAI's current docs
+ * (`developers.openai.com/api/docs/guides/image-generation`, whose own
+ * current example uses `gpt-image-2`) — this was never a URL problem.
+ * `gpt-image-2` is OpenAI's current documented default model and its
+ * `quality` enum (`low`/`medium`/`high`/`auto`) and response shape
+ * (base64 `data[].b64_json`) match `gpt-image-1`'s exactly, so no other
+ * change in this file was needed — `AI_PROVIDER_MODEL`/
+ * `AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL` still override this
+ * unchanged, for a deployment that needs a different/pinned model.
+ */
+const DEFAULT_MODEL = "gpt-image-2";
 const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
 
 function isEditMode(mode: string | undefined): boolean {
@@ -47,8 +70,9 @@ function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string
   return specific || env.AI_PROVIDER_MODEL || DEFAULT_MODEL;
 }
 
-/** `gpt-image-1` only accepts three fixed canvas sizes plus `auto` — no
- * arbitrary WxH. Maps this app's curated aspect ratios
+/** `gpt-image-*` only accepts three fixed canvas sizes plus `auto` (this
+ * app never requests any of `gpt-image-2`'s larger canvases — see the
+ * module doc comment) — no arbitrary WxH. Maps this app's curated aspect ratios
  * (services/generation/types.ts's ASPECT_RATIOS — not imported directly
  * here, per this file's "stay generic" domain boundary) onto the closest
  * one: square stays square, anything taller-than-wide goes portrait,
@@ -56,7 +80,7 @@ function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string
  * this app hasn't curated) falls back to `auto` — never throws.
  *
  * `maxDimensionPx` is the shop's real plan resolution ceiling
- * (`GenerateImageInput.maxResolutionPx`) — gpt-image-1's two non-square
+ * (`GenerateImageInput.maxResolutionPx`) — `gpt-image-*`'s two non-square
  * sizes both have a long edge of 1536px, so a plan whose ceiling is
  * BELOW that (today, only FREE — see services/billing/plans.ts) cannot
  * honor a non-square request at all; this forces the square 1024x1024
@@ -78,9 +102,9 @@ export function sizeForAspectRatio(aspectRatio: string, maxDimensionPx?: number 
   return w > h ? "1536x1024" : "1024x1536";
 }
 
-/** This app's curated `draft`/`standard`/`high` quality tier → gpt-image-1's
+/** This app's curated `draft`/`standard`/`high` quality tier → `gpt-image-*`'s
  * real `low`/`medium`/`high` enum (never `standard`/`hd`, DALL·E 3's
- * scheme, which gpt-image-1 doesn't accept). */
+ * scheme, which `gpt-image-*` doesn't accept). */
 function qualityForTier(quality: string): "low" | "medium" | "high" {
   if (quality === "draft") return "low";
   if (quality === "high") return "high";
@@ -101,13 +125,52 @@ function isOpenAIImagesResponse(value: unknown): value is OpenAIImagesResponse {
   return typeof value === "object" && value !== null;
 }
 
-/** OpenAI's error envelope — `{ error: { message, type, code } }`. Only
- * the HTTP status is ever logged (see module doc comment); this is used
- * solely to detect an invalid-API-key response so it can be classified
- * distinctly from a generic request failure — the message text itself is
- * never surfaced to the merchant or logged. */
+/** Used solely to detect an invalid-API-key response so it can be
+ * classified distinctly from a generic request failure in logs. */
 function looksLikeAuthError(status: number): boolean {
   return status === 401;
+}
+
+/** Sanitized shape of OpenAI's error envelope — `{ error: { message,
+ * type, code, param } }`. */
+interface OpenAIErrorDetail {
+  message?: string;
+  type?: string;
+  code?: string;
+  param?: string;
+}
+
+/**
+ * Extracts OpenAI's own error envelope for safe server-side logging (see
+ * `ai_provider.generation.request_failed` below) — never surfaced to the
+ * merchant/client, only to server logs, and never anything beyond these
+ * four fields (OpenAI's error body never echoes the API key or request
+ * headers back, so this is safe on its own; the redacting `logger` also
+ * scans every logged value for any currently-configured secret's literal
+ * content regardless — see lib/logging/logger.server.ts). Without this,
+ * a real failure (wrong/unavailable model, invalid parameter, etc.) was
+ * only ever visible as an opaque HTTP status code — exactly what made
+ * the `gpt-image-1` 404 above take real investigation to pin down instead
+ * of being obvious from the first failed request's logs. Returns `null`
+ * on any non-JSON or unexpected body shape — never throws, since this
+ * runs on the already-failing path and must not obscure the original
+ * error. */
+async function parseOpenAIErrorBody(response: Response): Promise<OpenAIErrorDetail | null> {
+  try {
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null || !("error" in body)) return null;
+    const error = (body as { error?: unknown }).error;
+    if (typeof error !== "object" || error === null) return null;
+    const e = error as Record<string, unknown>;
+    return {
+      message: typeof e.message === "string" ? e.message : undefined,
+      type: typeof e.type === "string" ? e.type : undefined,
+      code: typeof e.code === "string" ? e.code : undefined,
+      param: typeof e.param === "string" ? e.param : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
@@ -155,10 +218,15 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     }
 
     if (!response.ok) {
+      const errorDetail = await parseOpenAIErrorBody(response);
       logger.error("ai_provider.generation.request_failed", {
         provider: this.name,
         status: response.status,
         isAuthError: looksLikeAuthError(response.status),
+        errorType: errorDetail?.type ?? null,
+        errorCode: errorDetail?.code ?? null,
+        errorParam: errorDetail?.param ?? null,
+        errorMessage: errorDetail?.message ?? null,
       });
       throw new ProviderRequestError(this.name, response.status);
     }
@@ -173,7 +241,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new ProviderResponseError(this.name, "response had no data[] entries");
     }
 
-    const contentType = "image/png"; // gpt-image-1 always returns PNG bytes.
+    const contentType = "image/png"; // gpt-image-* always returns PNG bytes.
     const outputs: GeneratedImageOutput[] = parsed.data.map((item, index): GeneratedImageOutput => {
       if (!item.b64_json) {
         throw new ProviderResponseError(this.name, "a data[] entry had no b64_json");
@@ -227,7 +295,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
    * server-side resolution) and attached as real file parts, never
    * base64-encoded JSON. A single reference uses the field name `image`;
    * more than one uses `image[]` repeated, per OpenAI's documented
-   * multi-image-input contract for `gpt-image-1` edits. */
+   * multi-image-input contract for `gpt-image-*` edits. */
   private async callEdits(
     baseUrl: string,
     apiKey: string,
