@@ -38,6 +38,12 @@ export interface CreativeContext {
    * style/etc. persist forward until the merchant asks to change them
    * too. `null` fields mean "nothing active to carry forward," not "the
    * merchant asked for nothing." */
+  /** The standalone session's own resolved subject from an earlier turn
+   * — e.g. "a pair of sneakers" — so a follow-up that doesn't restate it
+   * ("make it brighter") still knows what's being depicted. Always
+   * `null` for a Shopify-product session (it has a real category
+   * instead). See intent-schema.ts's `subject` doc comment. */
+  activeSubject: string | null;
   activeScene: string | null;
   activeStyle: string[];
   activeLighting: string | null;
@@ -85,6 +91,7 @@ export function buildCreativeContext(input: BuildCreativeContextInput): Creative
     currentImageUrl: input.currentResult?.url ?? null,
     selectedResultId: input.currentResult?.id ?? null,
 
+    activeSubject: creative?.subject ?? null,
     activeScene: creative?.scene ?? null,
     activeStyle: creative?.style ?? [],
     activeLighting: creative?.lighting ?? null,

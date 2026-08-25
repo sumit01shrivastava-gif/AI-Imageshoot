@@ -31,6 +31,47 @@ describe("HeuristicIntentParser", () => {
     expect(result.mode).toBe("TEXT_TO_IMAGE");
   });
 
+  describe("subject extraction (standalone Creative Studio — see intent-schema.ts's `subject` doc comment)", () => {
+    // The exact real production request this pass fixes: previously
+    // "sneakers"/"beach"/"cloudy" were all lost before the request ever
+    // reached OpenAI, which then generated an unrelated generic product
+    // image. See plan-builder.ts's `buildStandaloneCreativeGenerationPlan`.
+    it("preserves 'pair of sneakers' from the real production request that previously collapsed to 'product'", async () => {
+      const result = await parse("Please create a image for pair of sneakers at beach with cloudy background");
+      expect(result.subject).toBe("pair of sneakers");
+      // Also the second part of the same production bug — an article
+      // -less scene phrase ("at beach", not "at the beach") must still
+      // be captured.
+      expect(result.scene).toBe("beach");
+    });
+
+    it("extracts a subject from a generic, non-sneaker-specific request — proves this isn't hardcoded to one example", async () => {
+      const result = await parse("Generate a luxury black perfume bottle on a marble table");
+      expect(result.subject).toBe("black perfume bottle");
+      expect(result.scene).toBe("marble table");
+    });
+
+    it("extracts a subject with no leading style keyword and a filler 'image' word stripped", async () => {
+      const result = await parse("Create a premium sneaker image on a beach with a cloudy background");
+      expect(result.subject).toBe("sneaker");
+    });
+
+    it("extracts a subject from 'Make a product photo of X in Y' phrasing", async () => {
+      const result = await parse("Make a product photo of a white ceramic coffee mug in a cozy kitchen");
+      expect(result.subject).toBe("white ceramic coffee mug");
+    });
+
+    it("returns null, never a bare pronoun, for a follow-up edit with no restated subject", async () => {
+      const result = await parse("Make it brighter", 1);
+      expect(result.subject).toBeNull();
+    });
+
+    it("returns null when the message has no recognizable subject at all", async () => {
+      const result = await parse("Regenerate this");
+      expect(result.subject).toBeNull();
+    });
+  });
+
   it("classifies 'put my product in a premium lifestyle scene' as CREATE_LIFESTYLE", async () => {
     const result = await parse("Put my product in a premium lifestyle scene");
     expect(result.intent).toBe("CREATE_LIFESTYLE");

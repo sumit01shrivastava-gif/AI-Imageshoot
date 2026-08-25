@@ -26,6 +26,7 @@ describe("buildCreativeContext", () => {
         intent: "CREATE_LIFESTYLE",
         mode: "TEXT_TO_IMAGE",
         creative: {
+          subject: "a pair of sneakers",
           scene: "luxury bathroom",
           style: ["premium"],
           lighting: "warm morning sunlight",
@@ -45,6 +46,7 @@ describe("buildCreativeContext", () => {
     });
 
     expect(context.hasCurrentResult).toBe(true);
+    expect(context.activeSubject).toBe("a pair of sneakers");
     expect(context.activeScene).toBe("luxury bathroom");
     expect(context.activeStyle).toEqual(["premium"]);
     expect(context.activeLighting).toBe("warm morning sunlight");

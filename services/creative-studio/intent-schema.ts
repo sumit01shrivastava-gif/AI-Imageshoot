@@ -33,6 +33,32 @@ export const ParsedIntentSchema = z.object({
    * current result yet, regardless of what the parser guessed). */
   mode: GenerationModeSchema,
 
+  /**
+   * The actual noun phrase describing WHAT is being generated — e.g.
+   * "a pair of sneakers", "a black perfume bottle" — extracted from a
+   * from-scratch request. `.nullable().default(null)` so this is fully
+   * backward-compatible: an older/other `IntentParsingProvider`
+   * implementation that doesn't know about this field still validates
+   * fine (see `parseParsedIntent`), and it's never persisted on its own
+   * (only ever folded into a `GenerationPlan` immediately after parsing
+   * — see plan-builder.ts) so no migration is needed either way.
+   *
+   * Only ever meaningful for a STANDALONE (no Shopify product) session
+   * — `services/creative-studio/plan-builder.ts`'s
+   * `buildStandaloneCreativeGenerationPlan` is the one place this is
+   * read; `buildCreativeGenerationPlan` (the Shopify path) never reads
+   * it, since a real Shopify product already has a real category/
+   * identity to build the prompt's subject from. `null` when the
+   * message doesn't describe a new subject (a follow-up edit like "make
+   * it brighter," or when extraction found nothing usable) — the
+   * standalone plan builder falls back to whatever subject was already
+   * established earlier in this session (see creative-context.ts's
+   * `activeSubject`), and only as a last resort to a generic
+   * placeholder. See docs/creative-studio.md "Standalone subject
+   * extraction".
+   */
+  subject: z.string().min(1).nullable().default(null),
+
   /** e.g. "luxury bathroom", "kitchen countertop" — null when the
    * instruction doesn't describe a scene/environment. */
   scene: z.string().min(1).nullable().default(null),

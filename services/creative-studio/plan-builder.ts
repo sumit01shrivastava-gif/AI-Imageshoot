@@ -100,7 +100,14 @@ const INTENT_FRAMING: Record<CreativeIntentValue, (subject: string) => string> =
  */
 function synthesizeCreativePrompt(
   intent: CreativeIntentValue,
-  category: string,
+  /** The FULLY-FORMED subject phrase — article/quantifier already
+   * included, e.g. "the Handbags" (Shopify's category-based path) or "a
+   * pair of sneakers" (a standalone session's own extracted subject —
+   * see intent-schema.ts's `subject` doc comment). Each caller builds
+   * this itself rather than this function prepending "the" uniformly,
+   * since a real extracted subject already reads naturally on its own
+   * and "the a pair of sneakers" would not. */
+  subjectPhrase: string,
   creative: {
     scene: string | null;
     style: string[];
@@ -120,7 +127,7 @@ function synthesizeCreativePrompt(
    * image exists yet, so there's nothing to state fidelity to). */
   referenceNoun: string | null,
 ): string {
-  const subject = `the ${category}`;
+  const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
 
   if (creative.scene) parts.push(`placed in ${creative.scene}`);
@@ -133,9 +140,13 @@ function synthesizeCreativePrompt(
   if (creative.removeElements.length > 0) parts.push(`without ${creative.removeElements.join(", ")}`);
   // The creative-override mechanism's effect on the prompt text itself
   // (identityInstruction carries the corresponding "this is permitted"
-  // clause — see identity-constraints.ts).
-  if (creative.colorOverride) parts.push(`the ${subject} recolored to ${creative.colorOverride}`);
-  if (creative.materialOverride) parts.push(`the ${subject} rendered in ${creative.materialOverride}`);
+  // clause — see identity-constraints.ts). `subject` is already the
+  // FULLY-FORMED phrase (see this function's `subjectPhrase` parameter
+  // doc comment) — no separate "the" prefix here, or a real extracted
+  // subject like "a pair of sneakers" would read "the a pair of
+  // sneakers recolored...".
+  if (creative.colorOverride) parts.push(`${subject} recolored to ${creative.colorOverride}`);
+  if (creative.materialOverride) parts.push(`${subject} rendered in ${creative.materialOverride}`);
 
   const referenceFidelity = referenceNoun
     ? ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
@@ -236,7 +247,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
 
   const prompt = synthesizeCreativePrompt(
     parsedIntent.intent,
-    category,
+    `the ${category}`,
     creative,
     identityConstraints.instruction,
     isEditTurn ? "the reference image provided" : null,
@@ -315,6 +326,14 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
    * traceability ONLY, same rule as `BuildCreativeGenerationPlanInput`. */
   rawInstruction: string;
   aspectRatioOverride?: AspectRatioValue;
+  /** This session's own subject from an earlier turn — e.g. "a pair of
+   * sneakers" — read from `CreativeContext.activeSubject`. Used only
+   * when THIS turn's own `parsedIntent.subject` is null (a follow-up
+   * that doesn't restate the subject, e.g. "make it brighter") so the
+   * prompt still names the real subject instead of collapsing to the
+   * generic "product" fallback. `null`/omitted for the session's first
+   * turn, where there is nothing yet to carry forward. */
+  activeSubject?: string | null;
 }
 
 /**
@@ -336,10 +355,20 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
  *     uploaded/prior-result image lives in `referenceImages` instead
  *     (mirroring how the Shopify path already treats a conversational
  *     follow-up's prior result — see `referenceImages` above).
- *   - `category` uses the same plain "product" fallback noun
- *     services/generation/build-plan.ts's Shopify path already falls
- *     back to when a real product has no `productType` either — a
- *     grammatical placeholder, never a guessed/invented category.
+ *   - `category`/the prompt's subject uses the merchant's own extracted
+ *     `subject` when the intent parser found one (or the session's own
+ *     `activeSubject` carried forward from an earlier turn — see
+ *     `BuildStandaloneCreativeGenerationPlanInput.activeSubject`) —
+ *     e.g. "a pair of sneakers," never the merchant's raw message text
+ *     verbatim (still governed by the exact same "structured fields →
+ *     synthesized prompt" rule as everything else in this file). Only
+ *     when NEITHER exists does this fall back to the same plain
+ *     "product" placeholder services/generation/build-plan.ts's Shopify
+ *     path already falls back to when a real product has no
+ *     `productType` either — a grammatical placeholder, never a
+ *     guessed/invented category. See intent-schema.ts's `subject` doc
+ *     comment and docs/creative-studio.md "Standalone subject
+ *     extraction".
  *   - `identityConstraints.immutable` stays empty — nothing was ever
  *     analyzed to assert as immutable (see identity-constraints.ts's
  *     `buildStandaloneIdentityConstraints`); reference-image fidelity
@@ -350,7 +379,18 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
 export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCreativeGenerationPlanInput): GenerationPlan {
   const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction } = input;
 
-  const category = "product";
+  // This turn's own extracted subject wins; a follow-up that doesn't
+  // restate one ("make it brighter") falls back to whatever this
+  // session already established. Only when NEITHER exists — the
+  // session's very first turn, and the parser found nothing usable in
+  // it — does this collapse to the generic "product" placeholder. This
+  // is the actual fix for the real production bug this pass addresses:
+  // previously `category` was unconditionally "product" here, so every
+  // standalone request's prompt subject was always "the product,"
+  // regardless of what the merchant described (see
+  // docs/creative-studio.md "Standalone subject extraction").
+  const resolvedSubject = parsedIntent.subject ?? input.activeSubject ?? null;
+  const category = resolvedSubject ?? "product";
   const hasReferenceImage = uploadedReferenceImageUrls.length > 0 || Boolean(previousResultUrl);
   const identityConstraints = buildStandaloneIdentityConstraints(hasReferenceImage, parsedIntent.attributeOverrides);
 
@@ -361,6 +401,12 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
   const { allowed: removeElements, blocked: blockedRemovals } = filterProtectedRemovals(parsedIntent.removeElements);
 
   const creative = {
+    // Persisted so a LATER turn's `CreativeContext.activeSubject` (see
+    // creative-context.ts) can read it back — `resolvedSubject`, not
+    // `category`, so a session that never had a real subject correctly
+    // keeps carrying forward `null` (never "product" as if it were a
+    // genuinely known subject).
+    subject: resolvedSubject,
     scene: parsedIntent.scene,
     style: parsedIntent.style,
     lighting: parsedIntent.lighting,
@@ -384,9 +430,16 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
       ? "the uploaded reference image"
       : null;
 
+  // A real extracted/carried-forward subject already reads naturally on
+  // its own ("a pair of sneakers") — only the generic "product"
+  // fallback needs the "the" article prepended (preserves the exact
+  // prior wording, "the product," for a turn where no subject was ever
+  // established).
+  const subjectPhrase = resolvedSubject ?? `the ${category}`;
+
   const prompt = synthesizeCreativePrompt(
     parsedIntent.intent,
-    category,
+    subjectPhrase,
     creative,
     identityConstraints.instruction,
     isEditTurn ? referenceNoun : null,

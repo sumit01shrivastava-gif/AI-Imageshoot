@@ -443,4 +443,107 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
     expect(plan.creativeDirection.prompt).not.toContain(rawInstruction);
     expect(plan.creativeIntent!.rawInstruction).toBe(rawInstruction);
   });
+
+  describe("standalone subject preservation (real production bug: every from-scratch request collapsed to 'the product')", () => {
+    it("uses the actual described subject in the synthesized prompt, not the generic 'product' placeholder — the exact real production request", async () => {
+      const rawInstruction = "Please create a image for pair of sneakers at beach with cloudy background";
+      const parsedIntent = await intent(rawInstruction);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.category).toBe("pair of sneakers");
+      expect(plan.creativeIntent!.creative.subject).toBe("pair of sneakers");
+      expect(plan.creativeDirection.prompt).toContain("pair of sneakers");
+      expect(plan.creativeDirection.prompt).not.toMatch(/\bthe product\b/i);
+    });
+
+    it("generalizes to an arbitrary, non-sneaker subject with no hardcoded special-casing", async () => {
+      const rawInstruction = "Generate a luxury black perfume bottle on a marble table";
+      const parsedIntent = await intent(rawInstruction);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.category).toBe("black perfume bottle");
+      expect(plan.creativeDirection.prompt).toContain("black perfume bottle");
+    });
+
+    it("falls back to the generic 'product' placeholder when no subject can be determined and none was ever established — never an invalid/empty prompt", async () => {
+      const rawInstruction = "Make it more premium";
+      const parsedIntent = await intent(rawInstruction);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+        activeSubject: null,
+      });
+
+      expect(plan.category).toBe("product");
+      expect(plan.creativeIntent!.creative.subject).toBeNull();
+      expect(plan.creativeDirection.prompt).toMatch(/\bthe product\b/i);
+    });
+
+    it("carries the session's own subject forward on a follow-up turn that doesn't restate it", async () => {
+      const rawInstruction = "Make it brighter";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: "https://signed.example.test/prior-result.png",
+        creativeSessionId: "session-1",
+        rawInstruction,
+        activeSubject: "a pair of sneakers",
+      });
+
+      expect(plan.category).toBe("a pair of sneakers");
+      expect(plan.creativeDirection.prompt).toContain("a pair of sneakers");
+      // The subject persists onto this turn's own plan too, so a THIRD
+      // turn (which won't restate it either) can keep carrying it
+      // forward from here.
+      expect(plan.creativeIntent!.creative.subject).toBe("a pair of sneakers");
+    });
+
+    it("a fresh turn's own restated subject wins over an older activeSubject carried from a prior turn", async () => {
+      const rawInstruction = "Create a red sports car driving through Tokyo at night";
+      const parsedIntent = await intent(rawInstruction);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: [],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+        activeSubject: "a pair of sneakers",
+      });
+
+      expect(plan.category).toContain("red sports car");
+      expect(plan.category).not.toContain("sneakers");
+    });
+
+    it("a reference-image-only turn with no textual subject still produces a valid plan (reference images stay optional-but-supported, never mandatory)", async () => {
+      const rawInstruction = "make it brighter";
+      const parsedIntent = await intent(rawInstruction, 0);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/uploaded-1.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+        activeSubject: null,
+      });
+
+      expect(plan.category).toBe("product");
+      expect(plan.referenceImages).toEqual([{ url: "https://signed.example.test/uploaded-1.png", role: "product_original" }]);
+    });
+  });
 });

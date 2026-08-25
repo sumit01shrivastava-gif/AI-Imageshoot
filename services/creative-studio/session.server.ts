@@ -370,6 +370,11 @@ export async function sendCreativeMessage(
         previousResultUrl,
         creativeSessionId: session.id,
         rawInstruction: trimmed,
+        // This turn's own `effectiveIntent.subject` wins inside the plan
+        // builder; this is only the fallback for a follow-up that
+        // doesn't restate the subject — see plan-builder.ts's
+        // `activeSubject` doc comment.
+        activeSubject: creativeContext.activeSubject,
       });
 
   const job = await createAndEnqueueGenerationJob(context, {

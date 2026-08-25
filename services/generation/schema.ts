@@ -94,6 +94,18 @@ export const CreativeStudioPlanSchema = z.object({
   mode: z.string().min(1),
 
   creative: z.object({
+    /** The standalone (no Shopify product) session's resolved subject —
+     * e.g. "a pair of sneakers" — read back on a later turn as
+     * `CreativeContext.activeSubject` (services/creative-studio/
+     * creative-context.ts) so a follow-up that doesn't restate the
+     * subject still knows what's being depicted. `null` for the
+     * Shopify-product path (which has a real category instead — see
+     * services/creative-studio/plan-builder.ts's
+     * `buildCreativeGenerationPlan`) and for a standalone turn where no
+     * subject was ever established. `.nullable().default(null)` so an
+     * older persisted `GenerationJob.plan` without this field (from
+     * before it existed) still parses fine — no migration needed. */
+    subject: z.string().min(1).nullable().default(null),
     scene: z.string().min(1).nullable().default(null),
     style: z.array(z.string()).default([]),
     lighting: z.string().min(1).nullable().default(null),

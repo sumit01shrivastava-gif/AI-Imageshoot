@@ -70,7 +70,55 @@ const DARKER_PATTERN = /\b(darker|dimmer|moody lighting)\b/i;
 const CAMERA_PATTERN = /\b(eye[- ]level|overhead|45[- ]degree|low angle|high angle|macro|close[- ]up|top[- ]down)\b/i;
 const COLOR_DIRECTION_PATTERN = /\b(warm tones|cool tones|monochrome|pastel|vibrant colou?rs?|muted colou?rs?)\b/i;
 
-const SCENE_PATTERN = /\b(?:in|on|at|to)\s+(?:a|an|the)\s+([a-z][a-z\s]{2,50}?)(?=\s+with\b|\s+and\b|[.,!]|$)/i;
+// The article after the preposition is now OPTIONAL ("at beach" as well
+// as "at a beach") — casual phrasing routinely drops it, and requiring
+// it silently dropped the scene entirely for a message like "sneakers
+// at beach with cloudy background" (a real production case — see
+// docs/creative-studio.md "Standalone subject extraction").
+const SCENE_PATTERN = /\b(?:in|on|at|to)\s+(?:(?:a|an|the)\s+)?([a-z][a-z\s]{2,50}?)(?=\s+with\b|\s+and\b|[.,!]|$)/i;
+
+// Standalone-only "what is being generated" extraction (see
+// intent-schema.ts's `subject` doc comment). Deliberately generic — no
+// product-specific vocabulary — a deterministic TWO-STAGE match, not
+// one big regex with an optional leading verb clause: an optional outer
+// group that CAN match empty lets the engine backtrack away from the
+// verb entirely the moment something later fails (e.g. a pronoun
+// lookahead — see below), at which point the capture has nothing left
+// to stop it and swallows the verb itself as if it were the subject
+// ("Make it brighter" → "Make it brighter"). Splitting into two
+// deterministic steps closes that hole:
+//
+//   1. `TRIGGER_PREFIX` — REQUIRED, not optional: a
+//      "please create/generate/make/design/produce/show me" opener.
+//      Every one of this feature's own worked examples opens this way.
+//      No match here means no extraction is attempted at all — a
+//      message with no such opener (a bare "Make it brighter," a plain
+//      "Regenerate this") is far more likely to be a follow-up edit
+//      than a fresh subject declaration, and guessing wrong here is
+//      worse than returning null (the caller already has a safe
+//      fallback chain — this session's own carried-forward subject, or
+//      the generic "product" placeholder).
+//   2. `SUBJECT_CAPTURE_PATTERN` — runs only on the remainder AFTER the
+//      trigger clause is stripped, so there's no verb left for a failed
+//      lookahead to fall back onto: an OPTIONAL throwaway prefix
+//      (article, the word "product," an image-noun — "image"/"photo"/
+//      "photograph"/"picture" — "of"/"for," another article, covering
+//      "an image of," "a product photo of," "a picture for," in any
+//      combination actually present), then the captured subject itself,
+//      stopping at the first scene-introducing preposition, punctuation,
+//      or end of string — the same boundary set `SCENE_PATTERN` starts
+//      from, so "subject" and "scene" never overlap. A negative
+//      lookahead still rejects a bare pronoun as the subject ("Make it
+//      brighter" → afterTrigger "it brighter" → lookahead rejects "it"
+//      → no match at all, not "it brighter").
+const TRIGGER_PREFIX = /^(?:please\s+)?(?:create|generate|make|design|produce|show)\s+(?:me\s+)?/i;
+const SUBJECT_CAPTURE_PATTERN =
+  /^(?:(?:an?|the)\s+)?(?:product\s+)?(?:image|photo|photograph|picture)?s?\s*(?:of|for)?\s*(?:(?:an?|the)\s+)?(?!it\b|this\b|that\b|them\b|those\b|these\b|its\b)([a-z][a-z0-9\s-]{1,80}?)(?=\s+(?:at|in|on|near|through|against|by|with|and)\b|[.,!]|$)/i;
+
+// A subject capture can end up carrying a trailing generic image-noun
+// ("premium sneaker image" from "...sneaker image on a beach") — strip
+// it, it describes the ASSET, not the subject.
+const TRAILING_IMAGE_NOUN_PATTERN = /\s+(images?|photos?|photographs?|pictures?)$/i;
 
 const ADD_MODEL_PATTERN = /\b(add|include|show|put)\b.{0,20}\b(a |an )?(model|woman|man|person|hand|someone)\b.{0,20}\bholding\b/i;
 const ADD_MODEL_SIMPLE_PATTERN = /\b(add|include)\b.{0,15}\b(a |an )?(model|woman|man|person)\b/i;
@@ -155,6 +203,33 @@ function extractScene(message: string): string | null {
   const match = SCENE_PATTERN.exec(message);
   if (!match) return null;
   return match[1].trim().replace(/\s+/g, " ");
+}
+
+/** See `TRIGGER_PREFIX`/`SUBJECT_CAPTURE_PATTERN`'s doc comment and
+ * intent-schema.ts's `subject` field. Returns `null`, never a bare
+ * pronoun/empty string/the raw message, when nothing usable was found;
+ * the caller (plan-builder.ts, for a standalone session only) is
+ * responsible for the "nothing extracted" fallback. */
+function extractSubject(message: string): string | null {
+  const trimmed = message.trim();
+  const afterTrigger = trimmed.replace(TRIGGER_PREFIX, "");
+  if (afterTrigger === trimmed) return null; // no recognized trigger clause — nothing safely extractable
+  const match = SUBJECT_CAPTURE_PATTERN.exec(afterTrigger);
+  if (!match) return null;
+
+  let subject = match[1].trim().replace(/\s+/g, " ");
+  subject = subject.replace(TRAILING_IMAGE_NOUN_PATTERN, "").trim();
+
+  // A leading STYLE_KEYWORDS token ("premium sneaker" → "premium" +
+  // "sneaker") is already captured separately as `style` — strip it here
+  // so it isn't duplicated inside the subject phrase too.
+  const words = subject.split(" ");
+  while (words.length > 1 && STYLE_KEYWORDS.includes(words[0].toLowerCase())) {
+    words.shift();
+  }
+  subject = words.join(" ").trim();
+
+  return subject.length > 0 ? subject : null;
 }
 
 function extractStyle(message: string): string[] {
@@ -311,6 +386,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
     const intent = classifyIntent(message, explicitVariationCount !== null && explicitVariationCount > 1, hasCurrentResult);
     const mode = inferMode(intent, hasCurrentResult);
 
+    const subject = extractSubject(message);
     const scene = extractScene(message);
     const style = extractStyle(message);
     const lighting = extractLighting(message);
@@ -328,6 +404,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
     return {
       intent,
       mode,
+      subject,
       scene,
       style,
       lighting,
