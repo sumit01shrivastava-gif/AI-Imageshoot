@@ -7,7 +7,7 @@
  * framing over the same real, discrete GenerationStatus lifecycle
  * (PENDING/QUEUED/PROCESSING) every other generation surface tracks.
  */
-const STEPS = ["Preparing composition", "Applying your creative direction", "Rendering the final image"] as const;
+const STEPS = ["Preparing the composition", "Creating your image", "Finishing the details"] as const;
 
 export interface StudioGenerationLoadingProps {
   title: string;

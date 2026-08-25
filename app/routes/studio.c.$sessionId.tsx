@@ -9,6 +9,7 @@
  * CreativeSessionRow.product's schema comment).
  */
 import { useEffect, useRef } from "react";
+import { randomUUID } from "node:crypto";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
@@ -33,7 +34,7 @@ import { Composer, type ComposerHandle } from "../components/composer";
 import { StudioGenerationLoading } from "../components/studio-generation-loading";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
-const GENERIC_ERROR = "Couldn't complete that action right now. Please try again.";
+const GENERIC_ERROR = "I couldn't complete that action. Please try again.";
 
 const SUGGESTION_CHIPS = [
   "Make the background darker",
@@ -44,8 +45,8 @@ const SUGGESTION_CHIPS = [
 ];
 
 function jobStatusPhrase(status: string, outputCount: number): string {
-  if (status === "PENDING" || status === "QUEUED") return "Understanding your request…";
-  if (status === "PROCESSING") return outputCount > 1 ? `Generating ${outputCount} variations…` : "Creating your image…";
+  if (status === "PENDING" || status === "QUEUED") return "Understanding your direction…";
+  if (status === "PROCESSING") return outputCount > 1 ? `Creating ${outputCount} variations…` : "Creating your image…";
   if (status === "SUCCEEDED") return "Your image is ready.";
   if (status === "FAILED") return "That request didn't work out.";
   return "";
@@ -76,12 +77,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { context } = await requireWorkspaceContext(request);
+  const { context, userId, workspaceId } = await requireWorkspaceContext(request);
   const sessionId = params.sessionId!;
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "send-message") {
+    const requestId = randomUUID();
     const message = formData.get("message");
     const files = formData.getAll("images").filter((f): f is File => f instanceof File && f.size > 0);
     if (typeof message !== "string") {
@@ -103,9 +105,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       if (error instanceof InsufficientCreditsError || error instanceof PlanLimitExceededError) {
         return { ok: false as const, error: error.message, reason: "insufficient_credits" as const };
       }
+      // Full, structured detail server-side (never the raw message text
+      // or attachment bytes); the client only ever sees GENERIC_ERROR.
       logger.error("studio.send_message_failed", {
-        shop: context.shop,
+        requestId,
+        workspaceId,
+        userId,
         sessionId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
         detail: error instanceof Error ? error.message : "unknown error",
       });
       return { ok: false as const, error: GENERIC_ERROR };
@@ -315,7 +322,7 @@ export default function StudioConversation() {
               in flight (FAILED already has its own, more specific
               banner above). */}
           {latestJob && latestJob.status !== "FAILED" && (
-            <div className="studio-status-line">
+            <div className="studio-status-line" role="status" aria-live="polite">
               {isInFlight && <span className="studio-dot-pulse" aria-hidden="true" />}
               {jobStatusPhrase(latestJob.status, latestJob.results.length || 1)}
             </div>

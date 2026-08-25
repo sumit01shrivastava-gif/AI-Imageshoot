@@ -11,12 +11,14 @@
  * queue/worker, never faked here.
  */
 import { useRef } from "react";
+import { randomUUID } from "node:crypto";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect, useFetcher } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
 import {
   startCreativeSession,
   sendCreativeMessage,
+  abandonEmptyCreativeSession,
   EmptyMessageError,
   InsufficientCreditsError,
   PlanLimitExceededError,
@@ -24,7 +26,7 @@ import {
 import { logger } from "../../lib/logging/logger.server";
 import { Composer, type ComposerHandle } from "../components/composer";
 
-const GENERIC_ERROR = "Couldn't start that conversation right now. Please try again.";
+const GENERIC_ERROR = "I couldn't start this creation. Please try again.";
 
 const EXAMPLE_PROMPTS = [
   "Create a premium product campaign image for this shoe.",
@@ -39,7 +41,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { context } = await requireWorkspaceContext(request);
+  const { context, userId, workspaceId } = await requireWorkspaceContext(request);
+  const requestId = randomUUID();
   const formData = await request.formData();
   const message = String(formData.get("message") ?? "").trim();
   const files = formData.getAll("images").filter((f): f is File => f instanceof File && f.size > 0);
@@ -48,26 +51,68 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { ok: false as const, error: "Describe what you want, or attach an image to start from." };
   }
 
+  // Tracked across the try block so the catch/rollback below always
+  // knows exactly how far this request got — both for the rollback
+  // itself (only a created-but-message-less session needs cleanup) and
+  // for the structured log line (CLAUDE.md "Safe error handling": full,
+  // useful detail server-side, never a raw stack trace or the
+  // merchant's own words client-side).
+  let sessionId: string | null = null;
+  let stage: "create_session" | "upload_references" | "send_message" = "create_session";
+
   try {
     const created = await startCreativeSession(context, {});
+    sessionId = created.id;
+
+    stage = "upload_references";
     const referenceImages = await Promise.all(
       files.map(async (file) => ({ data: new Uint8Array(await file.arrayBuffer()), contentType: file.type })),
     );
+
+    stage = "send_message";
     // An image-only first message still needs SOME instruction — a
     // real, sensible default, not a fabricated response (the actual
     // generation still runs through the real pipeline below).
     const effectiveMessage = message.length > 0 ? message : "Create a clean, professional product photo from this image.";
-    await sendCreativeMessage(context, created.id, effectiveMessage, { referenceImages });
-    return redirect(`/studio/c/${created.id}`);
+    await sendCreativeMessage(context, sessionId, effectiveMessage, { referenceImages });
+    return redirect(`/studio/c/${sessionId}`);
   } catch (error) {
+    // Clean up FIRST, before any of the specific-error branches below
+    // return — regardless of WHY sendCreativeMessage failed (a
+    // validation error, insufficient credits, or a genuine unexpected
+    // failure), an empty, message-less session must never survive the
+    // request that revealed the failure. See
+    // abandonEmptyCreativeSession's doc comment (Part 2's "empty
+    // conversations should not clutter" rule).
+    if (sessionId) {
+      await abandonEmptyCreativeSession(context, sessionId).catch((cleanupError: unknown) =>
+        logger.warn("studio.new_conversation_cleanup_failed", {
+          requestId,
+          workspaceId,
+          sessionId,
+          detail: cleanupError instanceof Error ? cleanupError.message : "unknown error",
+        }),
+      );
+    }
+
     if (error instanceof EmptyMessageError) {
       return { ok: false as const, error: error.message };
     }
     if (error instanceof InsufficientCreditsError || error instanceof PlanLimitExceededError) {
       return { ok: false as const, error: error.message };
     }
+
+    // Full, structured, merchant-content-free detail server-side; the
+    // client only ever sees GENERIC_ERROR below. Never the raw prompt
+    // text or attachment bytes — CLAUDE.md "Safe error handling"/"no
+    // sensitive user content unnecessarily".
     logger.error("studio.new_conversation_failed", {
-      shop: context.shop,
+      requestId,
+      workspaceId,
+      userId,
+      sessionId,
+      stage,
+      errorName: error instanceof Error ? error.name : "UnknownError",
       detail: error instanceof Error ? error.message : "unknown error",
     });
     return { ok: false as const, error: GENERIC_ERROR };

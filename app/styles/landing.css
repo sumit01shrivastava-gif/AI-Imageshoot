@@ -1,0 +1,410 @@
+/**
+ * The standalone product's landing page (app/routes/_index/route.tsx) —
+ * layered on top of app/styles/studio.css's `--studio-*` design tokens
+ * (same brand system as /login, /signup, /studio), page-specific layout
+ * only. Never touches app/styles/global.css's Shopify-embedded `--aps-*`
+ * tokens — this stylesheet is only ever linked from the root route, and
+ * the root route's own Shopify OAuth form/behavior is untouched by it.
+ */
+
+.landing {
+  background: var(--studio-bg);
+  color: var(--studio-ink);
+  font-family: var(--studio-font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.landing-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 22px 24px;
+}
+
+.landing-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 13.5px;
+}
+
+.landing-nav-links a {
+  color: var(--studio-ink-subdued);
+  text-decoration: none;
+}
+.landing-nav-links a:hover {
+  color: var(--studio-ink);
+}
+
+.landing-nav-cta {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--studio-radius-pill);
+  padding: 8px 16px;
+  font-weight: 600;
+  background: var(--studio-primary);
+  color: var(--studio-primary-foreground);
+  text-decoration: none;
+}
+
+/* ---------- Hero ---------- */
+
+.landing-hero {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 64px 24px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+.landing-eyebrow {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--studio-ink-faint);
+}
+
+.landing-hero h1 {
+  font-family: var(--studio-font-display);
+  font-weight: 500;
+  font-size: clamp(34px, 6vw, 56px);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.landing-hero-sub {
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--studio-ink-subdued);
+  max-width: 34rem;
+  margin: 0;
+}
+
+.landing-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.landing-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--studio-radius-pill);
+  padding: 13px 26px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.landing-btn[data-variant="primary"] {
+  background: var(--studio-primary);
+  color: var(--studio-primary-foreground);
+}
+.landing-btn[data-variant="primary"]:hover { opacity: 0.88; }
+.landing-btn[data-variant="secondary"] {
+  background: transparent;
+  color: var(--studio-ink);
+  border-color: var(--studio-border-strong);
+}
+.landing-btn[data-variant="secondary"]:hover { background: var(--studio-surface-hover); }
+
+.landing-hero-note {
+  font-size: 12.5px;
+  color: var(--studio-ink-faint);
+}
+.landing-hero-note a { color: var(--studio-ink-subdued); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- Generic section scaffolding ---------- */
+
+.landing-section {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 88px 24px;
+}
+.landing-section[data-tint="true"] {
+  max-width: none;
+  background: var(--studio-surface);
+  border-top: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--studio-border);
+}
+.landing-section[data-tint="true"] > .landing-section-inner {
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.landing-section-head {
+  max-width: 34rem;
+  margin: 0 0 44px;
+}
+.landing-section-head[data-center="true"] { max-width: 38rem; margin-left: auto; margin-right: auto; text-align: center; }
+
+.landing-section-eyebrow {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--studio-ink-faint);
+  margin: 0 0 10px;
+}
+
+.landing-section-head h2 {
+  font-family: var(--studio-font-display);
+  font-weight: 500;
+  font-size: clamp(24px, 3.4vw, 34px);
+  line-height: 1.2;
+  margin: 0 0 12px;
+  text-wrap: balance;
+}
+
+.landing-section-head p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--studio-ink-subdued);
+  margin: 0;
+}
+
+/* ---------- Gallery (abstract creative placeholders — never fake
+   "AI-generated" photos; see module doc comment / route doc comment) ---------- */
+
+.landing-gallery {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.landing-gallery-card {
+  aspect-ratio: 4 / 5;
+  border-radius: var(--studio-radius-md);
+  border: 1px solid var(--studio-border);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  padding: 14px;
+}
+.landing-gallery-card span {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  position: relative;
+}
+.landing-gallery-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.9;
+}
+.landing-gallery-card[data-tone="1"]::before { background: linear-gradient(155deg, #2b2b2f, #0a0a0b 65%); }
+.landing-gallery-card[data-tone="2"]::before { background: linear-gradient(155deg, #3a352c, #0a0a0b 65%); }
+.landing-gallery-card[data-tone="3"]::before { background: linear-gradient(155deg, #23282b, #0a0a0b 65%); }
+.landing-gallery-card[data-tone="4"]::before { background: linear-gradient(155deg, #33272c, #0a0a0b 65%); }
+.landing-gallery-card svg { position: absolute; top: 16px; left: 16px; opacity: 0.65; }
+
+/* ---------- Feature triptych ---------- */
+
+.landing-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 40px;
+}
+
+.landing-feature-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--studio-border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+  color: var(--studio-ink);
+}
+
+.landing-feature h3 {
+  font-size: 16px;
+  font-weight: 620;
+  margin: 0 0 8px;
+}
+.landing-feature p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--studio-ink-subdued);
+  margin: 0;
+}
+
+/* ---------- Reference → generated concept ---------- */
+
+.landing-transform {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 24px;
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.landing-transform-panel {
+  aspect-ratio: 1;
+  border-radius: var(--studio-radius-lg);
+  border: 1px solid var(--studio-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+}
+.landing-transform-panel[data-kind="before"] { background: var(--studio-surface); border-style: dashed; }
+.landing-transform-panel[data-kind="after"] { background: linear-gradient(155deg, #2b2b2f, #0a0a0b 70%); color: #f4f4f3; }
+.landing-transform-panel .landing-transform-label {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.landing-transform-panel .landing-transform-caption { font-size: 13px; opacity: 0.85; max-width: 12rem; }
+.landing-transform-arrow { color: var(--studio-ink-faint); }
+
+/* ---------- Chat mock (conversational refinement) ---------- */
+
+.landing-chat-mock {
+  max-width: 30rem;
+  margin: 0 auto;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-lg);
+  background: var(--studio-surface);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.landing-chat-bubble {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.landing-chat-bubble[data-role="user"] {
+  align-self: flex-end;
+  background: var(--studio-primary);
+  color: var(--studio-primary-foreground);
+  border-bottom-right-radius: 4px;
+}
+.landing-chat-bubble[data-role="ai"] {
+  align-self: flex-start;
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-border);
+  border-bottom-left-radius: 4px;
+}
+
+/* ---------- Shopify section ---------- */
+
+.landing-shopify {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 48px;
+  align-items: center;
+}
+.landing-shopify-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 18px;
+}
+.landing-shopify-form input {
+  flex: 1;
+  font-size: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--studio-border-strong);
+  border-radius: var(--studio-radius-sm);
+  background: var(--studio-bg);
+  color: var(--studio-ink);
+  font-family: inherit;
+}
+.landing-shopify-form button {
+  border-radius: var(--studio-radius-sm);
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--studio-border-strong);
+  background: transparent;
+  color: var(--studio-ink);
+  cursor: pointer;
+}
+.landing-shopify-form button:hover { background: var(--studio-surface-hover); }
+.landing-shopify-visual {
+  aspect-ratio: 4/3;
+  border-radius: var(--studio-radius-lg);
+  border: 1px solid var(--studio-border);
+  background: var(--studio-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--studio-ink-faint);
+}
+
+/* ---------- Final CTA ---------- */
+
+.landing-final {
+  text-align: center;
+  padding: 96px 24px;
+  max-width: 40rem;
+  margin: 0 auto;
+}
+.landing-final h2 {
+  font-family: var(--studio-font-display);
+  font-weight: 500;
+  font-size: clamp(26px, 4vw, 38px);
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+.landing-final p {
+  color: var(--studio-ink-subdued);
+  font-size: 15px;
+  margin: 0 0 28px;
+}
+
+.landing-footer {
+  border-top: 1px solid var(--studio-border);
+  padding: 28px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 72rem;
+  margin: 0 auto;
+  font-size: 12.5px;
+  color: var(--studio-ink-faint);
+}
+.landing-footer a { color: inherit; }
+
+@media (max-width: 860px) {
+  .landing-gallery { grid-template-columns: repeat(2, 1fr); }
+  .landing-feature-grid { grid-template-columns: 1fr; gap: 32px; }
+  .landing-transform { grid-template-columns: 1fr; }
+  .landing-transform-arrow { transform: rotate(90deg); justify-self: center; }
+  .landing-shopify { grid-template-columns: 1fr; }
+  .landing-section { padding: 56px 20px; }
+  .landing-hero { padding: 48px 20px 12px; }
+}
+
+@media (max-width: 480px) {
+  .landing-gallery { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .landing-nav-links a:not(:last-child) { display: none; }
+  .landing-shopify-form { flex-direction: column; }
+}

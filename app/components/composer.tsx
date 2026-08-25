@@ -179,6 +179,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <textarea
             ref={textareaRef}
             rows={1}
+            aria-label="Describe what you want to create"
             placeholder={placeholder ?? "Describe what you want to create…"}
             value={draft}
             disabled={disabled}

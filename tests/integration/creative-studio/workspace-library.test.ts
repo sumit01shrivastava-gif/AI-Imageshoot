@@ -77,9 +77,27 @@ describe("listWorkspaceConversations", () => {
     await createCreativeMessage({ shop: SHOP, creativeSessionId: session.id, role: "ASSISTANT", content: "Creating your image…" });
 
     const [summary] = await listWorkspaceConversations(CONTEXT, { limit: 10 });
-    expect(summary.title.length).toBeLessThanOrEqual(65);
-    expect(summary.title.startsWith("Create a premium campaign image")).toBe(true);
+    expect(summary.title.length).toBeLessThanOrEqual(49);
+    // Leading imperative filler ("Create a...") is stripped so the title
+    // reads like a subject, not a truncated command sentence.
+    expect(summary.title.startsWith("Premium campaign image")).toBe(true);
     expect(summary.title.endsWith("…")).toBe(true);
+  });
+
+  it("strips a leading imperative phrase and article, and capitalizes the result", async () => {
+    const session = await createCreativeSession({ shop: SHOP, productId: null, sourceType: "PRODUCT_IMAGE" });
+    await createCreativeMessage({ shop: SHOP, creativeSessionId: session.id, role: "USER", content: "make a luxury running shoe campaign" });
+
+    const [summary] = await listWorkspaceConversations(CONTEXT, { limit: 10 });
+    expect(summary.title).toBe("Luxury running shoe campaign");
+  });
+
+  it("falls back to the original message when stripping filler would leave nothing", async () => {
+    const session = await createCreativeSession({ shop: SHOP, productId: null, sourceType: "PRODUCT_IMAGE" });
+    await createCreativeMessage({ shop: SHOP, creativeSessionId: session.id, role: "USER", content: "Please create" });
+
+    const [summary] = await listWorkspaceConversations(CONTEXT, { limit: 10 });
+    expect(summary.title.length).toBeGreaterThan(0);
   });
 
   it("reports a real thumbnail URL and version count once a job has produced results, only when withThumbnails is true", async () => {

@@ -78,6 +78,18 @@
 
 * { box-sizing: border-box; }
 
+/* Keyboard-only focus ring (never shown for a mouse click) — a real,
+   visible indicator on every interactive element in this system, so
+   removing an element's own default outline (e.g. the composer
+   textarea below, which uses :focus-within on its container instead —
+   see .studio-composer:focus-within) never leaves keyboard navigation
+   with no visible focus state at all. */
+.studio-root :is(button, a, input, textarea, [tabindex]):focus-visible,
+.auth-page :is(button, a, input, textarea):focus-visible {
+  outline: 2px solid var(--studio-ink-subdued);
+  outline-offset: 2px;
+}
+
 .studio-root, .auth-page {
   background: var(--studio-bg);
   color: var(--studio-ink);
@@ -267,6 +279,36 @@
   flex-direction: column;
 }
 
+/* ---------- Mobile top bar + off-canvas nav drawer ----------
+   Hidden entirely on desktop (display: none) — only the mobile media
+   query below turns these on. Replaces a prior mobile layout that
+   squeezed the whole sidebar into one horizontally-scrolling row, which
+   left account/logout reachable only by scrolling sideways past
+   everything else. */
+
+.studio-mobile-topbar { display: none; }
+.studio-mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--studio-radius-sm);
+  border: 1px solid var(--studio-border);
+  background: var(--studio-surface);
+  color: var(--studio-ink);
+  cursor: pointer;
+}
+.studio-nav-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
 /* ---------- Empty-state / composer landing ---------- */
 
 .studio-hero {
@@ -335,6 +377,16 @@
 }
 
 .studio-composer[data-dragging="true"] {
+  border-color: var(--studio-ink-subdued);
+  box-shadow: 0 0 0 3px var(--studio-surface-hover);
+}
+
+/* The textarea itself suppresses its own outline (a rectangular ring
+   would break the rounded composer's shape) — this is the real,
+   visible focus indicator keyboard users get instead, on whichever
+   control inside actually has focus (textarea, attach button, send
+   button). */
+.studio-composer:focus-within {
   border-color: var(--studio-ink-subdued);
   box-shadow: 0 0 0 3px var(--studio-surface-hover);
 }
@@ -807,22 +859,47 @@
 }
 
 @media (max-width: 760px) {
-  .studio-shell { grid-template-columns: 1fr; }
-  .studio-sidebar {
-    flex-direction: row;
+  .studio-shell { grid-template-columns: 1fr; display: block; }
+
+  .studio-mobile-topbar {
+    display: flex;
     align-items: center;
-    border-right: none;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    /* Above the backdrop (z-index 40) — the hamburger button must stay
+       clickable (to toggle back closed) even while the backdrop is
+       covering the rest of the page; below the drawer itself (50), so
+       the open drawer still visually sits on top of it. */
+    z-index: 45;
+    padding: 12px 16px;
+    background: var(--studio-bg);
     border-bottom: 1px solid var(--studio-border);
-    padding: 12px 14px;
-    gap: 10px;
-    overflow-x: auto;
   }
-  .studio-sidebar-top { margin-bottom: 0; }
-  .studio-conv-list, .studio-sidebar-label { display: none; }
-  .studio-sidebar-links { flex-direction: row; border-top: none; padding-top: 0; }
-  .studio-sidebar-footer { border-top: none; margin-top: 0; padding-top: 0; margin-left: auto; }
-  .studio-new-btn { width: auto; margin-bottom: 0; padding: 8px 12px; }
-  .studio-page { padding: 24px 20px; }
-  .studio-canvas { padding: 18px; }
+  .studio-mobile-menu-btn { display: flex; }
+  .studio-nav-backdrop { display: block; }
+
+  /* A real off-canvas drawer — the SAME full vertical sidebar desktop
+     shows (logo, new conversation, conversation list, Creations,
+     account, logout), not a stripped-down row, so nothing is only
+     reachable by scrolling sideways. */
+  .studio-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: min(320px, 84vw);
+    background: var(--studio-bg);
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    box-shadow: var(--studio-shadow-md);
+  }
+  .studio-sidebar[data-open="true"] { transform: translateX(0); }
+
+  .studio-page { padding: 20px 18px; }
+  .studio-canvas { padding: 16px; }
   .studio-composer-wrap { padding: 0 14px 18px; }
+  .studio-conv { grid-template-columns: 1fr; }
+  .studio-canvas { border-right: none; border-bottom: 1px solid var(--studio-border); min-height: 46vh; }
 }

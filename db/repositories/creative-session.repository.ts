@@ -107,4 +107,19 @@ export async function listCreativeSessionsForShop(context: AuthContext, limit: n
   });
 }
 
+/** Deletes a session ONLY IF it still has zero messages — the rollback a
+ * "start a new conversation" action performs when session creation
+ * succeeded but the immediately-following first `sendCreativeMessage`
+ * call failed (see app/routes/studio._index.tsx), so a failed first
+ * message never leaves an empty, untitled "New conversation" row
+ * cluttering the sidebar forever. Silently a no-op — never throws — if
+ * the session already has a message (a real conversation must never be
+ * deleted here) or doesn't belong to this shop; both are defense in
+ * depth, not expected in the one real caller's own flow. */
+export async function deleteEmptyCreativeSession(shop: string, id: string): Promise<void> {
+  const messageCount = await prisma.creativeMessage.count({ where: { creativeSessionId: id } });
+  if (messageCount > 0) return;
+  await prisma.creativeSession.deleteMany({ where: { id, shop } });
+}
+
 export type { CreativeSessionStatus, CreativeSourceType };

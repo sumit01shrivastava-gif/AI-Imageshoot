@@ -19,6 +19,7 @@ import {
   createCreativeSession,
   setCurrentResult,
   listCreativeSessionsForProduct,
+  deleteEmptyCreativeSession,
   type CreativeSessionRow,
   type CreativeSourceType,
 } from "../../db/repositories/creative-session.repository";
@@ -105,6 +106,17 @@ export async function startCreativeSession(context: AuthContext, input: StartCre
     sourceResultId: input.sourceResultId ?? null,
     sourceMediaId: input.sourceMediaId ?? null,
   });
+}
+
+/** Rollback for a "start a new conversation" flow whose session was
+ * created but whose immediately-following first message failed (see
+ * app/routes/studio._index.tsx) — deletes the now-pointless empty
+ * session so it never shows up as a permanent, untitled "New
+ * conversation" row. A no-op (never throws) if the session already
+ * picked up a message, or doesn't belong to this shop — see
+ * `deleteEmptyCreativeSession`'s own doc comment. */
+export async function abandonEmptyCreativeSession(context: AuthContext, sessionId: string): Promise<void> {
+  await deleteEmptyCreativeSession(context.shop, sessionId);
 }
 
 async function loadOwnedProduct(context: AuthContext, productId: string) {

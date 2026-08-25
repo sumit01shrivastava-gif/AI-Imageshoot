@@ -44,12 +44,43 @@ export interface WorkspaceConversationSummary {
   thumbnailUrl: string | null;
 }
 
-const TITLE_MAX_CHARS = 64;
+const TITLE_MAX_CHARS = 48;
+
+// Strips common imperative openers ("Create a...", "Please make...") and a
+// leading article so a title reads like a short subject/noun phrase
+// rather than a truncated command sentence — still fully deterministic
+// (no extra AI call/cost per conversation; see module doc comment), just
+// a better heuristic than raw truncation. Never fabricates a summary
+// beyond the merchant's own words — it only trims/reorders what they
+// already wrote.
+const LEADING_FILLER =
+  /^(please\s+)?(can you\s+|could you\s+|i want to\s+|i'd like to\s+|i would like to\s+|create\s+|make\s+|generate\s+|design\s+|build\s+)+/i;
+const LEADING_ARTICLE = /^(a|an|the)\s+/i;
+
+function truncateAtWordBoundary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
+  const lastSpace = slice.lastIndexOf(" ");
+  const cut = lastSpace > maxChars * 0.5 ? slice.slice(0, lastSpace) : slice;
+  return `${cut.trimEnd()}…`;
+}
+
+function capitalize(text: string): string {
+  return text.length === 0 ? text : text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function deriveTitle(content: string | undefined | null): string {
-  const trimmed = (content ?? "").trim();
-  if (trimmed.length === 0) return "New conversation";
-  return trimmed.length > TITLE_MAX_CHARS ? `${trimmed.slice(0, TITLE_MAX_CHARS).trimEnd()}…` : trimmed;
+  const raw = (content ?? "").trim();
+  if (raw.length === 0) return "New conversation";
+
+  let cleaned = raw.replace(LEADING_FILLER, "").replace(LEADING_ARTICLE, "").trim();
+  // The filler strip ate the entire message (e.g. it really was just
+  // "Please create") — fall back to the original rather than titling
+  // the conversation with an empty string.
+  if (cleaned.length === 0) cleaned = raw;
+  cleaned = capitalize(cleaned.replace(/[.!?\s]+$/, ""));
+
+  return truncateAtWordBoundary(cleaned, TITLE_MAX_CHARS);
 }
 
 export interface ListWorkspaceConversationsOptions {

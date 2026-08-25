@@ -11,6 +11,7 @@
  * view), computed once per navigation into /studio/* the same way this
  * loader always has been.
  */
+import { useEffect, useState } from "react";
 import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
 import { Form, Link, Outlet, useLoaderData, useLocation, useParams } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
@@ -44,9 +45,61 @@ export default function StudioShell() {
   const activeSessionId = params.sessionId;
   const initial = email.trim().charAt(0).toUpperCase() || "?";
 
+  // Mobile only (desktop's sidebar is always visible — see studio.css's
+  // media query, which is the only place `data-open`/`data-nav-open`
+  // below actually do anything). A real off-canvas drawer, not the
+  // previous horizontally-scrolling top bar that left account/logout
+  // reachable only by scrolling sideways past everything else.
+  const [isNavOpen, setIsNavOpen] = useState(false);
+  // Closes the drawer on navigation — adjusted DURING render (React's
+  // documented pattern for "reset state when a prop changes"), not
+  // inside a useEffect, so this never triggers the cascading-render
+  // set-state-in-effect issue app/routes/studio.c.$sessionId.tsx hit
+  // earlier. Bails out (no infinite loop) the moment prevPathname
+  // catches up to location.pathname.
+  const [prevPathname, setPrevPathname] = useState(location.pathname);
+  if (location.pathname !== prevPathname) {
+    setPrevPathname(location.pathname);
+    setIsNavOpen(false);
+  }
+
+  useEffect(() => {
+    if (!isNavOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsNavOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isNavOpen]);
+
   return (
-    <div className="studio-root studio-shell">
-      <aside className="studio-sidebar">
+    <div className="studio-root studio-shell" data-nav-open={isNavOpen}>
+      <div className="studio-mobile-topbar">
+        <Link to="/studio" aria-label="AI Imageshoot — new conversation">
+          <Logo variant="full" size={19} />
+        </Link>
+        <button
+          type="button"
+          className="studio-mobile-menu-btn"
+          aria-label={isNavOpen ? "Close menu" : "Open menu"}
+          aria-expanded={isNavOpen}
+          onClick={() => setIsNavOpen((open) => !open)}
+        >
+          {isNavOpen ? (
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+      </div>
+
+      {isNavOpen && <button type="button" className="studio-nav-backdrop" aria-label="Close menu" onClick={() => setIsNavOpen(false)} />}
+
+      <aside className="studio-sidebar" data-open={isNavOpen}>
         <Link to="/studio" className="studio-sidebar-top" aria-label="AI Imageshoot — new conversation">
           <Logo variant="full" size={20} />
         </Link>

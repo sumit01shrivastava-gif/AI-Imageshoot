@@ -140,14 +140,14 @@ test.describe("Standalone studio — sign up, converse, generate, iterate", () =
 
       // 14+15. The conversation shows up in the sidebar history and in
       // Creations.
-      await expect(page.locator(".studio-conv-item", { hasText: "Create a clean product photo" })).toBeVisible();
+      await expect(page.locator(".studio-conv-item", { hasText: "Clean product photo" })).toBeVisible();
       await page.getByRole("link", { name: "Creations" }).click();
       await expect(page).toHaveURL(/\/studio\/creations$/);
-      await expect(page.locator(".studio-gallery-card", { hasText: "Create a clean product photo" })).toBeVisible();
+      await expect(page.locator(".studio-gallery-card", { hasText: "Clean product photo" })).toBeVisible();
 
       // 16. Reopening the conversation from Creations loads the SAME
       // session with its full history, not a fresh one.
-      await page.locator(".studio-gallery-card", { hasText: "Create a clean product photo" }).click();
+      await page.locator(".studio-gallery-card", { hasText: "Clean product photo" }).click();
       await expect(page).toHaveURL(new RegExp(`/studio/c/${sessionId}$`));
       await expect(page.locator(".studio-msg", { hasText: "Make the background darker" })).toBeVisible();
 
@@ -167,7 +167,7 @@ test.describe("Standalone studio — sign up, converse, generate, iterate", () =
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page).toHaveURL(/\/studio$/, { timeout: 10_000 });
 
-    await page.getByPlaceholder("Describe what you want to create…").fill("Create a clean product photo");
+    await page.getByPlaceholder("Describe what you want to create…").fill("Clean product photo");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page).toHaveURL(/\/studio\/c\/[a-z0-9]+$/, { timeout: 10_000 });
     const sessionId = page.url().split("/").pop()!;
@@ -184,5 +184,96 @@ test.describe("Standalone studio — sign up, converse, generate, iterate", () =
     const response = await otherPage.goto(`/studio/c/${sessionId}`);
     expect(response?.status()).toBe(404);
     await otherPage.close();
+  });
+
+  test(
+    "multiple conversations: New conversation never destroys the previous one, both are switchable, and everything survives a refresh",
+    async ({ page }) => {
+      test.setTimeout(60_000);
+
+      await page.goto("/signup");
+      await page.getByLabel("Email").fill(EMAIL_A);
+      await page.getByLabel("Password").fill(PASSWORD);
+      await page.getByRole("button", { name: "Create account" }).click();
+      await expect(page).toHaveURL(/\/studio$/, { timeout: 10_000 });
+
+      const shop = await tenantKeyFor(EMAIL_A);
+
+      // First conversation.
+      await page.getByPlaceholder("Describe what you want to create…").fill("Studio product shot");
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect(page).toHaveURL(/\/studio\/c\/[a-z0-9]+$/, { timeout: 10_000 });
+      const firstId = page.url().split("/").pop()!;
+      await waitForJobCount(shop, firstId, 1);
+      await expect(page.getByText("Your image is ready.")).toBeVisible({ timeout: 15_000 });
+
+      // "New conversation" opens a fresh composer — the first
+      // conversation must still be listed in the sidebar, untouched.
+      await page.getByRole("link", { name: "New conversation", exact: true }).click();
+      await expect(page).toHaveURL(/\/studio$/);
+      await expect(page.locator(".studio-conv-item", { hasText: "Studio product shot" })).toBeVisible();
+
+      // Second conversation.
+      await page.getByPlaceholder("Describe what you want to create…").fill("Lifestyle campaign scene");
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect(page).toHaveURL(/\/studio\/c\/[a-z0-9]+$/, { timeout: 10_000 });
+      const secondId = page.url().split("/").pop()!;
+      expect(secondId).not.toBe(firstId);
+      await waitForJobCount(shop, secondId, 1);
+      await expect(page.getByText("Your image is ready.")).toBeVisible({ timeout: 15_000 });
+
+      // Both now listed; switching back to the first still shows its
+      // own content, not the second's.
+      await expect(page.locator(".studio-conv-item", { hasText: "Studio product shot" })).toBeVisible();
+      await expect(page.locator(".studio-conv-item", { hasText: "Lifestyle campaign scene" })).toBeVisible();
+
+      await page.locator(".studio-conv-item", { hasText: "Studio product shot" }).click();
+      await expect(page).toHaveURL(new RegExp(`/studio/c/${firstId}$`));
+      await expect(page.locator(".studio-msg", { hasText: "Studio product shot" })).toBeVisible();
+
+      // Refreshing preserves everything — same session, same messages.
+      await page.reload();
+      await expect(page).toHaveURL(new RegExp(`/studio/c/${firstId}$`));
+      await expect(page.locator(".studio-msg", { hasText: "Studio product shot" })).toBeVisible();
+      await expect(page.locator(".studio-conv-item", { hasText: "Lifestyle campaign scene" })).toBeVisible();
+    },
+  );
+
+  test("mobile (375px): the sidebar opens as a drawer and account/logout are reachable without horizontal scrolling", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+
+    await page.goto("/signup");
+    await page.getByLabel("Email").fill(EMAIL_A);
+    await page.getByLabel("Password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page).toHaveURL(/\/studio$/, { timeout: 10_000 });
+
+    // No page-level horizontal overflow.
+    const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    expect(hasHorizontalOverflow).toBe(false);
+
+    // Closed: the drawer sits off-screen to the left (translateX), not
+    // reachable by scrolling sideways past a cramped row — the exact
+    // regression this layout replaces. `toBeVisible()` alone isn't a
+    // reliable signal for an off-canvas transform (it doesn't account
+    // for being scrolled/translated out of the viewport), so this
+    // checks the drawer's actual on-screen position directly.
+    const sidebar = page.locator(".studio-sidebar");
+    const closedBox = await sidebar.boundingBox();
+    expect(closedBox).not.toBeNull();
+    expect(closedBox!.x + closedBox!.width).toBeLessThanOrEqual(0);
+
+    // Open: the drawer slides fully into the viewport and Log out is a
+    // real, clickable, visible control.
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+    await page.waitForTimeout(250); // drawer open transition
+    const openBox = await sidebar.boundingBox();
+    expect(openBox!.x).toBeGreaterThanOrEqual(0);
+
+    await page.locator(".studio-mobile-menu-btn").click();
+    await page.waitForTimeout(250); // drawer close transition
+    const closedAgainBox = await sidebar.boundingBox();
+    expect(closedAgainBox!.x + closedAgainBox!.width).toBeLessThanOrEqual(0);
   });
 });

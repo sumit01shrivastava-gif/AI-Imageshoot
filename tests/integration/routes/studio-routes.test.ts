@@ -292,7 +292,7 @@ describe("3–11. new conversation → real generation → conversation view", (
 
       const layout = await callStudioLayoutLoader(cookie);
       expect(layout.conversations.some((c) => c.id === sessionId)).toBe(true);
-      expect(layout.conversations.find((c) => c.id === sessionId)?.title).toContain("luxury campaign");
+      expect(layout.conversations.find((c) => c.id === sessionId)?.title).toContain("Luxury campaign");
 
       const creations = await callCreationsLoader(cookie);
       expect(creations.conversations.some((c) => c.id === sessionId)).toBe(true);
@@ -352,4 +352,60 @@ describe("new-conversation composer validation", () => {
     const { cookie } = await signUpAndGetCookie(EMAIL_A);
     await expect(newConversationLoader({ request: requestWithCookie("https://example.com/studio", cookie), params: {}, context: {} } as unknown as Parameters<typeof newConversationLoader>[0])).resolves.toBeNull();
   });
+
+  it("never leaves an empty, cluttering session behind when the first message fails (e.g. insufficient credits)", async () => {
+    const { cookie } = await signUpAndGetCookie(EMAIL_A);
+    process.env.CREATIVE_STUDIO_MONTHLY_CREDITS = "0";
+    resetEnvCacheForTests();
+    try {
+      const formData = new FormData();
+      formData.set("message", "Create a clean product photo");
+      const result = await callNewConversationAction(cookie, formData);
+      expect(result).toMatchObject({ ok: false });
+
+      const shop = await tenantKeyForUser((await prisma.user.findUniqueOrThrow({ where: { email: EMAIL_A } })).id);
+      const sessions = await prisma.creativeSession.findMany({ where: { shop } });
+      expect(sessions).toHaveLength(0);
+    } finally {
+      delete process.env.CREATIVE_STUDIO_MONTHLY_CREDITS;
+      resetEnvCacheForTests();
+    }
+  });
+});
+
+describe("multiple conversations", () => {
+  it(
+    "a second 'New conversation' does not destroy the first — both remain independently accessible",
+    async () => {
+      const { cookie } = await signUpAndGetCookie(EMAIL_A);
+
+      const first = new FormData();
+      first.set("message", "Create a clean studio shot");
+      const firstResult = await callNewConversationAction(cookie, first);
+      const firstId = (firstResult as Response).headers.get("Location")!.replace("/studio/c/", "");
+      await waitForJobStatus(cookie, firstId, "SUCCEEDED");
+
+      const second = new FormData();
+      second.set("message", "Create a lifestyle campaign scene");
+      const secondResult = await callNewConversationAction(cookie, second);
+      const secondId = (secondResult as Response).headers.get("Location")!.replace("/studio/c/", "");
+      expect(secondId).not.toBe(firstId);
+      await waitForJobStatus(cookie, secondId, "SUCCEEDED");
+
+      // Both conversations, independently, still have their own full
+      // history — switching to the second never lost the first.
+      const firstDetail = await callConversationLoader(cookie, firstId);
+      const secondDetail = await callConversationLoader(cookie, secondId);
+      expect(firstDetail.messages.length).toBeGreaterThan(0);
+      expect(secondDetail.messages.length).toBeGreaterThan(0);
+      expect(firstDetail.session.id).toBe(firstId);
+      expect(secondDetail.session.id).toBe(secondId);
+
+      const layout = await callStudioLayoutLoader(cookie);
+      const ids = layout.conversations.map((c) => c.id);
+      expect(ids).toContain(firstId);
+      expect(ids).toContain(secondId);
+    },
+    20000,
+  );
 });
