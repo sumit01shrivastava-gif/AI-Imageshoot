@@ -50,6 +50,33 @@ import { logger } from "../logging/logger.server";
 let workerConnection: Redis | undefined;
 let producerConnection: Redis | undefined;
 
+/**
+ * Forces IPv4-only DNS resolution for both connections — the actual fix
+ * for the production `connect` -> `close` (ECONNRESET, ~7-10ms later,
+ * `everReachedReady: false`) loop.
+ *
+ * ioredis 6.x's own default is `family: 0` — dual-stack ("Happy
+ * Eyeballs"-style) resolution that will race an IPv6 candidate against
+ * an IPv4 one for any hostname that publishes both an A and an AAAA
+ * record. Our observed timing rules out a remote handshake rejection
+ * (auth/protocol failures take at least one real network round-trip to
+ * the Redis endpoint, and the closes were happening in single-digit
+ * milliseconds — too fast for that) and instead matches a LOCAL/
+ * near-network-edge rejection: an IPv6 path that Railway's egress
+ * doesn't cleanly support getting an immediate reset before any
+ * TLS/Redis-level byte is ever exchanged. This is a documented,
+ * recurring class of issue for ioredis running inside Railway
+ * specifically (see Railway's own IPv6/dual-stack networking docs and
+ * multiple reported ioredis+Railway ECONNRESET/ENOTFOUND issues).
+ *
+ * REDIS_URL here is the PUBLIC (external) connection string — reachable
+ * from both Vercel and the Railway worker — which always resolves over
+ * plain IPv4 on the public internet, so forcing `family: 4` costs
+ * nothing and removes the broken path entirely rather than trying to
+ * make the broken path work.
+ */
+const IPV4_ONLY: Pick<RedisOptions, "family"> = { family: 4 };
+
 /** Never includes the URL's user/password — only what's safe to log. */
 function safeConnectionShape(rawUrl: string): {
   scheme: string | null;
@@ -165,6 +192,7 @@ export function getWorkerRedisConnection(): Redis {
     workerConnection = new IORedis(getEnv().REDIS_URL, {
       maxRetriesPerRequest: null,
       lazyConnect: true,
+      ...IPV4_ONLY,
     });
     attachDiagnostics(workerConnection, "worker");
   }
@@ -190,6 +218,7 @@ export function getProducerRedisConnection(): Redis {
       maxRetriesPerRequest: 2,
       connectTimeout: 5000,
       lazyConnect: true,
+      ...IPV4_ONLY,
     };
     producerConnection = new IORedis(getEnv().REDIS_URL, options);
     attachDiagnostics(producerConnection, "producer");
