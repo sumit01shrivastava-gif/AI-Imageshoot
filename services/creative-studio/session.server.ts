@@ -10,6 +10,7 @@
  * ownership — never trusts a client-supplied session/product/result id
  * (see CLAUDE.md "Security requirements").
  */
+import type { ReviewStatus } from "@prisma/client";
 import type { AuthContext } from "../../lib/auth/types";
 import { logger } from "../../lib/logging/logger.server";
 import { TenantMismatchError } from "../../lib/auth/tenant.server";
@@ -32,6 +33,7 @@ import {
 import {
   listGenerationJobsForCreativeSession,
   getGenerationResultForPublishing,
+  getGenerationPlanForResult,
   type GenerationJobRow,
 } from "../../db/repositories/generation-job.repository";
 import { getProcessingResultForPublishing } from "../../db/repositories/processing-job.repository";
@@ -46,6 +48,7 @@ import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
 import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, PlanLimitExceededError, type EntitlementCheck } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 import { uploadReferenceImages, type UploadedReferenceImageInput } from "./reference-images.server";
+import { applyLearnedDefaults, recordCorrectionSignal, recordExplicitFeedback, recordReviewSignal, type LearnableCreativeFields } from "./personalization.server";
 
 export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError, PlanLimitExceededError };
 
@@ -236,6 +239,15 @@ export interface SendCreativeMessageOptions {
    * reference-images.server.ts's `uploadReferenceImages`) BEFORE the
    * plan is built, so their durable URLs can be included in it. */
   referenceImages?: UploadedReferenceImageInput[];
+  /** The signed-in standalone user, when one exists — see
+   * services/creative-studio/personalization.server.ts's module doc
+   * comment for why this is `undefined`/`null` (never a fabricated
+   * value) for every Shopify-context call site (Shopify has no `User`
+   * concept at all) and real for every standalone `/studio/*` route
+   * (already resolved there via `requireWorkspaceContext`). Gates BOTH
+   * reading personalized defaults and writing new learning signals —
+   * personalization is entirely inert without it. */
+  userId?: string | null;
 }
 
 /**
@@ -330,8 +342,43 @@ export async function sendCreativeMessage(
   // which has no notion of a foreign starting result or this turn's own
   // upload.
   const hasImageToGroundThisTurn = Boolean(previousResultUrl) || uploadedReferenceImageUrls.length > 0;
-  const effectiveIntent: ParsedIntent =
+  const modeCorrectedIntent: ParsedIntent =
     parsedIntent.mode === "TEXT_TO_IMAGE" && hasImageToGroundThisTurn ? { ...parsedIntent, mode: "IMAGE_TO_IMAGE" } : parsedIntent;
+
+  // Personalization (Layer 2 of the creative-intelligence model — see
+  // personalization.server.ts's module doc comment) — entirely inert
+  // without a real signed-in standalone user (Shopify calls never pass
+  // `userId`; see SendCreativeMessageOptions.userId's doc comment).
+  //
+  // Order matters: the CORRECTION signal compares what this turn
+  // actually specified against what was active before — recorded
+  // BEFORE learned defaults are applied, so a filled-in default is
+  // never mistaken for something the merchant explicitly changed. The
+  // learned defaults are applied AFTER, and only ever fill a field this
+  // turn left null — never touching one the merchant specified (see
+  // `applyLearnedDefaults`'s own "explicit always wins" contract).
+  if (options.userId && creativeContext.hasCurrentResult) {
+    await recordCorrectionSignal(
+      options.userId,
+      {
+        style: creativeContext.activeStyle,
+        lighting: creativeContext.activeLighting,
+        composition: creativeContext.activeComposition,
+        camera: creativeContext.activeCamera,
+        colorDirection: creativeContext.activeColorDirection,
+      },
+      {
+        style: modeCorrectedIntent.style,
+        lighting: modeCorrectedIntent.lighting,
+        composition: modeCorrectedIntent.composition,
+        camera: modeCorrectedIntent.camera,
+        colorDirection: modeCorrectedIntent.colorDirection,
+      },
+    );
+  }
+  const effectiveIntent: ParsedIntent = options.userId
+    ? await applyLearnedDefaults(options.userId, modeCorrectedIntent)
+    : modeCorrectedIntent;
 
   // Cost is mode-aware (an edit/image-to-image request costs more per
   // output than a fresh text-to-image one) — see
@@ -397,6 +444,15 @@ export async function sendCreativeMessage(
     hasLighting: Boolean(plan.creativeDirection.lighting),
     referenceImageCount: plan.referenceImages.length,
     outputCount: plan.outputCount,
+    // Personalization (Layer 2) — safe: which FIELDS a learned default
+    // filled in, never the actual learned values/confidence themselves
+    // or anything about who the user is beyond whether one exists.
+    personalizationEligible: Boolean(options.userId),
+    personalizedFields: (["style", "lighting", "composition", "camera", "colorDirection"] as const).filter((field) => {
+      const before = modeCorrectedIntent[field];
+      const after = effectiveIntent[field];
+      return (Array.isArray(before) ? before.length === 0 : before === null) && (Array.isArray(after) ? after.length > 0 : after !== null);
+    }),
   });
 
   const job = await createAndEnqueueGenerationJob(context, {
@@ -463,13 +519,84 @@ export async function selectCreativeResult(context: AuthContext, sessionId: stri
   await setCurrentResult(context.shop, session.id, resultId);
 }
 
-/** Approve/reject one of this session's results — thin wrapper around
+/** Reads back the `creative` fields (style/lighting/composition/camera/
+ * colorDirection) a specific result's owning job used — the shared
+ * lookup both `reviewCreativeResult` and `recordCreativeFeedback` need
+ * to turn a reaction to a RESULT into a learning signal about the
+ * CREATIVE CHOICES that produced it. `null` for a missing/cross-shop
+ * result, a non-CREATIVE_STUDIO job (shouldn't happen for a Creative
+ * Studio result, but never assumed), or a plan that fails to parse —
+ * personalization is best-effort and must never be the thing that turns
+ * a working Approve/Reject click into an error. */
+async function getLearnableFieldsForResult(context: AuthContext, resultId: string): Promise<LearnableCreativeFields | null> {
+  const row = await getGenerationPlanForResult(context.shop, resultId);
+  if (!row) return null;
+  try {
+    const creative = parseGenerationPlan(row.plan).creativeIntent?.creative;
+    if (!creative) return null;
+    return {
+      style: creative.style,
+      lighting: creative.lighting,
+      composition: creative.composition,
+      camera: creative.camera,
+      colorDirection: creative.colorDirection,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Approve/reject one of this session's results — wraps
  * services/generation/request-generation.server.ts's
  * `reviewGenerationResult` (the SAME review lifecycle every other
  * generationType uses; see docs/creative-studio.md "Review actions" —
  * Creative Studio results are ordinary `GenerationResult` rows, not a
- * parallel review concept). */
-export { reviewGenerationResult as reviewCreativeResult };
+ * parallel review concept), then — only when `userId` is given (a
+ * standalone session; see personalization.server.ts's module doc
+ * comment) — records the decision as a learning signal for that
+ * result's creative choices. The signal recording is best-effort: a
+ * failure there is logged and swallowed, never allowed to turn a
+ * successful Approve/Reject into a user-visible error. */
+export async function reviewCreativeResult(
+  context: AuthContext,
+  resultId: string,
+  decision: Exclude<ReviewStatus, "PENDING">,
+  userId?: string | null,
+): Promise<void> {
+  await reviewGenerationResult(context, resultId, decision);
+  if (!userId) return;
+  try {
+    const fields = await getLearnableFieldsForResult(context, resultId);
+    if (fields) await recordReviewSignal(userId, fields, decision);
+  } catch (error) {
+    logger.warn("creative_studio.review_signal_failed", {
+      resultId,
+      detail: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+}
+
+/**
+ * Records an EXPLICIT reaction to a specific result — the strongest
+ * learning signal this module has (see personalization.server.ts's
+ * `SIGNAL_WEIGHT`). Distinct from Approve/Reject: this is about the
+ * merchant's TASTE ("I like this style"), not whether the result is fit
+ * to publish/use — a merchant can reject a result for being the wrong
+ * subject entirely while still liking its lighting, or approve one
+ * they'd never describe as their preferred aesthetic. No-ops silently
+ * (never throws) when there's no real user or no learnable fields to
+ * record — see `getLearnableFieldsForResult`.
+ */
+export async function recordCreativeFeedback(
+  context: AuthContext,
+  userId: string,
+  resultId: string,
+  signal: "positive" | "negative",
+): Promise<void> {
+  const fields = await getLearnableFieldsForResult(context, resultId);
+  if (!fields) return;
+  await recordExplicitFeedback(userId, fields, signal);
+}
 
 export async function listSessionsForProduct(context: AuthContext, productId: string): Promise<CreativeSessionRow[]> {
   await loadOwnedProduct(context, productId);

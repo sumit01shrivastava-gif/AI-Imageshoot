@@ -339,6 +339,27 @@ export async function getGenerationResultForPublishing(shop: string, resultId: s
   return row;
 }
 
+const CREATIVE_PLAN_RESULT_SELECT = {
+  id: true,
+  shop: true,
+  generationJob: { select: { plan: true } },
+} satisfies Prisma.GenerationResultSelect;
+
+/** One result's owning job's raw `plan` JSON — for
+ * services/creative-studio/personalization.server.ts's learning-signal
+ * recording (a result's review/explicit-feedback reaction is a vote for
+ * that JOB's creative choices). Returns `null` (never throws) for a
+ * missing or cross-shop id — same "existence oracle" pattern as
+ * `getGenerationResultForPublishing`. The caller (session.server.ts)
+ * parses/narrows `plan` itself via `parseGenerationPlan` — this
+ * repository function stays a thin, generic data-access boundary,
+ * same division of responsibility as everywhere else in this file. */
+export async function getGenerationPlanForResult(shop: string, resultId: string): Promise<{ plan: Prisma.JsonValue } | null> {
+  const row = await prisma.generationResult.findUnique({ where: { id: resultId }, select: CREATIVE_PLAN_RESULT_SELECT });
+  if (!row || row.shop !== shop) return null;
+  return { plan: row.generationJob.plan };
+}
+
 /** Sets a specific result's review decision. Verifies the result belongs
  * to this shop (via its job) before updating — never trusts a
  * client-supplied result id directly. Returns `false` if not found for

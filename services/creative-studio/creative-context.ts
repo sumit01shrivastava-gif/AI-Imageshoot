@@ -52,6 +52,13 @@ export interface CreativeContext {
   activeStyle: string[];
   activeLighting: string | null;
   activeComposition: string | null;
+  /** Added alongside personalization (see personalization.server.ts) so
+   * a same-session camera/color-direction change is observable as a
+   * correction signal the same way scene/style/lighting/composition
+   * already were — previously untracked here even though both fields
+   * already existed on the persisted plan. */
+  activeCamera: string | null;
+  activeColorDirection: string | null;
 
   /** Bounded (see `buildCreativeContext`'s `maxPreviousInstructions`),
    * most-recent-last — light continuity for the parser/assistant replies,
@@ -101,6 +108,8 @@ export function buildCreativeContext(input: BuildCreativeContextInput): Creative
     activeStyle: creative?.style ?? [],
     activeLighting: creative?.lighting ?? null,
     activeComposition: creative?.composition ?? null,
+    activeCamera: creative?.camera ?? null,
+    activeColorDirection: creative?.colorDirection ?? null,
 
     previousInstructions: input.recentInstructions.slice(-max),
 

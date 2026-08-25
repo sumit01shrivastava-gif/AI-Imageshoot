@@ -74,7 +74,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // real, sensible default, not a fabricated response (the actual
     // generation still runs through the real pipeline below).
     const effectiveMessage = message.length > 0 ? message : "Create a clean, professional product photo from this image.";
-    await sendCreativeMessage(context, sessionId, effectiveMessage, { referenceImages });
+    await sendCreativeMessage(context, sessionId, effectiveMessage, { referenceImages, userId });
     return redirect(`/studio/c/${sessionId}`);
   } catch (error) {
     // Clean up FIRST, before any of the specific-error branches below

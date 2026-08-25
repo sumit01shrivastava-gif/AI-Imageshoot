@@ -21,6 +21,7 @@ import {
   sendCreativeMessage,
   selectCreativeResult,
   reviewCreativeResult,
+  recordCreativeFeedback,
   CreativeSessionNotFoundError,
   EmptyMessageError,
   ProductNotAnalyzedError,
@@ -93,7 +94,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       const referenceImages = await Promise.all(
         files.map(async (file) => ({ data: new Uint8Array(await file.arrayBuffer()), contentType: file.type })),
       );
-      const result = await sendCreativeMessage(context, sessionId, message, { referenceImages });
+      const result = await sendCreativeMessage(context, sessionId, message, { referenceImages, userId });
       return { ok: true as const, generationJobId: result.generationJobId };
     } catch (error) {
       if (error instanceof CreativeSessionNotFoundError || error instanceof TenantMismatchError) {
@@ -145,7 +146,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { ok: false as const, error: GENERIC_ERROR };
     }
     try {
-      await reviewCreativeResult(context, resultId, decision);
+      await reviewCreativeResult(context, resultId, decision, userId);
       return { ok: true as const };
     } catch (error) {
       if (error instanceof GenerationResultNotFoundError) {
@@ -153,6 +154,22 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       }
       return { ok: false as const, error: GENERIC_ERROR };
     }
+  }
+
+  // The explicit "I like this style"/"not my style" reaction — see
+  // services/creative-studio/personalization.server.ts's module doc
+  // comment. Distinct from Approve/Reject (which is about whether a
+  // result is fit to use, not taste) and, unlike Approve/Reject, has no
+  // persisted status to reflect back — it only ever feeds the learning
+  // signal, so a bare `{ ok: true }` is genuinely the whole response.
+  if (intent === "feedback") {
+    const resultId = formData.get("resultId");
+    const signal = formData.get("signal");
+    if (typeof resultId !== "string" || (signal !== "positive" && signal !== "negative")) {
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+    await recordCreativeFeedback(context, userId, resultId, signal);
+    return { ok: true as const };
   }
 
   return { ok: false as const, error: "Unknown action." };
@@ -164,6 +181,7 @@ export default function StudioConversation() {
   const messageFetcher = useFetcher<typeof action>();
   const selectFetcher = useFetcher<typeof action>();
   const reviewFetcher = useFetcher<typeof action>();
+  const feedbackFetcher = useFetcher<typeof action>();
   const composerRef = useRef<ComposerHandle>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -290,6 +308,24 @@ export default function StudioConversation() {
               onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "REJECTED" }, { method: "POST" })}
             >
               Reject
+            </button>
+            {/* Distinct from Approve/Reject above (whether this result is
+                fit to use) — this is a reaction to the STYLE itself, the
+                platform's strongest personalization signal. See
+                services/creative-studio/personalization.server.ts. */}
+            <button
+              type="button"
+              className="studio-btn"
+              onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "positive" }, { method: "POST" })}
+            >
+              Love this style
+            </button>
+            <button
+              type="button"
+              className="studio-btn"
+              onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "negative" }, { method: "POST" })}
+            >
+              Not my style
             </button>
           </div>
         )}
