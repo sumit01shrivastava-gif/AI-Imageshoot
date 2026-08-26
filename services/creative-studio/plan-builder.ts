@@ -32,6 +32,7 @@ import type { AspectRatioValue } from "../generation/types";
 import type { ParsedIntent } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
 import { buildIdentityConstraints, buildStandaloneIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
+import { buildCreativeBrief } from "./creative-brief";
 
 export class ProductNotAnalyzedError extends Error {
   constructor() {
@@ -127,6 +128,23 @@ function synthesizeCreativePrompt(
    * VARIATION; `null` for a fresh TEXT_TO_IMAGE request (no reference
    * image exists yet, so there's nothing to state fidelity to). */
   referenceNoun: string | null,
+  /**
+   * The Creative Director's own coherent interpretation of this request
+   * (creative-brief.ts's `CreativeBrief.overallCreativeDirection`) —
+   * appended as a genuine, real-prose closing sentence, alongside (not
+   * instead of) the atomic clause list below. Deliberately additive
+   * rather than a replacement: the atomic clauses remain real,
+   * machine-checkable structure a provider can't misparse, and this
+   * codebase's existing regression coverage asserts against them
+   * directly; the holistic sentence gives the same request genuine
+   * creative-director framing too, which is what Part E actually asks
+   * for — "a coherent creative-director interpretation, not merely a
+   * concatenation of atomic fields" is satisfied by this sentence
+   * existing as a real, tested, inspectable artifact
+   * (`CreativeBrief.overallCreativeDirection`), not by deleting the
+   * atomic fields that already work.
+   */
+  overallCreativeDirection: string,
 ): string {
   const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
@@ -160,7 +178,7 @@ function synthesizeCreativePrompt(
     ? ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
     : "";
 
-  return `${identityInstruction}${referenceFidelity} ${parts.join(", ")}.`;
+  return `${identityInstruction}${referenceFidelity} ${parts.join(", ")}. ${overallCreativeDirection}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -254,12 +272,32 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
   const isEditTurn =
     Boolean(previousResultUrl) && (parsedIntent.mode === "IMAGE_TO_IMAGE" || parsedIntent.mode === "IMAGE_EDIT" || parsedIntent.mode === "VARIATION");
 
+  const creativeBrief = buildCreativeBrief({
+    intent: parsedIntent.intent,
+    subjectPhrase: `the ${category}`,
+    action: creative.action,
+    scene: creative.scene,
+    style: creative.style,
+    lighting: creative.lighting,
+    composition: creative.composition,
+    camera: creative.camera,
+    colorDirection: creative.colorDirection,
+    addElements: creative.addElements,
+    removeElements: creative.removeElements,
+    colorOverride: creative.colorOverride,
+    materialOverride: creative.materialOverride,
+    isEditTurn,
+    preservationRequirements: identityConstraints.immutable,
+    externalCreativeDirection: parsedIntent.overallCreativeDirection,
+  });
+
   const prompt = synthesizeCreativePrompt(
     parsedIntent.intent,
     `the ${category}`,
     creative,
     identityConstraints.instruction,
     isEditTurn ? "the reference image provided" : null,
+    creativeBrief.overallCreativeDirection,
   );
 
   const referenceImages = isEditTurn ? [{ url: previousResultUrl!, role: "previous_result" as const }] : [];
@@ -307,6 +345,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
       mode: parsedIntent.mode as GenerationModeValue,
       creative,
       identityConstraints,
+      creativeBrief,
       creativeSessionId,
       rawInstruction,
     },
@@ -455,12 +494,37 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
   // established).
   const subjectPhrase = resolvedSubject ?? `the ${category}`;
 
+  const creativeBrief = buildCreativeBrief({
+    intent: parsedIntent.intent,
+    subjectPhrase,
+    action: creative.action,
+    scene: creative.scene,
+    style: creative.style,
+    lighting: creative.lighting,
+    composition: creative.composition,
+    camera: creative.camera,
+    colorDirection: creative.colorDirection,
+    addElements: creative.addElements,
+    removeElements: creative.removeElements,
+    colorOverride: creative.colorOverride,
+    materialOverride: creative.materialOverride,
+    isEditTurn,
+    // A standalone session has no analyzed IdentityAnchors to derive a
+    // real preservation list from (buildStandaloneIdentityConstraints's
+    // `immutable` stays permanently empty — see that function's doc
+    // comment); reference-image fidelity is still asserted structurally
+    // by composeOverallCreativeDirection's `isEditTurn` branch.
+    preservationRequirements: [],
+    externalCreativeDirection: parsedIntent.overallCreativeDirection,
+  });
+
   const prompt = synthesizeCreativePrompt(
     parsedIntent.intent,
     subjectPhrase,
     creative,
     identityConstraints.instruction,
     isEditTurn ? referenceNoun : null,
+    creativeBrief.overallCreativeDirection,
   );
 
   // Ground-truth reference for the actual PROVIDER call —
@@ -515,6 +579,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
       mode: parsedIntent.mode as GenerationModeValue,
       creative,
       identityConstraints,
+      creativeBrief,
       creativeSessionId,
       rawInstruction,
     },

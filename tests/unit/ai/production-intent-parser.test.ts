@@ -74,6 +74,66 @@ describe("ProductionIntentParsingProvider", () => {
     const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
     await expect(new ProductionIntentParsingProvider().parseIntent(INPUT)).rejects.toThrow(/requires/);
   });
+
+  // Part C regression coverage: prove the actual HTTP request body carries
+  // the reference image(s) — not merely that a function claiming to pass
+  // an image was called. This is the multimodal wiring the "yoga/temple"
+  // failure class depends on: a real vision-capable endpoint can only
+  // reason about a reference image's pose/clothing/background if the
+  // bytes/URL genuinely reach it in the request.
+  describe("multimodal reference-image passing (input.referenceImageUrls)", () => {
+    it("includes an `images` field, shaped as OpenAI-style image_url parts, when referenceImageUrls is non-empty", async () => {
+      let capturedBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        capturedBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ intent: "VARIATION", mode: "VARIATION", changeSummary: "x" }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
+      const withImages: ParseIntentInput = {
+        ...INPUT,
+        referenceImageUrls: ["https://storage.example.test/a.png", "https://storage.example.test/b.png"],
+      };
+      await new ProductionIntentParsingProvider().parseIntent(withImages);
+
+      expect(capturedBody).toBeDefined();
+      expect(capturedBody!.images).toEqual([
+        { type: "image_url", image_url: { url: "https://storage.example.test/a.png" } },
+        { type: "image_url", image_url: { url: "https://storage.example.test/b.png" } },
+      ]);
+      // The rest of the contract is untouched by adding images.
+      expect(capturedBody!.message).toBe(INPUT.message);
+      expect(capturedBody!.candidateResultCount).toBe(INPUT.candidateResultCount);
+    });
+
+    it("omits the `images` field entirely (not an empty array) when referenceImageUrls is absent", async () => {
+      let capturedBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        capturedBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ intent: "VARIATION", mode: "VARIATION", changeSummary: "x" }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
+      await new ProductionIntentParsingProvider().parseIntent(INPUT);
+
+      expect(capturedBody).toBeDefined();
+      expect("images" in capturedBody!).toBe(false);
+    });
+
+    it("omits the `images` field when referenceImageUrls is an empty array", async () => {
+      let capturedBody: Record<string, unknown> | undefined;
+      global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        capturedBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ intent: "VARIATION", mode: "VARIATION", changeSummary: "x" }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
+      await new ProductionIntentParsingProvider().parseIntent({ ...INPUT, referenceImageUrls: [] });
+
+      expect(capturedBody).toBeDefined();
+      expect("images" in capturedBody!).toBe(false);
+    });
+  });
 });
 
 describe("FallbackIntentParser", () => {

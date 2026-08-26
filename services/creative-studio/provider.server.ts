@@ -38,3 +38,18 @@ export function getConfiguredIntentParser(): IntentParsingProvider {
 export function resetConfiguredIntentParserForTests(): void {
   cached = undefined;
 }
+
+/**
+ * Test-only: injects a spy/fake `IntentParsingProvider` in place of the
+ * resolved default. The heuristic parser deliberately IGNORES
+ * `ParseIntentInput.referenceImageUrls` (see its own doc comment), so it
+ * cannot be used to prove that `session.server.ts` actually threads
+ * reference image URLs into the parser call — this override exists
+ * specifically so integration tests can assert on the real
+ * `ParseIntentInput` a call site builds, without making a real network
+ * call (mirrors `setConfiguredCreativeProfileStoreForTests`/
+ * `setConfiguredStorageProviderForTests`'s exact pattern).
+ */
+export function setConfiguredIntentParserForTests(override: IntentParsingProvider): void {
+  cached = override;
+}

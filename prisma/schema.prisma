@@ -1482,6 +1482,63 @@ model User {
 
   memberships WorkspaceMembership[]
   sessions    UserSession[]
+
+  creativePreferences CreativePreferenceObservation[]
+}
+
+// The persistent backing for services/creative-studio/personalization.server.ts's
+// `CreativeProfileStore` (Layer 2 of the Creative Studio's creative
+// -intelligence model) — replaces that module's original in-memory-only
+// implementation, which could not survive across Vercel (web) and
+// Railway (worker) being separate processes/hosts. One row per
+// (userId, field, value) triple ever observed — e.g. (user-1, "lighting",
+// "cinematic") — NOT one row per raw prompt/message: this table stores
+// STRUCTURED, aggregated preference signal, never a transcript.
+//
+// `positiveWeight`/`negativeWeight` are running weighted sums (see
+// personalization.server.ts's `SIGNAL_WEIGHT` — explicit feedback carries
+// more weight per observation than an inferred same-session correction);
+// confidence is computed at READ time as
+// `positiveWeight / (positiveWeight + negativeWeight)`, decayed by
+// `lastObservedAt`'s age — never persisted as its own column, since it's
+// a pure function of the other fields and "now," and persisting a
+// time-dependent derived value would make it silently stale.
+//
+// Scoped to `userId`, not `shop`/workspace — see personalization.server.ts's
+// module doc comment for why: a Workspace can have multiple standalone
+// Users, and Shopify has no User concept at all (a Shopify-context
+// generation never touches this table). `onDelete: Cascade` — a deleted
+// user's learned preferences are deleted with them, matching this
+// codebase's `shop/redact` GDPR-deletion discipline for every other
+// personal data table.
+model CreativePreferenceObservation {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One of services/creative-studio/personalization.server.ts's
+  // `LEARNABLE_FIELDS` ("style"/"lighting"/"composition"/"camera"/
+  // "colorDirection") — a plain string, not a Prisma enum, so a future
+  // additional learnable field needs no migration (mirrors how
+  // `UsageEvent`/other append-only tables in this schema already treat
+  // their own "kind" discriminator as a validated string, not a DB enum).
+  field String
+  // The specific value observed for that field — e.g. "cinematic",
+  // "premium". Free text, same reasoning as `field`.
+  value String
+
+  positiveWeight Float    @default(0)
+  negativeWeight Float    @default(0)
+  sampleCount    Int      @default(0)
+  lastObservedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // One row per (user, field, value) — an observation of an
+  // already-seen value updates this row rather than inserting a new one.
+  @@unique([userId, field, value])
+  @@index([userId])
 }
 
 // A random, unguessable, single-use login token — only its hash is ever

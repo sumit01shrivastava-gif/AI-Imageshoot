@@ -1,19 +1,25 @@
 /**
  * Unit tests: services/creative-studio/personalization.server.ts — the
- * Layer 2 (per-user, confidence-weighted) creative-intelligence model.
- * Pure logic, no I/O — the in-memory store is a real, working
- * implementation of the same `CreativeProfileStore` interface a future
- * Prisma-backed one would satisfy, so these tests exercise the actual
- * confidence/threshold/weighting algorithm, not a mock of it.
+ * Layer 2 (per-user, confidence-weighted, time-decayed) creative
+ * -intelligence model. Deliberately backed by `InMemoryCreativeProfileStore`
+ * (injected via `setConfiguredCreativeProfileStoreForTests`), NOT the
+ * resolved (real, PostgreSQL-backed) default — this file tests the pure
+ * confidence/decay/threshold ALGORITHM fast and without a database; see
+ * tests/integration/creative-studio/personalization.test.ts for real
+ * end-to-end coverage against the actual persistent store and the real
+ * queue/worker pipeline.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyLearnedDefaults,
   recordCorrectionSignal,
   recordExplicitFeedback,
   recordReviewSignal,
   getConfiguredCreativeProfileStore,
+  setConfiguredCreativeProfileStoreForTests,
   resetConfiguredCreativeProfileStoreForTests,
+  decayFactor,
+  InMemoryCreativeProfileStore,
   type LearnableCreativeFields,
 } from "../../../services/creative-studio/personalization.server";
 import { parseParsedIntent, type ParsedIntent } from "../../../services/creative-studio/intent-schema";
@@ -34,6 +40,13 @@ function fields(overrides: Partial<LearnableCreativeFields> = {}): LearnableCrea
   return { style: [], lighting: null, composition: null, camera: null, colorDirection: null, ...overrides };
 }
 
+let memoryStore: InMemoryCreativeProfileStore;
+
+beforeEach(() => {
+  memoryStore = new InMemoryCreativeProfileStore();
+  setConfiguredCreativeProfileStoreForTests(memoryStore);
+});
+
 afterEach(() => {
   resetConfiguredCreativeProfileStoreForTests();
 });
@@ -48,16 +61,16 @@ describe("applyLearnedDefaults", () => {
     expect(result.lighting).toBe("bright and airy");
   });
 
-  it("does not apply a learned value until it clears the minimum sample count, even with 100% positive confidence", async () => {
-    await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
-    await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
-    // Only 2 observations — below MIN_SAMPLES_TO_APPLY (3).
+  it("does not apply a learned value until it clears the minimum decayed-weight threshold, even with 100% positive confidence", async () => {
+    // A single correction-strength (weakest) observation — weight 0.3,
+    // well below MIN_DECAYED_WEIGHT_TO_APPLY (1.5).
+    await recordCorrectionSignal(USER_A, fields({ lighting: "bright" }), fields({ lighting: "cinematic" }));
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.lighting).toBeNull();
   });
 
-  it("applies a learned default once it clears both the sample-count and confidence thresholds", async () => {
-    for (let i = 0; i < 4; i++) {
+  it("applies a learned default once it clears both the decayed-weight and confidence thresholds", async () => {
+    for (let i = 0; i < 2; i++) {
       await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
@@ -151,6 +164,32 @@ describe("multi-tenant isolation between users", () => {
     const b = await applyLearnedDefaults(USER_B, baseIntent());
     expect(a.composition).toBe("tight framing");
     expect(b.composition).toBe("wide establishing shot");
+  });
+});
+
+describe("decayFactor — the time-decay curve", () => {
+  it("is 1.0 (no decay) for an observation made right now", () => {
+    const now = new Date("2026-06-01T00:00:00Z");
+    expect(decayFactor(now.toISOString(), now)).toBeCloseTo(1.0, 5);
+  });
+
+  it("is exactly 0.5 at one half-life (30 days)", () => {
+    const observedAt = new Date("2026-05-01T00:00:00Z");
+    const now = new Date("2026-05-31T00:00:00Z"); // +30 days
+    expect(decayFactor(observedAt.toISOString(), now)).toBeCloseTo(0.5, 5);
+  });
+
+  it("is exactly 0.25 at two half-lives (60 days)", () => {
+    const observedAt = new Date("2026-04-01T00:00:00Z");
+    const now = new Date("2026-05-31T00:00:00Z"); // +60 days
+    expect(decayFactor(observedAt.toISOString(), now)).toBeCloseTo(0.25, 5);
+  });
+
+  it("never goes negative or above 1 for an observation timestamped in the future (clock skew)", () => {
+    const now = new Date("2026-06-01T00:00:00Z");
+    const observedAt = new Date("2026-06-02T00:00:00Z");
+    expect(decayFactor(observedAt.toISOString(), now)).toBeLessThanOrEqual(1);
+    expect(decayFactor(observedAt.toISOString(), now)).toBeGreaterThan(0);
   });
 });
 

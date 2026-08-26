@@ -140,6 +140,30 @@ export const CreativeStudioPlanSchema = z.object({
     instruction: z.string().min(1),
   }),
 
+  /**
+   * The Creative Director reasoning stage's output — see
+   * services/creative-studio/creative-brief.ts's module doc comment for
+   * the full "genuine intermediate object between ParsedIntent and the
+   * synthesized prompt" rationale. `.nullable().default(null)` so a
+   * `GenerationJob.plan` persisted before this field existed still
+   * parses fine — no migration needed (this is a JSON column). Never
+   * null for a plan built by the current `plan-builder.ts` — both
+   * `buildCreativeGenerationPlan` and `buildStandaloneCreativeGenerationPlan`
+   * always compute one; the nullable/default exists purely for backward
+   * -compatible parsing of OLDER persisted plans.
+   */
+  creativeBrief: z
+    .object({
+      creativeObjective: z.string().min(1),
+      subjectTreatment: z.string().min(1).nullable().default(null),
+      preservationRequirements: z.array(z.string()).default([]),
+      transformationRequirements: z.array(z.string()).default([]),
+      importantElements: z.array(z.string()).default([]),
+      overallCreativeDirection: z.string().min(1),
+    })
+    .nullable()
+    .default(null),
+
   /** Kept for traceability/debugging/history display only — NEVER reused
    * as prompt text (the prompt was already synthesized into
    * `creativeDirection.prompt` by the time this plan exists). See

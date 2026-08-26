@@ -8,24 +8,36 @@
  * approach as `production-image-generation-provider.server.ts`: no LLM
  * vendor is named/selected anywhere in this codebase, so this speaks a
  * small, explicit contract this app defines — `POST {baseUrl}/v1/intent/parse`
- * with `{ message, creativeContext, candidateResultCount }` in, the exact
- * `ParsedIntentRawOutput` shape (services/ai/types.ts) out as JSON. A
- * merchant pointing `AI_PROVIDER_BASE_URL` at any endpoint implementing
- * this contract (e.g. a thin proxy in front of a real chat-completions
- * model that's been prompted to emit this JSON shape) gets a genuinely
- * working real-LLM intent parser today; a vendor with a materially
- * different wire shape needs its own adapter file behind the same
- * interface (mirrors docs/ai-pipeline.md's existing framing for image
- * generation).
+ * with `{ message, creativeContext, candidateResultCount, images? }` in,
+ * the exact `ParsedIntentRawOutput` shape (services/ai/types.ts) out as
+ * JSON. A merchant pointing `AI_PROVIDER_BASE_URL` at any endpoint
+ * implementing this contract (e.g. a thin proxy in front of a real
+ * chat-completions model that's been prompted to emit this JSON shape)
+ * gets a genuinely working real-LLM intent parser today; a vendor with a
+ * materially different wire shape needs its own adapter file behind the
+ * same interface (mirrors docs/ai-pipeline.md's existing framing for
+ * image generation).
+ *
+ * `images` (present only when `input.referenceImageUrls` is non-empty —
+ * see services/ai/types.ts's `ParseIntentInput.referenceImageUrls` doc
+ * comment) is what makes this a genuinely MULTIMODAL request when a
+ * reference image exists for this turn: a real vision-capable endpoint
+ * can now reason about identity/pose/clothing/background it can
+ * actually see, not just a text description of it. This was a real,
+ * previously-identified gap — this provider used to send ONLY
+ * `{ message, creativeContext, candidateResultCount }`, meaning even a
+ * fully-configured real LLM reasoned about a reference-image turn
+ * completely blind to the image itself.
  *
  * Reuses `AI_PROVIDER_BASE_URL`/`AI_PROVIDER_API_KEY`/`AI_PROVIDER_MODEL`
  * — intent parsing is a capability of the SAME configured AI provider,
- * not a second vendor with its own credentials. Never sends the raw
- * conversation history — only the already-derived `creativeContext`
- * structure (see services/creative-studio/creative-context.ts) and the
- * single new message, matching Part 3's "do not send the entire raw
- * conversation blindly to the image model" rule (the same discipline
- * applies to the intent model).
+ * not a second vendor with its own credentials. Still never sends the
+ * raw conversation history — only the already-derived `creativeContext`
+ * structure (see services/creative-studio/creative-context.ts), the
+ * single new message, and now the turn's own reference image URL(s),
+ * matching Part 3's "do not send the entire raw conversation blindly to
+ * the image model" rule (the same discipline applies to the intent
+ * model) — more visual signal, not more text.
  *
  * Output is NOT validated here — `parseParsedIntent`
  * (services/creative-studio/intent-schema.ts) is the single place
@@ -52,7 +64,8 @@ export class ProductionIntentParsingProvider implements IntentParsingProvider {
 
     const timeoutMs = env.AI_PROVIDER_TIMEOUT_MS ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
-    logger.info("ai_provider.intent_parse.request", { provider: this.name });
+    const referenceImageUrls = input.referenceImageUrls ?? [];
+    logger.info("ai_provider.intent_parse.request", { provider: this.name, referenceImageCount: referenceImageUrls.length });
 
     const { result: response, latencyMs } = await measureLatencyMs(() =>
       fetchWithTimeout(`${env.AI_PROVIDER_BASE_URL}/v1/intent/parse`, "calling the intent parsing provider", timeoutMs, {
@@ -66,6 +79,21 @@ export class ProductionIntentParsingProvider implements IntentParsingProvider {
           message: input.message,
           creativeContext: input.creativeContext,
           candidateResultCount: input.candidateResultCount,
+          // Real multimodal reference-image understanding (Part C):
+          // matches the field shape OpenAI's own vision-capable chat
+          // input uses for an image URL part
+          // (`{type: "image_url", image_url: {url}}`) — a reasonable,
+          // real, vendor-agnostic choice for "a thin proxy in front of a
+          // real chat-completions model" (this file's own module doc
+          // comment), letting a genuinely multimodal endpoint reason
+          // about identity/pose/clothing/background it can actually see
+          // rather than only a text description of it. Omitted (not an
+          // empty array) when there's nothing to send, so an endpoint
+          // that doesn't expect this field at all sees no shape change
+          // for the (common) text-only turn.
+          ...(referenceImageUrls.length > 0
+            ? { images: referenceImageUrls.map((url) => ({ type: "image_url", image_url: { url } })) }
+            : {}),
         }),
       }),
     );

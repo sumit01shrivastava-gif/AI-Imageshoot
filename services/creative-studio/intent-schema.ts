@@ -162,6 +162,21 @@ export const ParsedIntentSchema = z.object({
    * uncertainty (see services/ai/heuristic-intent-parser.ts's doc
    * comment), a genuine 0–1 score from a future real NLU provider. */
   confidence: z.number().min(0).max(1).default(1),
+
+  /**
+   * A real, multimodal-capable parser's OWN holistic creative-director
+   * interpretation of this request — e.g. "This is a premium wellness
+   * campaign: keep the model recognizable while moving her into a
+   * natural yoga pose inside a dark, atmospheric temple, lit cinematically
+   * with shallow depth of field." `null` for the heuristic parser
+   * (always — it has no such reasoning capability) and for a real
+   * provider that didn't supply one; when present, it is preferred over
+   * the deterministic template `services/creative-studio/creative-brief.ts`'s
+   * `buildCreativeBrief` would otherwise compose from the atomic fields
+   * above — see that file's module doc comment. `.nullable().default(null)`,
+   * same full backward-compatibility reasoning as `subject`/`action`.
+   */
+  overallCreativeDirection: z.string().min(1).nullable().default(null),
 });
 
 export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;

@@ -349,6 +349,37 @@ describe("buildCreativeGenerationPlan", () => {
       expect(plan.creativeDirection.prompt).toMatch(/without\s+shadow/i);
     });
   });
+
+  describe("Part Q #5/#6 — product reference: environment change + premium advertising composition, identity preserved", () => {
+    it("an environment + premium-advertising-composition request reaches the plan/brief/prompt while identity stays immutable", async () => {
+      const rawInstruction = "Put my product in a marble kitchen and make it a premium advertising campaign";
+      const parsedIntent = await intent(rawInstruction, 0);
+      const plan = buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence(),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.creativeIntent!.creative.scene).toMatch(/marble kitchen/i);
+      expect(plan.creativeIntent!.creative.composition).toMatch(/advertising/i);
+      expect(plan.creativeIntent!.creative.style).toContain("premium");
+
+      const brief = plan.creativeIntent!.creativeBrief!;
+      expect(brief.transformationRequirements.some((e) => /environment:.*marble kitchen/i.test(e))).toBe(true);
+      expect(brief.transformationRequirements.some((e) => /composition:.*advertising/i.test(e))).toBe(true);
+      expect(plan.creativeDirection.prompt).toMatch(/marble kitchen/i);
+      expect(plan.creativeDirection.prompt).toMatch(/advertising/i);
+
+      // Identity stays immutable throughout — a scene/composition change
+      // never loosens product identity preservation.
+      expect(plan.creativeIntent!.identityConstraints.immutable.some((i) => i.startsWith("material:"))).toBe(true);
+      expect(plan.creativeIntent!.identityConstraints.immutable.some((i) => i.startsWith("primary color:"))).toBe(true);
+    });
+  });
 });
 
 describe("buildStandaloneCreativeGenerationPlan", () => {
@@ -574,6 +605,22 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
 
       // The lighting change also reaches the prompt.
       expect(plan.creativeDirection.prompt).toMatch(/dark/i);
+
+      // Part P/Q regression: the Creative Brief demonstrates the pose
+      // transformation, the temple environment, and the dark lighting
+      // change as concrete, assertable structure — not just somewhere
+      // inside a prose paragraph — and the synthesized prompt does NOT
+      // collapse to "preserve the original image with a dark blurred
+      // background" (identity preservation is asserted, but so is real
+      // transformation).
+      const brief = plan.creativeIntent!.creativeBrief!;
+      expect(brief).not.toBeNull();
+      expect(brief.transformationRequirements).toEqual(
+        expect.arrayContaining([expect.stringContaining("pose/action: yoga"), expect.stringContaining("environment:")]),
+      );
+      expect(brief.transformationRequirements.some((entry) => /lighting:.*dark/i.test(entry))).toBe(true);
+      expect(brief.overallCreativeDirection).toMatch(/yoga/i);
+      expect(plan.creativeDirection.prompt).not.toMatch(/preserve the original image/i);
     });
 
     it("a broad re-creation request ('use this model for a new campaign') still only preserves identity, not the original pose/scene", async () => {
@@ -606,6 +653,22 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
 
       expect(plan.creativeIntent!.creative.action).toBe("yoga");
       expect(plan.creativeDirection.prompt).toContain("yoga");
+    });
+
+    it("Part Q #4 — model reference: a clothing change reaches the plan/brief/prompt", async () => {
+      const rawInstruction = "Change her dress to a red evening gown";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/model-photo.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.creativeIntent!.creative.addElements.some((e) => /red evening gown/i.test(e))).toBe(true);
+      expect(plan.creativeIntent!.creativeBrief!.transformationRequirements.some((e) => /red evening gown/i.test(e))).toBe(true);
+      expect(plan.creativeDirection.prompt).toMatch(/red evening gown/i);
     });
   });
 

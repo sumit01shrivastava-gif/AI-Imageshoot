@@ -301,6 +301,35 @@ export async function sendCreativeMessage(
   const startingImageUrl = await resolveSessionStartingImage(context.shop, session);
   const effectiveCandidateCount = creativeContext.candidateResults.length > 0 ? creativeContext.candidateResults.length : startingImageUrl ? 1 : 0;
 
+  // A standalone session has no ShopifyProductMedia to ground against —
+  // any image attached to THIS turn is uploaded here, through the same
+  // StorageProvider abstraction every generated result already uses (see
+  // reference-images.server.ts). Only ever runs for a standalone session
+  // (`!product`); a Shopify-context session ignores `options.referenceImages`
+  // entirely (it always has real product media instead). Moved ahead of
+  // intent parsing (it used to run after) specifically so these URLs can
+  // be offered to the parser below — see `referenceImageUrlsForParsing`.
+  const uploadedReferenceImageUrls = product ? [] : await uploadReferenceImages(context.shop, session.id, options.referenceImages ?? []);
+
+  // The images offered to the INTENT PARSER (see
+  // services/ai/types.ts's `ParseIntentInput.referenceImageUrls` doc
+  // comment) — deliberately the CURRENTLY-selected result/starting image,
+  // not whatever an ordinal reference in THIS message might resolve to
+  // (`resolveTargetResult` below needs the parser's own output —
+  // specifically `targetResultReference` — to run at all, so it cannot
+  // run before parsing). This covers the overwhelming majority of real
+  // turns (an ordinary follow-up edits forward from the current result,
+  // or the merchant just uploaded a new image this turn); the one edge
+  // case this doesn't perfectly cover — "use the SECOND one, and also
+  // make her do yoga" — 	shows the parser the current result rather
+  // than the explicitly-referenced second one. A known, deliberate
+  // scope decision (a two-pass parse would resolve it exactly, at
+  // real added latency/cost), not silently unhandled.
+  const referenceImageUrlsForParsing = [
+    ...uploadedReferenceImageUrls,
+    ...(creativeContext.currentImageUrl ? [creativeContext.currentImageUrl] : startingImageUrl ? [startingImageUrl] : []),
+  ];
+
   // Parse the raw message → structured intent. See
   // services/ai/heuristic-intent-parser.ts's doc comment for why this
   // always succeeds today (a real, non-AI default, not gated to tests).
@@ -310,6 +339,7 @@ export async function sendCreativeMessage(
     message: trimmed,
     creativeContext: creativeContext as unknown as Record<string, unknown>,
     candidateResultCount: effectiveCandidateCount,
+    referenceImageUrls: referenceImageUrlsForParsing,
   });
   const parsedIntent = parseParsedIntent(rawOutput);
 
@@ -326,14 +356,6 @@ export async function sendCreativeMessage(
   }
 
   const previousResultUrl = editSourceResult?.url ?? startingImageUrl;
-
-  // A standalone session has no ShopifyProductMedia to ground against —
-  // any image attached to THIS turn is uploaded here, through the same
-  // StorageProvider abstraction every generated result already uses (see
-  // reference-images.server.ts). Only ever runs for a standalone session
-  // (`!product`); a Shopify-context session ignores `options.referenceImages`
-  // entirely (it always has real product media instead).
-  const uploadedReferenceImageUrls = product ? [] : await uploadReferenceImages(context.shop, session.id, options.referenceImages ?? []);
 
   // The parser may have guessed TEXT_TO_IMAGE (nothing in THIS session's
   // own history yet), but a "Continue editing" session — or a standalone

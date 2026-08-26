@@ -39,6 +39,7 @@ describe("buildCreativeContext", () => {
           blockedRemovals: [],
         },
         identityConstraints: { immutable: [], instruction: "preserve it" },
+        creativeBrief: null,
         creativeSessionId: "session-1",
         rawInstruction: "put it in a luxury bathroom",
       },

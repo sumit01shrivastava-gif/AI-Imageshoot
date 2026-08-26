@@ -1,12 +1,19 @@
 /**
  * Integration test: services/creative-studio/session.server.ts's
- * personalization WIRING (services/creative-studio/personalization.server.ts)
- * — real local Postgres/Redis, a real "generation" BullMQ worker, the
- * deterministic test image-generation provider (never a live vendor
+ * personalization WIRING (services/creative-studio/personalization.server.ts),
+ * now backed by the REAL, production `PrismaCreativeProfileStore` (real
+ * local Postgres/Redis, a real "generation" BullMQ worker, the
+ * deterministic test image-generation provider — never a live vendor
  * call). Standalone (no Shopify product) sessions only — personalization
  * is inert for a Shopify-context session (no `userId` concept there; see
  * personalization.server.ts's module doc comment), which is exactly
- * what the last test in this file proves directly.
+ * what one test in this file proves directly.
+ *
+ * Every test here goes through `getConfiguredCreativeProfileStore()`'s
+ * REAL resolved default (no `setConfiguredCreativeProfileStoreForTests`
+ * override anywhere in this file) — see
+ * tests/unit/creative-studio/personalization.test.ts for the fast,
+ * DB-free algorithm tests that DO inject the in-memory implementation.
  *
  * Mirrors tests/integration/creative-studio/session.test.ts's own
  * harness pattern (real queue/worker, not mocked), scoped to a
@@ -18,14 +25,30 @@ import prisma from "../../../db/client.server";
 import { createWorker, closeRedisConnection } from "../../../lib/queue";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
 import { resetConfiguredStorageProviderForTests } from "../../../lib/storage";
-import { resetConfiguredCreativeProfileStoreForTests } from "../../../services/creative-studio/personalization.server";
+import {
+  resetConfiguredCreativeProfileStoreForTests,
+  applyLearnedDefaults,
+} from "../../../services/creative-studio/personalization.server";
+import { parseParsedIntent } from "../../../services/creative-studio/intent-schema";
 import type { AuthContext } from "../../../lib/auth/types";
 import type { GenerationJobPayload } from "../../../services/generation/job.server";
 
 const SHOP = "workspace:personalization-test";
 const CONTEXT: AuthContext = { shop: SHOP, sessionId: "s1", isOnline: false };
-const USER_A = "personalization-test-user-a";
-const USER_B = "personalization-test-user-b";
+const EMAIL_A = "personalization-test-user-a@example.test";
+const EMAIL_B = "personalization-test-user-b@example.test";
+// Real `User` rows, not arbitrary strings — `CreativePreferenceObservation
+// .userId` is a genuine foreign key (see prisma/schema.prisma), correctly
+// enforced even in this test: production `userId`s always come from
+// `requireWorkspaceContext` resolving a real signed-in user, so a
+// synthetic id here would silently fail every write (the exact real bug
+// this fixed-up test setup catches — see this file's own history).
+let USER_A: string;
+let USER_B: string;
+
+function freshIntent() {
+  return parseParsedIntent({ intent: "CREATE_LIFESTYLE", mode: "TEXT_TO_IMAGE", changeSummary: "test" });
+}
 
 async function cleanup() {
   await prisma.creativeMessage.deleteMany({ where: { shop: SHOP } });
@@ -33,6 +56,9 @@ async function cleanup() {
   await prisma.creditReservation.deleteMany({ where: { shop: SHOP } });
   await prisma.generationJob.deleteMany({ where: { shop: SHOP } });
   await prisma.usageEvent.deleteMany({ where: { shop: SHOP } });
+  if (USER_A && USER_B) {
+    await prisma.creativePreferenceObservation.deleteMany({ where: { userId: { in: [USER_A, USER_B] } } });
+  }
 }
 
 let worker: Worker | undefined;
@@ -49,6 +75,14 @@ beforeAll(async () => {
   worker = createWorker<GenerationJobPayload>("generation", processGenerationJob);
   await new Promise<void>((resolve) => worker!.on("ready", () => resolve()));
 
+  await prisma.user.deleteMany({ where: { email: { in: [EMAIL_A, EMAIL_B] } } });
+  const [userA, userB] = await Promise.all([
+    prisma.user.create({ data: { email: EMAIL_A, passwordHash: "not-a-real-hash-test-only" } }),
+    prisma.user.create({ data: { email: EMAIL_B, passwordHash: "not-a-real-hash-test-only" } }),
+  ]);
+  USER_A = userA.id;
+  USER_B = userB.id;
+
   await cleanup();
 });
 
@@ -60,6 +94,7 @@ afterEach(async () => {
 afterAll(async () => {
   await worker?.close();
   await cleanup();
+  await prisma.user.deleteMany({ where: { email: { in: [EMAIL_A, EMAIL_B] } } });
   resetConfiguredStorageProviderForTests();
   await closeRedisConnection();
 });
@@ -160,5 +195,64 @@ describe("personalization — real end-to-end wiring through sendCreativeMessage
     await waitForJob(result.generationJobId);
     const creative = await creativeFieldsForJob(result.generationJobId);
     expect(creative.lighting).toBeNull();
+  }, 20000);
+});
+
+describe("personalization — real PostgreSQL persistence (proves this survives a process boundary, not just in-memory state)", () => {
+  it("a preference recorded through one call site is visible after resetting the store resolver — simulating a fresh process (e.g. Railway) reading what Vercel wrote", async () => {
+    const { id: sessionId } = await session.startCreativeSession(CONTEXT, {});
+    for (let i = 0; i < 3; i++) {
+      const result = await session.sendCreativeMessage(CONTEXT, sessionId, "Create a product photo with warm lighting", {
+        userId: USER_A,
+      });
+      await waitForJob(result.generationJobId);
+      const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: result.generationJobId }, select: { results: { select: { id: true } } } });
+      await session.reviewCreativeResult(CONTEXT, job.results[0].id, "APPROVED", USER_A);
+    }
+
+    // Discard whatever store instance the resolver currently holds and
+    // force it to build a brand new one — the ONLY way this can still
+    // see User A's preference is if it was genuinely written to
+    // PostgreSQL rather than held in that discarded instance's own
+    // process memory.
+    resetConfiguredCreativeProfileStoreForTests();
+
+    const result = await applyLearnedDefaults(USER_A, freshIntent());
+    expect(result.lighting).toBe("warm lighting");
+
+    // Confirm directly against the table too, not just through the
+    // module's own read path.
+    const rows = await prisma.creativePreferenceObservation.findMany({ where: { userId: USER_A, field: "lighting" } });
+    expect(rows.find((r) => r.value === "warm lighting")?.sampleCount).toBeGreaterThanOrEqual(3);
+  }, 20000);
+
+  it("a preference not reinforced in a long time decays below a freshly-reinforced competing value for the same field", async () => {
+    // "warm lighting" observed heavily, but a long time ago.
+    await prisma.creativePreferenceObservation.create({
+      data: {
+        userId: USER_A,
+        field: "lighting",
+        value: "warm lighting",
+        positiveWeight: 10,
+        negativeWeight: 0,
+        sampleCount: 10,
+        lastObservedAt: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000), // 90 days ago (3 half-lives)
+      },
+    });
+    // "dim lighting" observed just now, far fewer times.
+    for (let i = 0; i < 3; i++) {
+      await prisma.creativePreferenceObservation.upsert({
+        where: { userId_field_value: { userId: USER_A, field: "lighting", value: "dim lighting" } },
+        create: { userId: USER_A, field: "lighting", value: "dim lighting", positiveWeight: 0.6, negativeWeight: 0, sampleCount: 1 },
+        update: { positiveWeight: { increment: 0.6 }, sampleCount: { increment: 1 }, lastObservedAt: new Date() },
+      });
+    }
+
+    const result = await applyLearnedDefaults(USER_A, freshIntent());
+    // 10 raw observations decayed by 90 days (0.5^3 = 0.125) -> decayed
+    // weight 1.25 (below the 1.5 threshold entirely); 3 fresh
+    // observations -> decayed weight 1.8 (clears it). The fresher,
+    // less-historically-observed value wins.
+    expect(result.lighting).toBe("dim lighting");
   }, 20000);
 });

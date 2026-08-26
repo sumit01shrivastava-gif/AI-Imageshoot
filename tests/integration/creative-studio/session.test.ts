@@ -20,6 +20,8 @@ import { parseProductIntelligenceOutput } from "../../../services/intelligence/s
 import type { SyncedProduct } from "../../../services/products/types";
 import type { AuthContext } from "../../../lib/auth/types";
 import type { GenerationJobPayload } from "../../../services/generation/job.server";
+import { setConfiguredIntentParserForTests, resetConfiguredIntentParserForTests } from "../../../services/creative-studio/provider.server";
+import type { IntentParsingProvider, ParseIntentInput, ParsedIntentRawOutput } from "../../../services/ai/types";
 
 const SHOP = "creative-studio-session-test.myshopify.com";
 const OTHER_SHOP = "creative-studio-session-other.myshopify.com";
@@ -592,4 +594,116 @@ describe("standalone (no Shopify product) sessions", () => {
     expect(reservation!.status).toBe("CONSUMED");
     expect(reservation!.amount).toBeGreaterThan(0);
   });
+});
+
+describe("Part C — reference-image URLs actually reach the intent parser", () => {
+  // The heuristic parser (the resolved default in every other test in this
+  // file) deliberately IGNORES `ParseIntentInput.referenceImageUrls` — it
+  // can never prove this wiring. This block injects a spy
+  // `IntentParsingProvider` (via `setConfiguredIntentParserForTests`, a
+  // test-only override — see provider.server.ts) that captures the real
+  // `ParseIntentInput` `sendCreativeMessage` builds, so these assertions
+  // are against the actual call, not a re-assertion of a mocked return
+  // value. Still never a real network call — see CLAUDE.md.
+  let capturedInputs: ParseIntentInput[];
+
+  function installSpyParser(raw: ParsedIntentRawOutput) {
+    capturedInputs = [];
+    const spy: IntentParsingProvider = {
+      name: "spy",
+      parseIntent: async (input) => {
+        capturedInputs.push(input);
+        return raw;
+      },
+    };
+    setConfiguredIntentParserForTests(spy);
+  }
+
+  afterEach(() => {
+    resetConfiguredIntentParserForTests();
+  });
+
+  it("a freshly uploaded reference image's URL is included in referenceImageUrls passed to the parser", async () => {
+    installSpyParser({ intent: "CHANGE_SCENE", mode: "IMAGE_TO_IMAGE", changeSummary: "test" });
+
+    const created = await session.startCreativeSession(CONTEXT, {});
+    const fakeImageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    await session.sendCreativeMessage(CONTEXT, created.id, "Make the background pure white", {
+      referenceImages: [{ data: fakeImageBytes, contentType: "image/png" }],
+    });
+
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0].referenceImageUrls).toBeDefined();
+    expect(capturedInputs[0].referenceImageUrls!.length).toBeGreaterThan(0);
+  });
+
+  it("a follow-up turn (no new upload) offers the session's current result URL to the parser", async () => {
+    installSpyParser({ intent: "VARIATION", mode: "VARIATION", changeSummary: "test" });
+    const created = await session.startCreativeSession(CONTEXT, {});
+
+    // First turn: no reference image exists yet at all, so nothing to offer.
+    await session.sendCreativeMessage(CONTEXT, created.id, "Create a clean product photo on a white background");
+    expect(capturedInputs[0].referenceImageUrls).toEqual([]);
+
+    // Simulate the first turn's own result becoming the session's current
+    // result the same way a real SUCCEEDED job would (this suite doesn't
+    // run the real worker against the spy-parser's fabricated intent, so
+    // there is no real GenerationResult row to point at — set it directly).
+    const fakeResult = await prisma.generationResult.create({
+      data: {
+        shop: SHOP,
+        generationJobId: (await prisma.generationJob.findFirstOrThrow({ where: { creativeSessionId: created.id } })).id,
+        storageKey: "fake/key.png",
+        url: "https://storage.example.test/current-result.png",
+        format: "png",
+        width: 800,
+        height: 800,
+      },
+    });
+    await prisma.creativeSession.update({ where: { id: created.id }, data: { currentResultId: fakeResult.id } });
+
+    await session.sendCreativeMessage(CONTEXT, created.id, "Make it brighter");
+
+    expect(capturedInputs).toHaveLength(2);
+    // `referenceImageUrls` carries a FRESH signed URL derived from the
+    // result's `storageKey` (see resign.server.ts's `resignResultUrls`),
+    // not the stale `.url` this test seeded — assert on the storage key
+    // actually surfacing in the signed path, not the seeded literal.
+    expect(capturedInputs[1].referenceImageUrls!.some((url) => url.startsWith("/media/fake/key.png"))).toBe(true);
+  });
+
+  it(
+    "a Shopify-context session behaves identically — the same wiring path runs (empty on turn 1, populated with the prior result on the follow-up)",
+    async () => {
+      installSpyParser({ intent: "CHANGE_SCENE", mode: "IMAGE_TO_IMAGE", changeSummary: "test" });
+      const row = await seedAnalyzedProduct(SHOP, "part-c-shopify-product");
+      const created = await session.startCreativeSession(CONTEXT, { productId: row.id });
+
+      // Turn 1: no prior GenerationResult exists in THIS session yet, and
+      // product media is grounded separately (via productFacts/sourceImages
+      // in plan-building, not this "reference image for the parser" path)
+      // — so, exactly like a standalone session's first turn, nothing is
+      // offered to the parser yet.
+      await session.sendCreativeMessage(CONTEXT, created.id, "Put my product in a premium lifestyle scene");
+      expect(capturedInputs).toHaveLength(1);
+      expect(capturedInputs[0].referenceImageUrls).toEqual([]);
+
+      const fakeResult = await prisma.generationResult.create({
+        data: {
+          shop: SHOP,
+          generationJobId: (await prisma.generationJob.findFirstOrThrow({ where: { creativeSessionId: created.id } })).id,
+          storageKey: "fake/key.png",
+          url: "https://storage.example.test/shopify-current-result.png",
+          format: "png",
+          width: 800,
+          height: 800,
+        },
+      });
+      await prisma.creativeSession.update({ where: { id: created.id }, data: { currentResultId: fakeResult.id } });
+
+      await session.sendCreativeMessage(CONTEXT, created.id, "Make it brighter");
+      expect(capturedInputs).toHaveLength(2);
+      expect(capturedInputs[1].referenceImageUrls!.some((url) => url.startsWith("/media/fake/key.png"))).toBe(true);
+    },
+  );
 });

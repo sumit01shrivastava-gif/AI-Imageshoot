@@ -288,6 +288,23 @@ export interface ParseIntentInput {
   /** How many candidate prior results exist to reference by ordinal
    * ("use the second one") — 0 when this is the session's first message. */
   candidateResultCount: number;
+  /**
+   * Fetchable URLs of the reference image(s) relevant to THIS turn —
+   * the same set of URLs `GenerateImageInput.referenceImages` would use
+   * for the actual generation call (an uploaded photo, and/or the
+   * session's own previous result) — so a real, multimodal-capable
+   * `IntentParsingProvider` can genuinely SEE what it's reasoning about
+   * (identity, pose, clothing, background, ...) instead of only reading
+   * a text description of it. Empty for a from-scratch request with no
+   * reference image, or when the configured parser has no vision
+   * capability to make use of it — the heuristic parser
+   * (services/ai/heuristic-intent-parser.ts) always ignores this field,
+   * honestly: it does no image reasoning of any kind. Only ever an
+   * already-durable signed/storage URL server-side has already resolved
+   * — never a client-supplied one, same trust boundary as
+   * `GenerateImageInput.referenceImages`.
+   */
+  referenceImageUrls?: string[];
 }
 
 /** Raw output from `IntentParsingProvider.parseIntent` — deliberately
