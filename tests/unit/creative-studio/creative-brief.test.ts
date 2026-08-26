@@ -107,9 +107,39 @@ describe("buildCreativeBrief — inferredCreativeDecisions (explicit vs. inferre
     expect(brief.inferredCreativeDecisions.some((d) => /studio-quality/i.test(d))).toBe(true);
   });
 
-  it("a fresh commercial/lifestyle intent infers subject-vs-background visual hierarchy", () => {
+  it("a fresh commercial/lifestyle intent infers subject-vs-background visual hierarchy, explicitly covering the model too", () => {
     const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", isEditTurn: false }));
     expect(brief.inferredCreativeDecisions.some((d) => /visually dominant/i.test(d))).toBe(true);
+    expect(brief.inferredCreativeDecisions.some((d) => /model.*overpower|overpower.*model/i.test(d))).toBe(true);
+  });
+
+  it("PRODUCT FIDELITY quality-floor pass: moody/dramatic lighting also infers that product detail must stay readable (Priority 4 must never destroy Priority 1)", () => {
+    const brief = buildCreativeBrief(baseInput({ lighting: "dark and cinematic" }));
+    expect(brief.inferredCreativeDecisions.some((d) => /crush|blow/i.test(d))).toBe(true);
+  });
+
+  it("PRODUCT FIDELITY quality-floor pass — Priority 2: ADD_MODEL infers a category-aware interaction plus human-realism requirements, never a generic 'the model holds the product'", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "ADD_MODEL", category: "Handbags", isEditTurn: false }));
+    const decision = brief.inferredCreativeDecisions.find((d) => /holding or wearing it naturally/i.test(d));
+    expect(decision).toBeDefined();
+    expect(decision).toMatch(/anatomically correct hands/i);
+    expect(decision).toMatch(/contact shadows/i);
+  });
+
+  it("CHANGE_MODEL also infers the category-aware interaction rule (not just ADD_MODEL)", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CHANGE_MODEL", category: "Watches" }));
+    expect(brief.inferredCreativeDecisions.some((d) => /on the wrist/i.test(d))).toBe(true);
+  });
+
+  it("a null/absent category still infers a physically sensible generic interaction for ADD_MODEL, never throwing or guessing 'wearing'", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "ADD_MODEL", category: null }));
+    const decision = brief.inferredCreativeDecisions.find((d) => /holding or displaying it naturally/i.test(d));
+    expect(decision).toBeDefined();
+  });
+
+  it("a non-model intent never infers the model-interaction rule", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CHANGE_SCENE", scene: "a studio" }));
+    expect(brief.inferredCreativeDecisions.some((d) => /anatomically correct hands/i.test(d))).toBe(false);
   });
 
   it("infers nothing when no explicit field conditions any rule — never invents a decision independent of the request", () => {

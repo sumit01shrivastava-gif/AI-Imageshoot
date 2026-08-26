@@ -336,6 +336,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
+    category,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -576,6 +577,12 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
+    // A standalone session's "category" is whatever real subject was
+    // resolved (see `resolvedSubject` above) — `null` only when neither
+    // this turn nor the session ever established one, which correctly
+    // falls back to `resolveProductInteraction`'s generic default rather
+    // than guessing.
+    category: resolvedSubject,
   });
 
   const prompt = synthesizeCreativePrompt(

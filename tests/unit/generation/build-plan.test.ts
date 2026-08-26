@@ -128,6 +128,28 @@ describe("buildGenerationPlan", () => {
     expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
   });
 
+  it("PRODUCT FIDELITY quality-floor pass: the identity-preservation instruction states the product is the source of truth and covers the full fidelity list (silhouette, material, color, finish/texture, stones/decorative elements, pattern, logo/label/typography, packaging) — the same depth as Creative Studio's identity-constraints instruction, not a weaker one-line version of it", () => {
+    const plan = buildGenerationPlan({
+      product: product(),
+      intelligence: readyIntelligence(),
+      sourceMediaIds: ["media-1"],
+      generationType: "LIFESTYLE",
+    });
+    const prompt = plan.creativeDirection.prompt;
+    expect(prompt).toMatch(/source of truth/i);
+    expect(prompt).toMatch(/silhouette/i);
+    expect(prompt).toMatch(/material/i);
+    expect(prompt).toMatch(/color/i);
+    expect(prompt).toMatch(/finish/i);
+    expect(prompt).toMatch(/texture/i);
+    expect(prompt).toMatch(/stones/i);
+    expect(prompt).toMatch(/pattern/i);
+    expect(prompt).toMatch(/logo/i);
+    expect(prompt).toMatch(/typography/i);
+    expect(prompt).toMatch(/packaging/i);
+    expect(prompt).toMatch(/do not redesign/i);
+  });
+
   it("carries title/description/attributes grounding context into productFacts", () => {
     const plan = buildGenerationPlan({
       product: product(),
@@ -381,6 +403,12 @@ describe("MODEL_SHOOT generation type", () => {
     expect(plan.creativeDirection.prompt).toContain("Model photography");
     expect(plan.creativeDirection.prompt).toContain("carried/worn detail pose");
     expect(plan.creativeDirection.prompt).toContain("Preserve the product exactly as shown in the source image");
+    // PRODUCT FIDELITY quality-floor pass — Priority 2: the category
+    // -aware interaction (this product's category is "Handbags" — see
+    // product-interaction.ts), never the old generic "featuring the
+    // product" phrasing that said nothing about HOW the model relates
+    // to it.
+    expect(plan.creativeDirection.prompt).toContain("the model holding or wearing it naturally, the way it would actually be carried");
     // brandStyle is shared with LIFESTYLE — the same BrandStylePreset, not
     // a separate "ModelPreset" concept (see build-plan.ts's brandStyle
     // gate doc comment).

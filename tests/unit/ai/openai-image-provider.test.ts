@@ -224,6 +224,84 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(calledUrls).toContain("https://cdn.example.test/source.png");
   });
 
+  describe("PRODUCT FIDELITY quality-floor pass — reference images are sent whenever they exist, not gated on mode", () => {
+    it("a TEXT_TO_IMAGE request (no mode set) with real sourceImages still posts to /v1/images/edits — the exact production-benchmark gap this fixes: a Shopify-context Creative Studio session's first turn, and every non-Creative-Studio generationType, previously never sent the real product photo at all", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        if (url === "https://cdn.example.test/product.png") return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ sourceImages: [{ mediaId: "m1", url: "https://cdn.example.test/product.png", altText: null, position: 0 }] }),
+      );
+
+      expect(calledUrls).toContain("https://cdn.example.test/product.png");
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/edits"))).toBe(true);
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/generations"))).toBe(false);
+    });
+
+    it("a plain text-to-image request genuinely has nothing to reference (empty sourceImages, no referenceImages) still posts to /v1/images/generations — unaffected", async () => {
+      let capturedUrl = "";
+      global.fetch = vi.fn(async (url: string) => {
+        capturedUrl = url;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(baseInput());
+      expect(capturedUrl).toBe("https://api.openai.com/v1/images/generations");
+    });
+  });
+
+  describe("PRODUCT FIDELITY quality-floor pass — reference image format is forwarded correctly, not mislabeled", () => {
+    it.each([
+      ["image/webp", "webp"],
+      ["image/jpeg", "jpg"],
+      ["image/png", "png"],
+    ])("forwards the reference image's real fetched Content-Type (%s) as the multipart part's type/filename, never hardcoding image/png", async (contentType, expectedExtension) => {
+      let form: FormData | undefined;
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://cdn.example.test/product.webp") {
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": contentType } });
+        }
+        form = init!.body as FormData;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product.webp", role: "product_original" }] }),
+      );
+
+      const file = form!.get("image") as File;
+      expect(file.type).toBe(contentType);
+      expect(file.name).toBe(`reference-0.${expectedExtension}`);
+    });
+
+    it("falls back to image/png when the fetch response has no recognizable Content-Type — never throws", async () => {
+      let form: FormData | undefined;
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://cdn.example.test/product") {
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        }
+        form = init!.body as FormData;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product", role: "product_original" }] }),
+      );
+
+      const file = form!.get("image") as File;
+      expect(file.type).toBe("image/png");
+      expect(file.name).toBe("reference-0.png");
+    });
+  });
+
   it("uses AI_IMAGE_EDIT_MODEL for edits and AI_IMAGE_GENERATION_MODEL for plain generation", async () => {
     process.env.AI_IMAGE_EDIT_MODEL = "gpt-image-1-edit-preview";
     process.env.AI_IMAGE_GENERATION_MODEL = "gpt-image-1-gen-preview";

@@ -121,6 +121,7 @@
  * merged.
  */
 import type { CreativeIntentValue } from "./types";
+import { resolveProductInteraction } from "../generation/product-interaction";
 
 /** Style/lighting keywords that indicate a moody/dramatic treatment was
  * asked for — used only to decide whether to add a shadow-control
@@ -244,6 +245,13 @@ export interface BuildCreativeBriefInput {
   materialOverride: string | null;
   isEditTurn: boolean;
   preservationRequirements: string[];
+  /** The product's category (Shopify `productType`/Product Intelligence
+   * `category`), when known — used only by the category-aware
+   * model-product-interaction rule below (see product-interaction.ts).
+   * `null`/omitted for a standalone session with no resolved category
+   * (falls back to a physically sensible generic interaction, never a
+   * wrong guess — see `resolveProductInteraction`'s own doc comment). */
+  category?: string | null;
   /** Which of `style`/`lighting`/`composition`/`camera`/`colorDirection`
    * above were filled in by this user's own learned preference
    * (`services/creative-studio/personalization.server.ts`'s
@@ -314,10 +322,29 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   }
 
   // Explicitly moody/dark/cinematic direction: real cinematography uses
-  // deliberate shadow shaping, not a uniform brightness reduction.
+  // deliberate shadow shaping, not a uniform brightness reduction. Also
+  // where beautiful lighting most commonly destroys product fidelity
+  // (Priority 4 vs. Priority 1 — quality-floor pass) — dramatic lighting
+  // must still reveal the product's real materials/edges/texture, never
+  // crush detail into pure shadow or blow highlights into pure white.
   const moodyRequested = (input.lighting && MOODY_PATTERN.test(input.lighting)) || input.style.some((s) => MOODY_PATTERN.test(s));
   if (moodyRequested) {
-    decisions.push("Use deliberate, motivated shadow and highlight control rather than uniformly darkening the whole frame.");
+    decisions.push(
+      "Use deliberate, motivated shadow and highlight control rather than uniformly darkening the whole frame — keep the product's own details, edges, and texture readable; do not crush them into shadow or blow out their highlights.",
+    );
+  }
+
+  // A model is being added or changed: the physically/commercially
+  // correct interaction depends on the product's category (a ring is
+  // worn, a beverage is poured — see product-interaction.ts), never a
+  // blanket "the model holds the product." Paired with the human
+  // -realism requirements every real photograph of a person needs, so
+  // the interaction reads as genuinely photographed contact, not a
+  // composite (quality-floor pass, Priority 2 and human realism).
+  if (input.intent === "ADD_MODEL" || input.intent === "CHANGE_MODEL") {
+    decisions.push(
+      `Have the model ${resolveProductInteraction(input.category ?? null)}, at correct real-world scale, with anatomically correct hands (correct finger count, natural joints, believable grip) and realistic contact shadows where the product touches the body.`,
+    );
   }
 
   // "Premium"/"luxury"-style direction: the sneaker-ad worked example —
@@ -334,9 +361,11 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
 
   // A fresh, from-scratch commercial/lifestyle image: the subject must
   // stay the visual focal point regardless of how elaborate the
-  // background/environment becomes.
+  // background/environment becomes — and, when a model is involved
+  // (ADD_MODEL is itself one of these intents), the model and
+  // environment exist to sell the product, not to compete with it.
   if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
-    decisions.push("Keep the subject visually dominant against a supportive, non-competing background.");
+    decisions.push("Keep the subject visually dominant — neither the model (if any) nor the environment should visually overpower the product.");
   }
 
   return decisions;

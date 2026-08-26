@@ -66,9 +66,55 @@ export function composeProductGroundingPrefix(productFacts: Record<string, unkno
 }
 
 /**
- * Builds the final, single-string prompt: the product grounding prefix
- * above, the already-synthesized creative-direction prompt, and an
- * explicit "Avoid: ..." clause for negative constraints — for a
+ * PRODUCT FIDELITY quality-floor pass: a compact, structural "reference
+ * product = source of truth" instruction, added whenever this request
+ * has a REAL reference/source image to ground against (never for a
+ * from-scratch text-to-image request with nothing uploaded/selected —
+ * there is no photo to be faithful to, and asserting fidelity to nothing
+ * would be a meaningless, confusing instruction). Deliberately generic —
+ * this module stays domain-agnostic (`services/ai/` — see CLAUDE.md's
+ * architecture principles), so this is a universal POLICY statement,
+ * applied identically to every generationType and every real provider,
+ * not a restatement of whatever domain-specific preservation instruction
+ * (services/creative-studio/identity-constraints.ts, or
+ * services/generation/build-plan.ts's `PRESERVE_PRODUCT_INSTRUCTION`)
+ * `creativeDirection.prompt` may already carry — those state WHICH
+ * specific facts (this product's real material/color/hardware/...) must
+ * hold; this states the DECISION-HIERARCHY boundary itself: creative
+ * freedom governs the scene around the product, never the product. Kept
+ * short (a handful of short clauses, not a paragraph) — see "avoid
+ * prompt bloat" in this project's own instructions; reinforcement of a
+ * non-negotiable boundary at the provider layer is not the same as
+ * redundant prose.
+ */
+export function composeProductFidelityInstruction(hasReferenceImage: boolean): string {
+  if (!hasReferenceImage) return "";
+  return (
+    "REFERENCE PRODUCT = SOURCE OF TRUTH: the attached reference image(s) show the exact physical product, " +
+    "not creative inspiration. Preserve exactly: silhouette, proportions, geometry, relative scale, colors, " +
+    "materials, finishes, textures, stones and decorative elements, patterns, logos, labels, typography, and " +
+    "packaging structure. Creative freedom applies to environment, background, lighting, camera, atmosphere, " +
+    "styling, model, and composition — never to product identity, structure, details, branding, colors/materials, " +
+    "or proportions. "
+  );
+}
+
+/** Whether `input` has any real image to ground a generation against —
+ * shared by `composeProviderPrompt` and any provider that wants to
+ * decide this the same way (see `composeProductFidelityInstruction`'s
+ * doc comment). Mirrors the same "referenceImages first, sourceImages
+ * fill in" precedence every real provider's own reference-resolution
+ * already uses — this function doesn't need to pick between them, only
+ * whether either is non-empty. */
+export function hasReferenceImages(input: GenerateImageInput): boolean {
+  return (input.referenceImages?.length ?? 0) > 0 || input.sourceImages.length > 0;
+}
+
+/**
+ * Builds the final, single-string prompt: the product-fidelity
+ * instruction (when a real reference image exists), the product
+ * grounding prefix, the already-synthesized creative-direction prompt,
+ * and an explicit "Avoid: ..." clause for negative constraints — for a
  * provider contract (like OpenAI's) with exactly one `prompt` field and
  * no separate negative-prompt parameter. Never includes raw
  * merchant-typed free text beyond what `creativeDirection.prompt`
@@ -77,7 +123,8 @@ export function composeProductGroundingPrefix(productFacts: Record<string, unkno
  */
 export function composeProviderPrompt(input: GenerateImageInput): string {
   const negativeConstraints = input.creativeDirection.negativeConstraints ?? [];
-  const parts: string[] = [`${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`];
+  const fidelityInstruction = composeProductFidelityInstruction(hasReferenceImages(input));
+  const parts: string[] = [`${fidelityInstruction}${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`];
   if (negativeConstraints.length > 0) parts.push(`Avoid: ${negativeConstraints.join(", ")}.`);
   return parts.join(" ");
 }

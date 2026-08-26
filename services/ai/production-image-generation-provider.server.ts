@@ -62,7 +62,7 @@
 import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
-import { composeProductGroundingPrefix } from "./prompt-composition";
+import { composeProductGroundingPrefix, composeProductFidelityInstruction } from "./prompt-composition";
 import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider } from "./types";
 
 /** Generous enough for a multi-output generative request under normal
@@ -125,10 +125,11 @@ function isContractResponse(value: unknown): value is ContractResponse {
   return typeof value === "object" && value !== null;
 }
 
-/** `IMAGE_TO_IMAGE`/`IMAGE_EDIT`/`VARIATION` are all "start from an
- * existing image" requests — see `GenerationMode`'s doc comment
- * (services/ai/types.ts). A plain text-to-image request has no `mode` at
- * all (every pre-existing generationType). */
+/** Purely descriptive today (logging only) — see `generateImage`'s
+ * product-fidelity comment for why whether a REAL reference image is
+ * actually sent no longer depends on this. `IMAGE_TO_IMAGE`/`IMAGE_EDIT`/
+ * `VARIATION` are all "conversationally an edit" requests — see
+ * `GenerationMode`'s doc comment (services/ai/types.ts). */
 function isEditMode(mode: string | undefined): boolean {
   return mode === "IMAGE_TO_IMAGE" || mode === "IMAGE_EDIT" || mode === "VARIATION";
 }
@@ -137,19 +138,27 @@ function isEditMode(mode: string | undefined): boolean {
  * var when set, falling back to `AI_PROVIDER_MODEL`, falling back to the
  * contract's own "default" sentinel. See env.server.ts's doc comments on
  * `AI_IMAGE_GENERATION_MODEL`/`AI_IMAGE_EDIT_MODEL`. */
-function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string {
-  const specific = editMode ? env.AI_IMAGE_EDIT_MODEL : env.AI_IMAGE_GENERATION_MODEL;
+function resolveModel(env: ReturnType<typeof getEnv>, usingReferenceImages: boolean): string {
+  const specific = usingReferenceImages ? env.AI_IMAGE_EDIT_MODEL : env.AI_IMAGE_GENERATION_MODEL;
   return specific || env.AI_PROVIDER_MODEL || "default";
 }
 
-/** Every reference image this request has available to ground an edit
- * against, most-relevant-first: explicit `referenceImages` (e.g. the
- * exact prior result a conversational follow-up is editing forward
- * from) take priority; `sourceImages` (the original product photos)
- * fill in when no reference was supplied at all. Never both concatenated
- * — a provider's edit endpoint should see one coherent "what to edit"
- * set, not the original AND an edited descendant of it in the same
- * request. */
+/** Every reference image this request has available to ground against,
+ * most-relevant-first: explicit `referenceImages` (e.g. the exact prior
+ * result a conversational follow-up is editing forward from) take
+ * priority; `sourceImages` (the original product photos) fill in when no
+ * reference was supplied at all. Never both concatenated — a provider's
+ * edit endpoint should see one coherent "what to edit" set, not the
+ * original AND an edited descendant of it in the same request.
+ * Deliberately unconditional (no `mode` gate) — PRODUCT FIDELITY
+ * (quality-floor pass): whether a real photo exists to ground against is
+ * independent of whether this turn is conversationally "an edit." Before
+ * this, every non-Creative-Studio generation (PRODUCT_CLEANUP/LIFESTYLE/
+ * MODEL_SHOOT/BANNER/CTA never set `mode` at all — see
+ * services/generation/build-input.ts) and a Shopify-context Creative
+ * Studio session's first turn (`mode` is always TEXT_TO_IMAGE then) never
+ * sent the real product photo to this provider at all — pure
+ * text-to-image, describing the product instead of showing it. */
 function resolveReferenceImageUrls(input: GenerateImageInput): string[] {
   if (input.referenceImages && input.referenceImages.length > 0) {
     return input.referenceImages.map((ref) => ref.url);
@@ -172,11 +181,12 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
     const timeoutMs = env.AI_PROVIDER_TIMEOUT_MS ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const negativeConstraints = input.creativeDirection.negativeConstraints ?? [];
     const editMode = isEditMode(input.mode);
-    const referenceUrls = editMode ? resolveReferenceImageUrls(input) : [];
-    const endpoint = editMode && referenceUrls.length > 0 ? "/v1/images/edits" : "/v1/images/generations";
+    const referenceUrls = resolveReferenceImageUrls(input);
+    const usingReferenceImages = referenceUrls.length > 0;
+    const endpoint = usingReferenceImages ? "/v1/images/edits" : "/v1/images/generations";
 
     let referenceImagesBase64: string[] = [];
-    if (editMode && referenceUrls.length > 0) {
+    if (usingReferenceImages) {
       try {
         referenceImagesBase64 = await Promise.all(referenceUrls.map((url) => this.fetchAsBase64(url, timeoutMs)));
       } catch (error) {
@@ -189,8 +199,8 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
     }
 
     const requestBody = {
-      model: resolveModel(env, editMode && referenceImagesBase64.length > 0),
-      prompt: `${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`,
+      model: resolveModel(env, referenceImagesBase64.length > 0),
+      prompt: `${composeProductFidelityInstruction(usingReferenceImages)}${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`,
       ...(negativeConstraints.length > 0 ? { negative_prompt: negativeConstraints.join(", ") } : {}),
       ...(referenceImagesBase64.length === 1 ? { image: referenceImagesBase64[0] } : {}),
       ...(referenceImagesBase64.length > 1 ? { images: referenceImagesBase64 } : {}),
@@ -204,6 +214,10 @@ export class ProductionImageGenerationProvider implements ImageGenerationProvide
       provider: this.name,
       generationType: input.generationType,
       mode: input.mode ?? "TEXT_TO_IMAGE",
+      // Whether this turn is conversationally an edit — distinct from
+      // `endpoint`, which is decided purely by whether a real reference
+      // image exists (see `resolveReferenceImageUrls`'s doc comment).
+      conversationalEditMode: editMode,
       endpoint,
       referenceImageCount: referenceImagesBase64.length,
       outputCount: input.outputCount,

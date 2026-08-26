@@ -292,6 +292,100 @@ traceability. The merchant's chat acknowledgement
 (`session.server.ts`'s `assistantAcknowledgement`) surfaces the decline
 rather than the request silently no-op'ing.
 
+### Product fidelity (quality-floor pass)
+
+Real production benchmarking (a reference commercial product photo, run
+against both this app and a general-purpose competitor) confirmed the
+system already produces strong, commercially usable results — this pass
+raised the FLOOR rather than replacing what works, guided by an explicit
+priority hierarchy that must never reverse: **1) product fidelity, 2)
+correct product/human interaction, 3) commercial composition, 4)
+photorealism, 5) creative beauty.** A spectacular image containing the
+wrong product is a failure; a less spectacular image containing the
+exact product, presented correctly, is a success.
+
+Concrete changes:
+
+- **Reference images are sent to the provider whenever they exist, never
+  gated on conversational `mode`.** A real, confirmed gap: both real
+  `ImageGenerationProvider`s (`services/ai/openai-image-provider.server.ts`,
+  `services/ai/production-image-generation-provider.server.ts`) only
+  ever fetched/sent a real reference/source image when `mode` was an
+  editing value (`IMAGE_TO_IMAGE`/`IMAGE_EDIT`/`VARIATION`) — but `mode`
+  is `TEXT_TO_IMAGE` for a Shopify-context Creative Studio session's
+  FIRST turn (no prior conversational result exists yet), and is
+  `undefined` for every non-Creative-Studio generationType
+  (`PRODUCT_CLEANUP`/`LIFESTYLE`/`MODEL_SHOOT`/`BANNER`/`CTA` never set
+  it at all — see `services/generation/build-input.ts`). Both cases have
+  a REAL product photo available (`GenerateImageInput.sourceImages`) but
+  were silently generating from text alone, describing the product
+  instead of showing it. Fixed by resolving reference images
+  unconditionally — `mode` still governs conversational EDIT semantics
+  in the synthesized prompt text (`plan-builder.ts`), never whether a
+  real photo is transmitted.
+- **A structured, shared "product fidelity" instruction**
+  (`services/ai/prompt-composition.ts`'s `composeProductFidelityInstruction`)
+  is prepended to every real provider request whenever a reference image
+  exists: `REFERENCE PRODUCT = SOURCE OF TRUTH`, an explicit preserve
+  list (silhouette/proportions/geometry/scale, colors, materials,
+  finishes, textures, stones/decorative elements, patterns, logos,
+  labels, typography, packaging structure), and an explicit "creative
+  freedom applies to environment/lighting/camera/styling/model/
+  composition — never to product identity/structure/branding" boundary.
+  Domain-specific instructions (`identity-constraints.ts`'s
+  `CATEGORY_ITEMS`, `build-plan.ts`'s `PRESERVE_PRODUCT_INSTRUCTION`)
+  were independently expanded to the same depth, so every generationType
+  gets the same fidelity floor, not just Creative Studio.
+- **Category-aware model/product interaction**
+  (`services/generation/product-interaction.ts`'s
+  `resolveProductInteraction`) replaces a previous blanket "featuring the
+  product"/generic "the model holds it" treatment: jewelry is worn on
+  the correct body part, eyewear on the face, a watch on the wrist,
+  footwear on the foot, clothing on the body, a bag held/worn as
+  actually carried, a beauty item held/applied/displayed as actually
+  used, an electronic device held/operated naturally, food/beverage
+  held/poured/served — with an honest generic fallback for anything else
+  (never "wearing," which would be wrong for most uncovered categories).
+  Shared by `build-plan.ts`'s MODEL_SHOOT branch and
+  `creative-brief.ts`'s deterministic ADD_MODEL/CHANGE_MODEL inference,
+  and reinforced in the real-LLM system instruction
+  (`services/ai/creative-director-instructions.ts`).
+- **The Creative Director's own internal reasoning** (the A–L framework)
+  was strengthened with: an explicit priority hierarchy, visual-hierarchy
+  guidance (product remains the hero — model/environment must not
+  overpower it), lighting-detail-preservation guidance (dramatic lighting
+  must keep product edges/texture/highlights readable, never crush or
+  blow them out), human-realism requirements when a model is involved
+  (anatomy, hands, contact shadows), and explicit "don't over-stylize by
+  default" guidance (no fixed premium/dark/cinematic default — the
+  product and request decide the visual language). `creativeConcept`/
+  `negativeCreativeDecisions` (see the prior pass, above) gained explicit
+  guidance that a concept may never imply a different product/geometry/
+  materials/branding, and that negative decisions must be derived from
+  THIS product's own category, never a fixed per-category checklist.
+- **A deterministic "final internal generation check"**
+  (`services/generation/product-fidelity-check.ts`'s
+  `checkProductFidelity`) runs at the single choke point every
+  generation path converges on
+  (`request-generation.server.ts`'s `createAndEnqueueGenerationJob`,
+  right after the plan is finalized) — structural booleans only
+  (reference product present, identity-preservation instruction present,
+  explicit fields unclobbered, model-interaction actually stated,
+  product-visibility not accidentally negated, negative constraints
+  present), logged for observability, never blocking generation and
+  never a second LLM call or a chain-of-thought transcript.
+- **Reference image format robustness**: a real, previously-latent bug
+  in `openai-image-provider.server.ts`'s edit-endpoint upload always
+  declared the multipart file part `image/png` regardless of the
+  reference's actual fetched format — the real production benchmark used
+  a WebP product photo, which happened to still work because OpenAI's
+  decoder sniffs real bytes rather than trusting the label, but this was
+  never guaranteed. Fixed: the real fetched `Content-Type` (PNG/JPEG/
+  WebP — `gpt-image-*`'s documented supported edit-reference formats) is
+  forwarded and used for both the Blob's type and filename extension; an
+  unrecognized/missing Content-Type still falls back to PNG rather than
+  failing the request.
+
 ## Image-to-image flow (Part 5)
 
 `GenerateImageInput` (`services/ai/types.ts`) gained two small, additive

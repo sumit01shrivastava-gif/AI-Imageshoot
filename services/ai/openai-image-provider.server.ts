@@ -61,12 +61,25 @@ const DEFAULT_BASE_URL = "https://api.openai.com";
 const DEFAULT_MODEL = "gpt-image-2";
 const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
 
+/** Purely descriptive today (logging only) — see the module doc comment
+ * update on `resolveReferenceImageUrls` for why whether a REAL reference
+ * image is actually sent no longer depends on this. */
+/** `gpt-image-*`'s `/v1/images/edits` documented supported reference
+ * -image formats — see `fetchReferenceBytes`'s doc comment. Keys are
+ * lowercase, parameter-stripped content-types (e.g. `"image/webp"`, not
+ * `"image/webp; charset=..."`). */
+const EXTENSION_FOR_CONTENT_TYPE: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
 function isEditMode(mode: string | undefined): boolean {
   return mode === "IMAGE_TO_IMAGE" || mode === "IMAGE_EDIT" || mode === "VARIATION";
 }
 
-function resolveModel(env: ReturnType<typeof getEnv>, editMode: boolean): string {
-  const specific = editMode ? env.AI_IMAGE_EDIT_MODEL : env.AI_IMAGE_GENERATION_MODEL;
+function resolveModel(env: ReturnType<typeof getEnv>, usingReferenceImages: boolean): string {
+  const specific = usingReferenceImages ? env.AI_IMAGE_EDIT_MODEL : env.AI_IMAGE_GENERATION_MODEL;
   return specific || env.AI_PROVIDER_MODEL || DEFAULT_MODEL;
 }
 
@@ -183,9 +196,27 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     }
     const baseUrl = env.AI_PROVIDER_BASE_URL || DEFAULT_BASE_URL;
     const timeoutMs = env.AI_PROVIDER_TIMEOUT_MS ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // PRODUCT FIDELITY (quality-floor pass): a real reference/source image
+    // is sent to the provider whenever one exists — never gated on
+    // `mode`. `mode` only distinguishes conversational EDIT semantics
+    // ("use X as the exact starting point" — a prompt-text concern,
+    // handled in services/creative-studio/plan-builder.ts) from a plain
+    // request; it says nothing about whether a real photo of the actual
+    // product exists to ground against. Before this fix, a Shopify
+    // -context Creative Studio session's FIRST turn (mode always
+    // TEXT_TO_IMAGE — there's no prior conversational result yet) and
+    // EVERY non-Creative-Studio generation (PRODUCT_CLEANUP/LIFESTYLE/
+    // MODEL_SHOOT/BANNER/CTA, which never set `mode` at all — see
+    // services/generation/build-input.ts) silently generated from text
+    // alone, never once sending the real product photo the merchant
+    // actually uploaded/selected — the single highest-risk product
+    // -fidelity gap in this pipeline. `resolveReferenceImageUrls` already
+    // falls back to `sourceImages` when no explicit `referenceImages`
+    // were supplied, so this one change fixes every affected call site.
     const editMode = isEditMode(input.mode);
-    const referenceUrls = editMode ? this.resolveReferenceImageUrls(input) : [];
-    const model = resolveModel(env, editMode && referenceUrls.length > 0);
+    const referenceUrls = this.resolveReferenceImageUrls(input);
+    const usingReferenceImages = referenceUrls.length > 0;
+    const model = resolveModel(env, usingReferenceImages);
     const size = sizeForAspectRatio(input.aspectRatio, input.maxResolutionPx);
     const quality = qualityForTier(input.quality);
 
@@ -193,7 +224,11 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       provider: this.name,
       generationType: input.generationType,
       mode: input.mode ?? "TEXT_TO_IMAGE",
-      endpoint: referenceUrls.length > 0 ? "edits" : "generations",
+      // Whether this turn is conversationally an edit — distinct from
+      // `usingReferenceImages`, which is what actually decides the
+      // endpoint/model below (see the product-fidelity comment above).
+      conversationalEditMode: editMode,
+      endpoint: usingReferenceImages ? "edits" : "generations",
       referenceImageCount: referenceUrls.length,
       outputCount: input.outputCount,
       size,
@@ -206,7 +241,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     let latencyMs: number;
     try {
       const measured = await measureLatencyMs(() =>
-        referenceUrls.length > 0
+        usingReferenceImages
           ? this.callEdits(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, referenceUrls, size, quality })
           : this.callGenerations(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, size, quality }),
       );
@@ -259,6 +294,17 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     return { outputs, raw: { model, created: parsed.created } };
   }
 
+  /** Every real image this request has to ground against — explicit
+   * `referenceImages` (e.g. the exact prior result a conversational
+   * follow-up edits forward from) take priority; `sourceImages` (the
+   * real product photos) fill in otherwise. Deliberately unconditional
+   * (no `mode` gate) — see the product-fidelity comment in
+   * `generateImage` above for why: whether a real photo exists to
+   * ground against is independent of whether this turn is
+   * conversationally "an edit." Returns `[]` only when genuinely
+   * neither exists (e.g. a from-scratch text-to-image request with
+   * nothing uploaded yet), which correctly falls through to
+   * `/v1/images/generations`. */
   private resolveReferenceImageUrls(input: GenerateImageInput): string[] {
     if (input.referenceImages && input.referenceImages.length > 0) {
       return input.referenceImages.map((ref) => ref.url);
@@ -312,8 +358,9 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     const fieldName = args.referenceUrls.length === 1 ? "image" : "image[]";
     let index = 0;
     for (const url of args.referenceUrls) {
-      const bytes = await this.fetchReferenceBytes(url, timeoutMs);
-      form.append(fieldName, new Blob([bytes.buffer as ArrayBuffer], { type: "image/png" }), `reference-${index}.png`);
+      const { bytes, contentType } = await this.fetchReferenceBytes(url, timeoutMs);
+      const extension = EXTENSION_FOR_CONTENT_TYPE[contentType] ?? "png";
+      form.append(fieldName, new Blob([bytes.buffer as ArrayBuffer], { type: contentType }), `reference-${index}.${extension}`);
       index += 1;
     }
 
@@ -324,11 +371,32 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     });
   }
 
-  private async fetchReferenceBytes(url: string, timeoutMs: number): Promise<Uint8Array> {
+  /**
+   * A real production benchmark used a WebP product image — every
+   * reference this app forwards must reach OpenAI labeled as what it
+   * actually is, not silently mislabeled as PNG (a real, previously
+   * -latent bug: this method always declared `image/png` regardless of
+   * the fetched bytes' real format, relying entirely on OpenAI's decoder
+   * happening to sniff the real bytes rather than trusting the label —
+   * fragile, and not guaranteed for every vendor/format combination).
+   * `gpt-image-*`'s `/v1/images/edits` documents support for PNG/JPEG/WebP
+   * reference images, so forwarding the real, fetched Content-Type (never
+   * a client-supplied one — this is our own signed storage URL's
+   * response) requires no format conversion for any of this app's
+   * supported upload formats — see services/creative-studio/reference-images.server.ts,
+   * which already preserves the merchant's real upload content-type
+   * into storage unchanged. Falls back to PNG only when the response
+   * genuinely didn't declare a recognized image content-type (never
+   * throws on that alone — a missing/odd header shouldn't block a
+   * generation that would otherwise succeed).
+   */
+  private async fetchReferenceBytes(url: string, timeoutMs: number): Promise<{ bytes: Uint8Array; contentType: string }> {
     const response = await fetchWithTimeout(url, "fetching a reference image", timeoutMs);
     if (!response.ok) {
       throw new ProviderResponseError(this.name, `failed to fetch a reference image (status ${response.status})`);
     }
-    return new Uint8Array(await response.arrayBuffer());
+    const rawContentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+    const contentType = rawContentType in EXTENSION_FOR_CONTENT_TYPE ? rawContentType : "image/png";
+    return { bytes: new Uint8Array(await response.arrayBuffer()), contentType };
   }
 }

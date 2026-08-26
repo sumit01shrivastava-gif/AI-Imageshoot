@@ -63,6 +63,21 @@ describe("buildIdentityConstraints", () => {
     expect(result.instruction).toMatch(/do not redesign/i);
   });
 
+  it("PRODUCT FIDELITY quality-floor pass: states the product is the source of truth, not creative inspiration, and covers the expanded fidelity list (geometry/scale, finish/texture, stones/decorative elements, pattern, typography, distinctive features)", () => {
+    const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote");
+    expect(result.instruction).toMatch(/source of truth/i);
+    expect(result.instruction).toMatch(/not creative inspiration/i);
+    expect(result.instruction).toMatch(/geometry/i);
+    expect(result.instruction).toMatch(/finish/i);
+    expect(result.instruction).toMatch(/texture/i);
+    expect(result.instruction).toMatch(/stones/i);
+    expect(result.instruction).toMatch(/pattern/i);
+    expect(result.instruction).toMatch(/typography/i);
+    expect(result.instruction).toMatch(/distinctive features/i);
+    expect(result.instruction).toMatch(/simplify it/i);
+    expect(result.instruction).toMatch(/substitute a visually similar object/i);
+  });
+
   it("falls back to 'the product' when given an empty product name", () => {
     const result = buildIdentityConstraints(FULL_ANCHORS, "   ");
     expect(result.instruction).toContain("The product is the immutable subject");

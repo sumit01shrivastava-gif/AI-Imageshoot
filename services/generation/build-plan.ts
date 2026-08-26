@@ -14,6 +14,7 @@ import type { ProductIntelligenceRow } from "../../db/repositories/product-intel
 import { IdentityAnchorsSchema } from "../intelligence/schema";
 import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes, type LifestyleScene } from "./schema";
 import { buildLifestyleScene, type LifestyleSceneOverride } from "./lifestyle-scene";
+import { resolveProductInteraction } from "./product-interaction";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
 
 const GENERATION_TYPE_LABEL: Record<GenerationTypeValue, string> = {
@@ -135,8 +136,22 @@ export class ProductNotModelSuitableError extends Error {
 // that places the product somewhere new (i.e. not the plain studio
 // cleanup case, which already states this itself) — see
 // docs/generation.md "Identity preservation" / docs/lifestyle-generation.md.
+//
+// PRODUCT FIDELITY quality-floor pass: expanded to the same depth as
+// services/creative-studio/identity-constraints.ts's `CATEGORY_ITEMS` —
+// every non-Creative-Studio generationType (PRODUCT_CLEANUP/LIFESTYLE/
+// MODEL_SHOOT/BANNER/CTA) deserves the same product-fidelity floor
+// Creative Studio already had, not a weaker one-line version of it. The
+// leading clause ("Preserve the product exactly as shown in the source
+// image") is left byte-for-byte unchanged — every synthesized prompt
+// below still starts with it (asserted by tests/unit/generation/build-plan.test.ts)
+// — the expansion is additive, appended after it.
 const PRESERVE_PRODUCT_INSTRUCTION =
-  "Preserve the product exactly as shown in the source image — do not alter its shape, material, color, or any visible branding.";
+  "Preserve the product exactly as shown in the source image — it is the source of truth, not creative " +
+  "inspiration: do not alter its silhouette, shape, proportions, or geometry; its exact material, color, finish, " +
+  "or texture; any stones, decorative elements, or pattern; any visible logo, label, or typography; or its " +
+  "packaging structure. Do not redesign it, simplify it, substitute a visually similar product, or invent " +
+  "missing details.";
 
 function synthesizePrompt(input: {
   generationType: GenerationTypeValue;
@@ -190,11 +205,15 @@ function synthesizePrompt(input: {
   }
 
   if (input.generationType === "MODEL_SHOOT") {
-    // Deliberately generic ("featuring", not "worn by") — modelSuitable is
+    // PRODUCT FIDELITY quality-floor pass — Priority 2 (correct product/
+    // human interaction): previously always generic ("featuring the
+    // product," never "worn by") specifically because modelSuitable is
     // true for a range of categories (jewelry, eyewear, handbags, shoes,
-    // clothing — see category-recommendations.ts), not all of which are
-    // literally "worn" the same way.
-    const parts = [`Model photography featuring the ${subject}`];
+    // clothing — see category-recommendations.ts) not all "worn" the same
+    // way — now resolved to the actually-correct interaction per
+    // category (see product-interaction.ts) instead of staying
+    // deliberately vague for every category.
+    const parts = [`Model photography of the ${subject}, the model ${resolveProductInteraction(input.category)}`];
     if (input.pose) parts.push(`${input.pose} pose`);
     if (input.environment) parts.push(`set in ${input.environment}`);
     if (input.modelStyle) parts.push(`${input.modelStyle} model styling`);

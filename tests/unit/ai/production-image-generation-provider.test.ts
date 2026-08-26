@@ -287,6 +287,38 @@ describe("ProductionImageGenerationProvider", () => {
       expect(editRequestBody?.image).toBeUndefined();
     });
 
+    it("PRODUCT FIDELITY quality-floor pass: a plain request (no mode set) with real sourceImages still posts to /v1/images/edits — the exact production-benchmark gap this fixes: every non-Creative-Studio generationType (PRODUCT_CLEANUP/LIFESTYLE/MODEL_SHOOT/BANNER/CTA never set `mode` at all) previously never sent the real product photo to this provider", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        if (url === "https://cdn.example.test/product.png") return new Response(Buffer.from([1, 2, 3]), { status: 200 });
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(
+        baseInput({ sourceImages: [{ mediaId: "m1", url: "https://cdn.example.test/product.png", altText: null, position: 0 }] }),
+      );
+
+      expect(calledUrls).toContain("https://cdn.example.test/product.png");
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/edits"))).toBe(true);
+      expect(calledUrls.some((u) => u.endsWith("/v1/images/generations"))).toBe(false);
+    });
+
+    it("a plain request that genuinely has nothing to reference (empty sourceImages, no mode) still posts to /v1/images/generations — unaffected", async () => {
+      const calledUrls: string[] = [];
+      global.fetch = vi.fn(async (url: string) => {
+        calledUrls.push(url);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { ProductionImageGenerationProvider } = await import("../../../services/ai/production-image-generation-provider.server");
+      const provider = new ProductionImageGenerationProvider();
+      await provider.generateImage(baseInput());
+      expect(calledUrls[0]).toContain("/v1/images/generations");
+    });
+
     it("falls back to sourceImages when an editing mode has no explicit referenceImages", async () => {
       const calledUrls: string[] = [];
       global.fetch = vi.fn(async (url: string) => {

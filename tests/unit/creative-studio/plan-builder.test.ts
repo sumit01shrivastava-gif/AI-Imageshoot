@@ -879,3 +879,46 @@ describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", 
     expect(plan.creativeDirection.negativeConstraints).toEqual(["cluttered background props"]);
   });
 });
+
+describe("PRODUCT FIDELITY quality-floor pass — category-aware model interaction is consistent across both generation paths", () => {
+  it("the Shopify (product-grounded) path infers the real product's category-aware interaction for ADD_MODEL", async () => {
+    const parsedIntent = await llmIntent({ intent: "ADD_MODEL" });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Add a model wearing the product",
+    });
+    // product()'s fixture category is "Handbags" (see this file's top helper).
+    expect(plan.creativeIntent!.creativeBrief!.inferredCreativeDecisions.some((d) => /holding or wearing it naturally/i.test(d))).toBe(true);
+  });
+
+  it("the standalone path resolves category from the session's own resolved subject for ADD_MODEL", async () => {
+    const parsedIntent = await llmIntent({ intent: "ADD_MODEL", subject: "a pair of sunglasses" });
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: ["https://signed.example.test/product.png"],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Add a model wearing the sunglasses",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.inferredCreativeDecisions.some((d) => /on the face/i.test(d))).toBe(true);
+  });
+
+  it("the standalone path falls back to the generic interaction when no subject/category was ever established — never throws, never guesses 'wearing'", async () => {
+    const parsedIntent = await llmIntent({ intent: "ADD_MODEL", subject: null });
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: ["https://signed.example.test/product.png"],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Add a model",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.inferredCreativeDecisions.some((d) => /holding or displaying it naturally/i.test(d))).toBe(
+      true,
+    );
+  });
+});

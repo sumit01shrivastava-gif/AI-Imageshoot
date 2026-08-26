@@ -47,13 +47,31 @@ export interface IdentityConstraints {
   instruction: string;
 }
 
+/**
+ * PRODUCT FIDELITY quality-floor pass: the uploaded/selected product is
+ * the source-of-truth physical object, not creative inspiration — this
+ * list is the concrete, unconditional expression of that ("never
+ * casually redesign, simplify, substitute, or invent"). Expanded beyond
+ * the original shape/packaging/logo/material/color set to cover every
+ * category of fidelity risk a real commercial product photo can carry
+ * (a ring's stones, a garment's pattern, a box's printed typography, a
+ * gadget's exact geometry, ...) — still a short, generic, category
+ * -agnostic list (never named per-product), not a giant table: the same
+ * "structural, not a keyword lookup per category" discipline every other
+ * deterministic fallback in this codebase already follows.
+ */
 const CATEGORY_ITEMS = [
-  "its shape and proportions",
-  "its packaging",
+  "its silhouette, shape and proportions",
+  "its geometry and scale relative to a real object of this kind",
+  "its packaging and packaging structure",
   "any visible logos",
-  "any visible labels or text printed on the product",
+  "any visible labels, typography, or text printed on the product",
   "its exact material",
   "its exact color",
+  "its finish, texture, and surface detail",
+  "any stones, gems, or decorative elements",
+  "any pattern or print",
+  "its distinctive features and hardware",
 ] as const;
 
 /**
@@ -100,9 +118,10 @@ export function buildIdentityConstraints(
   });
 
   const instruction =
-    `${subjectPhrase} is the immutable subject of this image and must be preserved exactly as shown in the ` +
-    `source image: do not redesign it, invent missing components, or replace it with a visually similar ` +
-    `object. Unless explicitly requested, do not alter ${remainingCategoryItems.join(", ")}.` +
+    `${subjectPhrase} is the immutable subject of this image and the source of truth for what it looks like — ` +
+    `not creative inspiration — and must be preserved exactly as shown in the source image: do not redesign it, ` +
+    `simplify it, substitute a visually similar object, invent missing components, or produce a "better looking" ` +
+    `version of it. Unless explicitly requested, do not alter ${remainingCategoryItems.join(", ")}.` +
     (overriddenItems.length > 0
       ? ` The merchant has explicitly requested the following change${overriddenItems.length > 1 ? "s" : ""}, which ` +
         `${overriddenItems.length > 1 ? "are" : "is"} permitted: ${overriddenItems.join(", ")}. Every other aspect of the ` +

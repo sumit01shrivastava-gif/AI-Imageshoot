@@ -3,7 +3,7 @@
  * -agnostic prompt/grounding-prefix builder.
  */
 import { describe, expect, it } from "vitest";
-import { composeProductGroundingPrefix, composeProviderPrompt } from "../../../services/ai/prompt-composition";
+import { composeProductGroundingPrefix, composeProviderPrompt, composeProductFidelityInstruction, hasReferenceImages } from "../../../services/ai/prompt-composition";
 import type { GenerateImageInput } from "../../../services/ai/types";
 
 function baseInput(overrides: Partial<GenerateImageInput> = {}): GenerateImageInput {
@@ -62,5 +62,45 @@ describe("composeProviderPrompt", () => {
   it("degrades to just the creative-direction prompt when no grounding data or negative constraints exist", () => {
     const prompt = composeProviderPrompt(baseInput());
     expect(prompt).toBe("A red leather handbag on a marble counter.");
+  });
+});
+
+describe("PRODUCT FIDELITY quality-floor pass — composeProductFidelityInstruction / hasReferenceImages", () => {
+  it("hasReferenceImages is true when sourceImages is non-empty", () => {
+    expect(hasReferenceImages(baseInput({ sourceImages: [{ mediaId: "m1", url: "https://cdn/1.png", altText: null, position: 0 }] }))).toBe(
+      true,
+    );
+  });
+
+  it("hasReferenceImages is true when referenceImages is non-empty (even with empty sourceImages)", () => {
+    expect(hasReferenceImages(baseInput({ referenceImages: [{ url: "https://cdn/prior.png", role: "previous_result" }] }))).toBe(true);
+  });
+
+  it("hasReferenceImages is false when neither sourceImages nor referenceImages exist", () => {
+    expect(hasReferenceImages(baseInput())).toBe(false);
+  });
+
+  it("composeProductFidelityInstruction returns an empty string when there is no reference image", () => {
+    expect(composeProductFidelityInstruction(false)).toBe("");
+  });
+
+  it("composeProductFidelityInstruction states the source-of-truth/creative-freedom boundary when a reference image exists", () => {
+    const instruction = composeProductFidelityInstruction(true);
+    expect(instruction).toMatch(/REFERENCE PRODUCT = SOURCE OF TRUTH/);
+    expect(instruction).toMatch(/not creative inspiration/i);
+    expect(instruction).toMatch(/Creative freedom applies to environment/i);
+    expect(instruction).toMatch(/never to product identity/i);
+  });
+
+  it("composeProviderPrompt includes the product-fidelity instruction, leading the prompt, whenever a real reference image exists", () => {
+    const prompt = composeProviderPrompt(
+      baseInput({ sourceImages: [{ mediaId: "m1", url: "https://cdn/1.png", altText: null, position: 0 }] }),
+    );
+    expect(prompt.indexOf("REFERENCE PRODUCT = SOURCE OF TRUTH")).toBe(0);
+  });
+
+  it("composeProviderPrompt omits the product-fidelity instruction entirely for a from-scratch request with no reference image", () => {
+    const prompt = composeProviderPrompt(baseInput());
+    expect(prompt).not.toMatch(/REFERENCE PRODUCT = SOURCE OF TRUTH/);
   });
 });

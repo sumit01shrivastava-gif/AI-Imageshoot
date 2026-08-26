@@ -32,6 +32,7 @@ import { buildGenerationPlan, type BuildGenerationPlanInput } from "./build-plan
 import { resolveBrandStylePreset } from "./brand-style-preset.server";
 import { enqueueGenerationJob } from "./queue.server";
 import { GenerationTypeSchema, AspectRatioSchema, type GenerationPlan } from "./schema";
+import { checkProductFidelity } from "./product-fidelity-check";
 import type { GenerationTypeValue, AspectRatioValue } from "./types";
 import { checkEntitlement, reserveCredits, InsufficientCreditsError, assertWithinOutputLimit, PlanLimitExceededError, getPlan } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
@@ -235,6 +236,29 @@ export async function createAndEnqueueGenerationJob(
   // `sizeForAspectRatio`), not by rejecting the request — there is
   // nothing for a merchant to have "over-requested" in the first place.
   plan = { ...plan, maxResolutionPx: (await getPlan(context.shop)).maxGenerationResolutionPx };
+
+  // PRODUCT FIDELITY quality-floor pass — the "final internal generation
+  // check": a deterministic, structural consistency check against the
+  // now-finalized plan, run at THIS single choke point specifically
+  // because both Creative Studio's `planOverride` and every
+  // non-Creative-Studio `buildGenerationPlan` call converge here before
+  // a job is ever created — one check, every generation path, not
+  // duplicated per caller. Never blocks generation (a check that could
+  // itself break a working request would be worse than no check); a
+  // failing field is logged so a real regression is observable in
+  // production, not just when a test happens to cover it. See
+  // services/generation/product-fidelity-check.ts's own doc comment for
+  // why this is deterministic-only — no second LLM call, no
+  // chain-of-thought.
+  const fidelityCheck = checkProductFidelity(plan);
+  const fidelityIssues = (Object.entries(fidelityCheck) as [keyof typeof fidelityCheck, boolean][])
+    .filter(([field, value]) => value === false && field !== "negativeConstraintsPresent")
+    .map(([field]) => field);
+  if (fidelityIssues.length > 0) {
+    logger.warn("generation.request.product_fidelity_check_failed", { generationType: plan.generationType, failedChecks: fidelityIssues });
+  } else {
+    logger.info("generation.request.product_fidelity_check", { ...fidelityCheck });
+  }
 
   // Plan output-count limit — applies to EVERY generationType,
   // including Creative Studio (unlike the credit-gate block below, this
