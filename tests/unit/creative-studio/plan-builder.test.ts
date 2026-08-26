@@ -749,3 +749,133 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
     });
   });
 });
+
+/**
+ * Phase 1 of the internal-creative-reasoning upgrade: `creativeConcept`/
+ * `negativeCreativeDecisions` threading from a real (simulated-LLM)
+ * `ParsedIntent` through `buildCreativeBrief` into the synthesized prompt
+ * and `creativeDirection.negativeConstraints`. Builds a `ParsedIntent`
+ * directly via `parseParsedIntent` (rather than the heuristic parser,
+ * which never supplies these fields — see intent-schema.ts's doc
+ * comments) to simulate a real, multimodal-capable provider's output.
+ */
+async function llmIntent(overrides: Record<string, unknown> = {}) {
+  const raw = {
+    intent: "CREATE_LIFESTYLE",
+    mode: "TEXT_TO_IMAGE",
+    changeSummary: "Create a lifestyle image.",
+    scene: "a marble kitchen counter",
+    ...overrides,
+  };
+  return parseParsedIntent(raw);
+}
+
+describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", () => {
+  it("a real provider's creativeConcept is stated as its own concept-first clause, before the atomic clause list and after identity/reference-fidelity", async () => {
+    const parsedIntent = await llmIntent({
+      creativeConcept: "An oversized sculptural desert environment that turns the product into a monumental object.",
+    });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a dramatic desert scene",
+    });
+
+    const identityIndex = plan.creativeDirection.prompt.indexOf(plan.creativeIntent!.identityConstraints.instruction);
+    const conceptIndex = plan.creativeDirection.prompt.indexOf("An oversized sculptural desert environment");
+    const atomicIndex = plan.creativeDirection.prompt.indexOf("marble kitchen counter");
+    expect(identityIndex).toBe(0);
+    expect(conceptIndex).toBeGreaterThan(identityIndex);
+    expect(atomicIndex).toBeGreaterThan(conceptIndex);
+    expect(plan.creativeIntent!.creativeBrief!.creativeConcept).toBe(
+      "An oversized sculptural desert environment that turns the product into a monumental object.",
+    );
+  });
+
+  it("omits the concept-first clause entirely when no concept is supplied (the deterministic/heuristic-parser path, always)", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeConcept).toBeNull();
+    expect(plan.creativeDirection.prompt).not.toMatch(/creative concept:/i);
+  });
+
+  it("a real provider's negativeCreativeDecisions flow into creativeDirection.negativeConstraints, previously always empty for Creative Studio", async () => {
+    const parsedIntent = await llmIntent({
+      negativeCreativeDecisions: ["generic studio backdrop", "unnecessary decorative props"],
+    });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a lifestyle image",
+    });
+    expect(plan.creativeDirection.negativeConstraints).toEqual(["generic studio backdrop", "unnecessary decorative props"]);
+    expect(plan.creativeIntent!.creativeBrief!.negativeCreativeDecisions).toEqual(["generic studio backdrop", "unnecessary decorative props"]);
+  });
+
+  it("falls back to the one deterministic negative-decision rule (subject dominance) for a fresh creative intent when no provider decisions are supplied", async () => {
+    const parsedIntent = await llmIntent({});
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a lifestyle image",
+    });
+    expect(plan.creativeDirection.negativeConstraints.length).toBeGreaterThan(0);
+    expect(plan.creativeDirection.negativeConstraints[0]).toMatch(/generic background/i);
+  });
+
+  it("never lets an inferred/concept-derived idea override an explicit field — an explicit scene stays exactly as requested", async () => {
+    const parsedIntent = await llmIntent({
+      scene: "a white marble table",
+      creativeConcept: "A dramatic desert dune landscape with sweeping golden light.",
+    });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Put the bottle on a white marble table",
+    });
+    // The explicit scene field is untouched by the concept.
+    expect(plan.creativeIntent!.creative.scene).toBe("a white marble table");
+    expect(plan.creativeDirection.environment).toBe("a white marble table");
+    expect(plan.creativeDirection.prompt).toMatch(/white marble table/i);
+  });
+
+  it("threads through the standalone (no Shopify product) path identically", async () => {
+    const parsedIntent = await llmIntent({
+      creativeConcept: "A single dramatic shaft of light isolating the product against total darkness.",
+      negativeCreativeDecisions: ["cluttered background props"],
+    });
+    const plan = buildStandaloneCreativeGenerationPlan({
+      parsedIntent,
+      uploadedReferenceImageUrls: [],
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a dramatic lifestyle image",
+    });
+    expect(plan.creativeDirection.prompt).toMatch(/single dramatic shaft of light/i);
+    expect(plan.creativeDirection.negativeConstraints).toEqual(["cluttered background props"]);
+  });
+});

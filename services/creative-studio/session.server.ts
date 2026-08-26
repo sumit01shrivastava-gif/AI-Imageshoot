@@ -561,6 +561,11 @@ export async function sendCreativeMessage(
     personalizationAppliedCount: brief?.personalizationApplied.length ?? 0,
     inferredCreativeDecisionCount: brief?.inferredCreativeDecisions.length ?? 0,
     preservationRequirementCount: brief?.preservationRequirements.length ?? 0,
+    // Phase 1 internal-creative-reasoning fields — a presence flag (never
+    // the concept text itself) and a count, same safety rule as every
+    // other field logged here.
+    hasCreativeConcept: Boolean(brief?.creativeConcept),
+    negativeCreativeDecisionCount: brief?.negativeCreativeDecisions.length ?? 0,
   });
 
   const job = await createAndEnqueueGenerationJob(context, {

@@ -250,6 +250,42 @@ export const ParsedIntentSchema = z.object({
    * for why this also accepts a literal `null`, not just `undefined`.
    */
   inferredCreativeDecisions: nullishToDefault(z.array(z.string()), []),
+
+  /**
+   * A real, multimodal-capable parser's OWN unifying visual idea for
+   * this shot — ONE concept the individual creative decisions serve,
+   * not a restatement of them. E.g. "An oversized sculptural desert
+   * environment that turns the product into a monumental visual object,
+   * using scale contrast to create instant attention" — never a
+   * comma-joined adjective list like "premium, dramatic, cinematic."
+   * `null` for the heuristic parser (always — genuine concept
+   * development is not something a keyword table can fake, see
+   * creative-brief.ts's module doc comment) and for a real provider
+   * that judged the request too thin to warrant proposing one (e.g. a
+   * narrow single-dimension edit like "make it brighter"). When
+   * present, it is threaded into the synthesized prompt as its own
+   * leading, concept-first clause — see plan-builder.ts's
+   * `synthesizeCreativePrompt`. `.nullable().default(null)`, same full
+   * backward-compatibility reasoning as `overallCreativeDirection`.
+   */
+  creativeConcept: z.string().min(1).nullable().default(null),
+
+  /**
+   * A real, multimodal-capable parser's OWN deliberate restraint
+   * decisions — specific things the Creative Director decided should be
+   * EXCLUDED because they would weaken the concept (e.g. "generic
+   * studio backdrop", "unnecessary decorative props", "competing focal
+   * points") — never a restatement of `removeElements`, which is
+   * exclusively what the MERCHANT explicitly asked to remove. This is
+   * the Creative Director's own judgment about what NOT to include,
+   * feeding the plan's `creativeDirection.negativeConstraints` (see
+   * plan-builder.ts) — previously always empty for Creative Studio.
+   * `[]`/absent for the heuristic parser (always) and for a real
+   * provider that chose not to supply any. See `nullishToDefault`'s doc
+   * comment for why this also accepts a literal `null`, not just
+   * `undefined`.
+   */
+  negativeCreativeDecisions: nullishToDefault(z.array(z.string()), []),
 });
 
 export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;

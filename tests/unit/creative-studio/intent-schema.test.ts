@@ -89,3 +89,60 @@ describe("parseParsedIntent — null-tolerant array/object fields (real producti
     expect(() => parseParsedIntent({ mode: "TEXT_TO_IMAGE", changeSummary: "test" })).toThrow(InvalidParsedIntentError);
   });
 });
+
+/**
+ * Phase 1 of the internal-creative-reasoning upgrade:
+ * `creativeConcept`/`negativeCreativeDecisions` — same null/undefined
+ * -tolerance discipline as every other LLM-enrichable field above, plus
+ * the one deliberate asymmetry (`creativeConcept` is nullable with no
+ * array counterpart; `negativeCreativeDecisions` follows the exact same
+ * `nullishToDefault` pattern as `inferredCreativeDecisions`).
+ */
+describe("parseParsedIntent — creativeConcept / negativeCreativeDecisions (Phase 1)", () => {
+  it("a literal null creativeConcept normalizes to null (same null-tolerance as every other nullable field)", () => {
+    const result = parseParsedIntent({ ...minimalValidRaw(), creativeConcept: null });
+    expect(result.creativeConcept).toBeNull();
+  });
+
+  it("an omitted creativeConcept normalizes to null", () => {
+    const result = parseParsedIntent(minimalValidRaw());
+    expect(result.creativeConcept).toBeNull();
+  });
+
+  it("a real, non-empty creativeConcept passes through verbatim", () => {
+    const concept = "An oversized sculptural desert environment that turns the product into a monumental object.";
+    const result = parseParsedIntent({ ...minimalValidRaw(), creativeConcept: concept });
+    expect(result.creativeConcept).toBe(concept);
+  });
+
+  it("a literal null negativeCreativeDecisions normalizes to []", () => {
+    const result = parseParsedIntent({ ...minimalValidRaw(), negativeCreativeDecisions: null });
+    expect(result.negativeCreativeDecisions).toEqual([]);
+  });
+
+  it("an omitted negativeCreativeDecisions normalizes to []", () => {
+    const result = parseParsedIntent(minimalValidRaw());
+    expect(result.negativeCreativeDecisions).toEqual([]);
+  });
+
+  it("a real, non-empty negativeCreativeDecisions passes through verbatim", () => {
+    const result = parseParsedIntent({
+      ...minimalValidRaw(),
+      negativeCreativeDecisions: ["generic studio backdrop", "competing focal points"],
+    });
+    expect(result.negativeCreativeDecisions).toEqual(["generic studio backdrop", "competing focal points"]);
+  });
+
+  it("every existing field remains unaffected by the two new fields' presence", () => {
+    const raw = {
+      ...minimalValidRaw(),
+      addElements: ["a marble pedestal"],
+      creativeConcept: "A concept.",
+      negativeCreativeDecisions: ["clutter"],
+    };
+    const result = parseParsedIntent(raw);
+    expect(result.addElements).toEqual(["a marble pedestal"]);
+    expect(result.intent).toBe("CREATE_LIFESTYLE");
+    expect(result.mode).toBe("TEXT_TO_IMAGE");
+  });
+});

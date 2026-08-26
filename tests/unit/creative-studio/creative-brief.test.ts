@@ -201,3 +201,54 @@ describe("buildCreativeBrief — general behavior", () => {
     }
   });
 });
+
+describe("buildCreativeBrief — creativeConcept and negativeCreativeDecisions (Phase 1)", () => {
+  it("creativeConcept is null on the deterministic path always — no keyword-table fallback exists for it", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", style: ["premium"], scene: "a dark temple" }));
+    expect(brief.creativeConcept).toBeNull();
+  });
+
+  it("a real vendor's own creativeConcept is used verbatim", () => {
+    const concept = "An oversized sculptural desert environment that turns the product into a monumental object.";
+    const brief = buildCreativeBrief(baseInput({ externalCreativeConcept: concept }));
+    expect(brief.creativeConcept).toBe(concept);
+  });
+
+  it("an empty/whitespace-only externalCreativeConcept is treated as absent, not as a real (empty) concept", () => {
+    const brief = buildCreativeBrief(baseInput({ externalCreativeConcept: "   " }));
+    expect(brief.creativeConcept).toBeNull();
+  });
+
+  it("negativeCreativeDecisions falls back to the one deterministic subject-dominance-paired rule for a fresh creative intent", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", isEditTurn: false }));
+    expect(brief.negativeCreativeDecisions).toEqual(["Avoid a generic background/environment that competes with or overshadows the subject."]);
+  });
+
+  it("negativeCreativeDecisions is empty for a non-fresh (edit) intent with no explicit provider decisions", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CHANGE_SCENE" }));
+    expect(brief.negativeCreativeDecisions).toEqual([]);
+  });
+
+  it("a real vendor's own negativeCreativeDecisions are used verbatim instead of the deterministic rule", () => {
+    const vendorDecisions = ["generic studio backdrop", "unnecessary decorative props", "competing focal points"];
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", externalNegativeCreativeDecisions: vendorDecisions }));
+    expect(brief.negativeCreativeDecisions).toEqual(vendorDecisions);
+  });
+
+  it("negativeCreativeDecisions is never the same list as removeElements — the two concepts stay separate", () => {
+    const brief = buildCreativeBrief(
+      baseInput({ intent: "CREATE_LIFESTYLE", removeElements: ["the shadow"], externalNegativeCreativeDecisions: ["generic backdrop"] }),
+    );
+    expect(brief.transformationRequirements).toContain("remove: the shadow");
+    expect(brief.negativeCreativeDecisions).toEqual(["generic backdrop"]);
+    expect(brief.negativeCreativeDecisions).not.toContain("remove: the shadow");
+  });
+
+  it("an explicit scene is never overridden or contradicted by a supplied creativeConcept (marble-table worked example)", () => {
+    const brief = buildCreativeBrief(
+      baseInput({ scene: "a white marble table", externalCreativeConcept: "A dramatic desert dune landscape." }),
+    );
+    expect(brief.transformationRequirements).toContain("environment: a white marble table");
+    expect(brief.creativeConcept).toBe("A dramatic desert dune landscape.");
+  });
+});

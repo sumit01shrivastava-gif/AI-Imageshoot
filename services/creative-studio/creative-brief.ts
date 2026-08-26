@@ -89,6 +89,36 @@
  * THIS product) than a fixed rule table ever could; the deterministic
  * rules below exist so the system is never creatively inert while no
  * live vendor is configured.
+ *
+ * ## `creativeConcept` and `negativeCreativeDecisions` (Phase 1 of the
+ * internal-creative-reasoning upgrade)
+ *
+ * Two more fields, both following the exact same "LLM supplies a real
+ * one, deterministic path supplies an honest fallback" pattern as
+ * `overallCreativeDirection`/`inferredCreativeDecisions` above, but with
+ * one deliberate asymmetry: `creativeConcept` (the single unifying
+ * visual idea — see `CreativeBrief.creativeConcept`'s own doc comment)
+ * has NO deterministic fallback and stays `null` on the deterministic
+ * path always. Genuine concept development ("an oversized sculptural
+ * environment that turns the product into a monumental object") is
+ * exactly the kind of reasoning a fixed rule table cannot fake without
+ * becoming either a giant keyword-to-cliché lookup (fake intelligence)
+ * or a generic restatement of the objective (not actually a concept) —
+ * so this module honestly leaves it to the real LLM path rather than
+ * pretending a template can do it.
+ *
+ * `negativeCreativeDecisions` (deliberate restraint — what to leave
+ * OUT) gets a real, minimal deterministic default: exactly one rule,
+ * `inferNegativeCreativeDecisions` below, paired 1:1 with the existing
+ * subject-dominance rule in `inferCreativeDecisions` (asserting a
+ * subject should be dominant and asserting nothing should be allowed to
+ * compete with it are two halves of the same decision). Feeds the
+ * plan's `creativeDirection.negativeConstraints` — see plan-builder.ts —
+ * which was always empty for Creative Studio before this. Deliberately
+ * NOT the same list as `removeElements`: that field is exclusively what
+ * the MERCHANT explicitly asked to remove; this one is the Creative
+ * Director's own judgment about what to exclude, and the two are never
+ * merged.
  */
 import type { CreativeIntentValue } from "./types";
 
@@ -153,6 +183,21 @@ export interface CreativeBrief {
    * field already present; never contradicts `transformationRequirements`
    * or `preservationRequirements`. */
   inferredCreativeDecisions: string[];
+  /** ONE unifying visual idea for this shot — what makes it distinctive
+   * rather than generic — never an adjective list. `null` on the
+   * deterministic path always (see module doc comment) and whenever a
+   * real LLM judged the request too narrow for a real concept to add
+   * anything. Never contradicts an explicit field (`scene`/`lighting`/
+   * `composition`/...) — only fills what those left unspecified. */
+  creativeConcept: string | null;
+  /** Deliberate restraint — specific things the Creative Director
+   * decided should be EXCLUDED because they would weaken the concept
+   * (e.g. "generic studio backdrop"). Never the same list as
+   * `removeElements` (see `transformationRequirements`), which is
+   * exclusively what the merchant explicitly asked to remove. Feeds
+   * `GenerationPlan.creativeDirection.negativeConstraints` — see
+   * plan-builder.ts. */
+  negativeCreativeDecisions: string[];
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -217,6 +262,17 @@ export interface BuildCreativeBriefInput {
    * heuristic parser (always) and for a real provider that chose not to
    * supply any. */
   externalInferredCreativeDecisions?: string[] | null;
+  /** A real vendor's own unifying visual concept — see
+   * `CreativeBrief.creativeConcept`'s doc comment. `null`/absent for the
+   * heuristic parser (always — there is no deterministic fallback for
+   * this one, see module doc comment) and for a real provider that
+   * judged the request too narrow to warrant proposing one. */
+  externalCreativeConcept?: string | null;
+  /** A real vendor's own deliberate restraint decisions — see
+   * `CreativeBrief.negativeCreativeDecisions`'s doc comment.
+   * `undefined`/empty for the heuristic parser (always) and for a real
+   * provider that chose not to supply any. */
+  externalNegativeCreativeDecisions?: string[] | null;
 }
 
 /**
@@ -281,6 +337,28 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   // background/environment becomes.
   if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
     decisions.push("Keep the subject visually dominant against a supportive, non-competing background.");
+  }
+
+  return decisions;
+}
+
+/**
+ * The small, deterministic "what should a professional creative director
+ * deliberately leave OUT" rule table — see module doc comment's
+ * "creativeConcept and negativeCreativeDecisions". Deliberately paired
+ * 1:1 with `inferCreativeDecisions`'s subject-dominance rule above
+ * (asserting the subject should be dominant, and asserting nothing
+ * should be allowed to compete with it, are two halves of the same
+ * decision) rather than a separate, larger rule set of its own — the
+ * intent is a real, honest floor, not a simulation of genuine restraint
+ * judgment (that belongs to the real LLM path — see
+ * `externalNegativeCreativeDecisions`).
+ */
+function inferNegativeCreativeDecisions(input: BuildCreativeBriefInput): string[] {
+  const decisions: string[] = [];
+
+  if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
+    decisions.push("Avoid a generic background/environment that competes with or overshadows the subject.");
   }
 
   return decisions;
@@ -402,6 +480,16 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
       ? input.externalInferredCreativeDecisions
       : inferCreativeDecisions(input);
 
+  const negativeCreativeDecisions =
+    input.externalNegativeCreativeDecisions && input.externalNegativeCreativeDecisions.length > 0
+      ? input.externalNegativeCreativeDecisions
+      : inferNegativeCreativeDecisions(input);
+
+  // No deterministic fallback — see module doc comment for why genuine
+  // concept development is deliberately left to the real LLM path only.
+  const creativeConcept =
+    input.externalCreativeConcept && input.externalCreativeConcept.trim().length > 0 ? input.externalCreativeConcept.trim() : null;
+
   // A real vendor's own holistic sentence is assumed to already fold in
   // its own creative-director reasoning (it IS the creative-director
   // reasoning) — the deterministic `inferredCreativeDecisions`/
@@ -421,6 +509,8 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     personalizationApplied,
     importantElements,
     inferredCreativeDecisions,
+    creativeConcept,
+    negativeCreativeDecisions,
     overallCreativeDirection,
   };
 }

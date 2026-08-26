@@ -177,6 +177,18 @@ export const CreativeStudioPlanSchema = z.object({
       // inferred" doc comment. `.default([])` so an older persisted plan
       // (from before this field existed) still parses fine.
       inferredCreativeDecisions: z.array(z.string()).default([]),
+      // ONE unifying visual idea for the shot — see
+      // services/creative-studio/creative-brief.ts's
+      // "creativeConcept and negativeCreativeDecisions" doc comment.
+      // `.nullable().default(null)` — no migration needed (JSON
+      // column), and never populated by the deterministic path (only a
+      // real LLM ever supplies one).
+      creativeConcept: z.string().min(1).nullable().default(null),
+      // Deliberate restraint decisions — what the Creative Director
+      // decided to exclude, distinct from `creative.removeElements`
+      // (the merchant's own explicit removals). `.default([])` — same
+      // backward-compatibility reasoning as `inferredCreativeDecisions`.
+      negativeCreativeDecisions: z.array(z.string()).default([]),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()

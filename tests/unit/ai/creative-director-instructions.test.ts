@@ -39,6 +39,38 @@ describe("CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION", () => {
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/never invent a specific real brand/i);
   });
 
+  it("walks the model through the full A-L internal reasoning framework (Phase 1 of the internal-creative-reasoning upgrade)", () => {
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/A\. PURPOSE/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/B\. SUBJECT PRIORITY/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/C\. CONCEPT/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/D\. ENVIRONMENT/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/E\. COMPOSITION/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/F\. CAMERA/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/G\. LIGHT/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/H\. MATERIAL/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/I\. COLOR/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/J\. ATMOSPHERE/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/K\. RESTRAINT/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/L\. COHERENCE/);
+  });
+
+  it("instructs the reasoning to stay internal/private — no chain-of-thought is ever returned", () => {
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/internally|privately/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/do not write this thinking out|never a transcript of the reasoning/i);
+  });
+
+  it("describes creativeConcept as ONE unifying idea, not an adjective list, and documents the marble-table/desert priority example", () => {
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/"creativeConcept"/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/premium, dramatic, cinematic.{0,20}is wrong/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/white marble table/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/must never propose replacing the marble table/i);
+  });
+
+  it("describes negativeCreativeDecisions as the Creative Director's own restraint judgment, distinct from removeElements", () => {
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/"negativeCreativeDecisions"/);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/never a restatement of "removeElements"/i);
+  });
+
   it("never names a specific product, pose, or worked example from this project's own test fixtures", () => {
     const forbidden = [
       "yoga",

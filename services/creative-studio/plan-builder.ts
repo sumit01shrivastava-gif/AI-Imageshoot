@@ -146,6 +146,19 @@ function synthesizeCreativePrompt(
    * atomic fields that already work.
    */
   overallCreativeDirection: string,
+  /**
+   * The Creative Director's own unifying visual idea for this shot
+   * (`CreativeBrief.creativeConcept`) — `null` on the deterministic
+   * fallback path and whenever a real provider judged the request too
+   * thin to warrant one (see intent-schema.ts's `creativeConcept` doc
+   * comment). When present, stated as its own concept-first clause
+   * immediately after identity/reference-fidelity and before the atomic
+   * clause list, so the synthesized prompt reads "here is the idea,
+   * here are the decisions that serve it" rather than one more
+   * attribute appended to the end — additive only, never replaces
+   * `overallCreativeDirection`'s existing closing-sentence role.
+   */
+  creativeConcept: string | null,
 ): string {
   const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
@@ -180,7 +193,14 @@ function synthesizeCreativePrompt(
     ? ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
     : "";
 
-  return `${identityInstruction}${referenceFidelity} ${parts.join(", ")}. ${overallCreativeDirection}`;
+  // Concept-first: stated before the atomic clause list so the concept
+  // reads as the idea the following decisions serve, not as one more
+  // item appended after them. Omitted entirely when there is no concept
+  // (the common case on the deterministic path) — never an empty/filler
+  // sentence.
+  const conceptClause = creativeConcept ? ` Creative concept: ${creativeConcept}.` : "";
+
+  return `${identityInstruction}${referenceFidelity}${conceptClause} ${parts.join(", ")}. ${overallCreativeDirection}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -314,6 +334,8 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     personalizedFields,
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
+    externalCreativeConcept: parsedIntent.creativeConcept,
+    externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -323,6 +345,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     identityConstraints.instruction,
     isEditTurn ? "the reference image provided" : null,
     creativeBrief.overallCreativeDirection,
+    creativeBrief.creativeConcept,
   );
 
   const referenceImages = isEditTurn ? [{ url: previousResultUrl!, role: "previous_result" as const }] : [];
@@ -342,7 +365,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
 
     creativeDirection: {
       prompt,
-      negativeConstraints: [],
+      negativeConstraints: creativeBrief.negativeCreativeDecisions,
       environment: creative.scene,
       lighting: creative.lighting,
       composition: creative.composition,
@@ -551,6 +574,8 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     personalizedFields,
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
+    externalCreativeConcept: parsedIntent.creativeConcept,
+    externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -560,6 +585,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     identityConstraints.instruction,
     isEditTurn ? referenceNoun : null,
     creativeBrief.overallCreativeDirection,
+    creativeBrief.creativeConcept,
   );
 
   // Ground-truth reference for the actual PROVIDER call —
@@ -593,7 +619,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
 
     creativeDirection: {
       prompt,
-      negativeConstraints: [],
+      negativeConstraints: creativeBrief.negativeCreativeDecisions,
       environment: creative.scene,
       lighting: creative.lighting,
       composition: creative.composition,
