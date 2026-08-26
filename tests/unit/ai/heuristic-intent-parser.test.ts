@@ -118,6 +118,28 @@ describe("HeuristicIntentParser", () => {
     });
   });
 
+  describe("depth-of-field extraction (a distinct dimension from composition/camera)", () => {
+    it("recognizes a shallow depth-of-field / blurred-background request", async () => {
+      const result = await parse("make the background blurred", 1);
+      expect(result.depthOfField).toBe("shallow depth of field, background softly blurred");
+    });
+
+    it("recognizes an explicit 'shallow depth of field' phrase", async () => {
+      const result = await parse("shot with shallow depth of field", 1);
+      expect(result.depthOfField).toBe("shallow depth of field, background softly blurred");
+    });
+
+    it("recognizes a deep-focus / everything-sharp request", async () => {
+      const result = await parse("keep everything in focus", 1);
+      expect(result.depthOfField).toBe("deep focus, background sharp");
+    });
+
+    it("stays null when depth of field isn't mentioned", async () => {
+      const result = await parse("make it brighter", 1);
+      expect(result.depthOfField).toBeNull();
+    });
+  });
+
   describe("clothing-change extraction (generalized 'change X to Y' for a bounded, common set of garment nouns)", () => {
     it("captures a requested clothing change as an addElement", async () => {
       const result = await parse("Change her dress to a red evening gown", 1);

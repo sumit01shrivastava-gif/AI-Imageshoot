@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyLearnedDefaults,
   recordCorrectionSignal,
+  recordRegenerateSignal,
   recordExplicitFeedback,
   recordReviewSignal,
   getConfiguredCreativeProfileStore,
@@ -46,7 +47,7 @@ function baseIntent(overrides: Partial<ParsedIntent> = {}): ParsedIntent {
 }
 
 function fields(overrides: Partial<LearnableCreativeFields> = {}): LearnableCreativeFields {
-  return { style: [], lighting: null, composition: null, camera: null, colorDirection: null, ...overrides };
+  return { style: [], lighting: null, composition: null, camera: null, colorDirection: null, depthOfField: null, ...overrides };
 }
 
 let memoryStore: InMemoryCreativeProfileStore;
@@ -135,7 +136,7 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
     expect(result.lighting).toBe("cinematic");
   });
 
-  it("repeated corrections (the weakest signal) DO eventually shift the learned preference — the 'bright -> dark cinematic' worked example", async () => {
+  it("repeated corrections DO eventually shift the learned preference — the 'bright -> dark cinematic' worked example", async () => {
     // Simulate several turns where the merchant kept correcting a
     // bright background to a dark cinematic one.
     for (let i = 0; i < 6; i++) {
@@ -148,6 +149,72 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.lighting).toBe("darker, moodier lighting");
+  });
+});
+
+describe("regenerate signal — the weakest of all (see SIGNAL_WEIGHT.regenerate)", () => {
+  it("a single 'pure' regenerate can never, on its own, cross the application threshold against nothing", async () => {
+    await recordRegenerateSignal(USER_A, fields({ lighting: "flat lighting" }), CAMPAIGN);
+    // weight 0.15, far below MIN_DECAYED_WEIGHT_TO_APPLY (1.5) — the
+    // negative observation exists, but never suppresses/promotes
+    // anything on its own.
+    const result = await applyLearnedDefaults(USER_A, baseIntent());
+    expect(result.lighting).toBeNull();
+  });
+
+  it("a single regenerate cannot override an established, strongly-reinforced preference", async () => {
+    for (let i = 0; i < 10; i++) {
+      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive", CAMPAIGN);
+    }
+    await recordRegenerateSignal(USER_A, fields({ lighting: "cinematic" }), CAMPAIGN);
+    const result = await applyLearnedDefaults(USER_A, baseIntent());
+    expect(result.lighting).toBe("cinematic");
+  });
+
+  it("regenerate is weaker than correction — the same repeat count that shifts a preference via correction does not necessarily do so via regenerate alone", async () => {
+    // 6 regenerates of a value that was never reinforced any other way —
+    // weight 6 * 0.15 = 0.9, still below the 1.5 threshold (unlike the
+    // equivalent correction-signal worked example above, which DOES
+    // clear it at the same repeat count with correction's higher 0.3
+    // weight).
+    for (let i = 0; i < 6; i++) {
+      await recordRegenerateSignal(USER_A, fields({ lighting: "flat lighting" }), CAMPAIGN);
+    }
+    const rows = await getConfiguredCreativeProfileStore().getProfile(USER_A, CAMPAIGN);
+    expect(rows.fields.lighting["flat lighting"]?.negativeWeight).toBeCloseTo(0.9, 5);
+  });
+
+  it("repeated regeneration of the SAME field value across many separate turns eventually does register as evidence, once enough accumulates", async () => {
+    for (let i = 0; i < 20; i++) {
+      await recordRegenerateSignal(USER_A, fields({ lighting: "flat lighting" }), CAMPAIGN);
+    }
+    const rows = await getConfiguredCreativeProfileStore().getProfile(USER_A, CAMPAIGN);
+    expect(rows.fields.lighting["flat lighting"]?.negativeWeight).toBeCloseTo(3.0, 5);
+  });
+});
+
+describe("Creative Director judgment vs. durable user preference (see personalization.server.ts's module doc comment)", () => {
+  it("a single approval of a value the Creative Director decided (not the merchant explicitly) does NOT immediately become a durable preference", async () => {
+    // This function has no notion of WHERE a field's value came from
+    // (explicit request vs. Creative Director inference/default) — by
+    // design, that distinction lives one layer up, in
+    // creative-brief.ts's transformationRequirements/personalizationApplied
+    // split. What this module guarantees instead: regardless of a
+    // value's provenance, ONE review-strength signal (weight 0.6) can
+    // never alone cross MIN_DECAYED_WEIGHT_TO_APPLY (1.5) — a single
+    // approved generation's creative choices, on their own, never
+    // become "this user's preference."
+    await recordReviewSignal(USER_A, fields({ composition: "asymmetric, negative-space-heavy" }), "APPROVED", CAMPAIGN);
+    const result = await applyLearnedDefaults(USER_A, baseIntent());
+    expect(result.composition).toBeNull();
+  });
+
+  it("only sufficiently repeated evidence (category B in the spec's own A/B/C/D framing) promotes a value to an applied default", async () => {
+    for (let i = 0; i < 3; i++) {
+      await recordReviewSignal(USER_A, fields({ composition: "asymmetric, negative-space-heavy" }), "APPROVED", CAMPAIGN);
+    }
+    const result = await applyLearnedDefaults(USER_A, baseIntent());
+    expect(result.composition).toBe("asymmetric, negative-space-heavy");
   });
 });
 

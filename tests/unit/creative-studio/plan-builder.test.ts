@@ -706,6 +706,24 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
       expect(plan.creativeIntent!.creativeBrief!.transformationRequirements.some((e) => /red evening gown/i.test(e))).toBe(true);
       expect(plan.creativeDirection.prompt).toMatch(/red evening gown/i);
     });
+
+    it("depth-of-field transformation reaches the plan/brief/prompt (test matrix item #18)", async () => {
+      const rawInstruction = "Take this photo with shallow depth of field so the background is softly blurred";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/product-photo.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      expect(plan.creativeIntent!.creative.depthOfField).toBe("shallow depth of field, background softly blurred");
+      expect(
+        plan.creativeIntent!.creativeBrief!.transformationRequirements.some((e) => e === "depth of field: shallow depth of field, background softly blurred"),
+      ).toBe(true);
+      expect(plan.creativeDirection.prompt).toMatch(/shallow depth of field/i);
+    });
   });
 
   describe("Shopify regression — the product path is untouched by the standalone subject/action mechanism", () => {

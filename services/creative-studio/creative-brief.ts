@@ -41,12 +41,34 @@
  * template ever could. Either way, `CreativeBrief.overallCreativeDirection`
  * is never null/empty for a built plan.
  *
- * ## Explicit vs. inferred — the two kinds of creative decision
+ * ## Explicit vs. personalized vs. inferred — three kinds of creative decision
  *
  * `transformationRequirements` is exclusively WHAT THE USER EXPLICITLY
- * REQUESTED — every entry traces back to a non-null field the intent
- * parser actually extracted from this turn's own message (or a creative
- * override). `inferredCreativeDecisions` is the separate, genuinely new
+ * REQUESTED THIS TURN — every entry traces back to a non-null field the
+ * intent parser actually extracted from THIS message (or a creative
+ * override). `action`/`scene`/`addElements`/`removeElements`/the
+ * attribute overrides can only ever land here — personalization never
+ * touches request-specific CONTENT (see
+ * personalization.server.ts's own doc comment on why `LEARNABLE_FIELDS`
+ * excludes them).
+ *
+ * `personalizationApplied` is the separate, previously-conflated case:
+ * one of the 5 fields personalization CAN fill (`style`/`lighting`/
+ * `composition`/`camera`/`colorDirection`) that this turn's own message
+ * left unspecified, filled in from this user's own learned preference by
+ * `services/creative-studio/personalization.server.ts`'s
+ * `applyLearnedDefaults` — BEFORE the intent this file receives (a real,
+ * previously-undetected imprecision: prior to this field existing, a
+ * personalization-filled value was indistinguishable from something the
+ * merchant actually typed once it reached this layer, contradicting this
+ * module's own "explicit vs. inferred" framing). Callers pass
+ * `personalizedFields` (the caller already knows, from comparing the
+ * pre- and post-`applyLearnedDefaults` intent, which fields changed) —
+ * this file never re-derives it and never talks to the profile store
+ * directly, keeping the "creative-studio orchestrates, personalization
+ * is a narrow service" boundary intact.
+ *
+ * `inferredCreativeDecisions` is the separate, genuinely new
  * concept this section adds: WHAT A PROFESSIONAL CREATIVE DIRECTOR
  * SHOULD DO TO EXECUTE THAT REQUEST WELL, even though the merchant never
  * said it in those words — e.g. a requested pose change implies
@@ -104,14 +126,24 @@ export interface CreativeBrief {
    * future reasoning stage can inspect without reaching into a sibling
    * object). Empty for a standalone session with nothing yet analyzed. */
   preservationRequirements: string[];
-  /** What THIS turn is actually asking to change, grouped as
-   * "dimension: value" entries — e.g. "pose/action: yoga",
+  /** What THIS turn's OWN message is actually asking to change, grouped
+   * as "dimension: value" entries — e.g. "pose/action: yoga",
    * "environment: a dark, atmospheric temple", "lighting: cinematic,
    * moody". This is the direct, assertable evidence a regression test
    * checks for the exact failure class Part P/Q describe: a request
    * naming a pose/environment/lighting change must show up here, not
-   * just somewhere inside a prose paragraph. */
+   * just somewhere inside a prose paragraph. Never includes a value that
+   * came from personalization — see `personalizationApplied`. */
   transformationRequirements: string[];
+  /** One of the 5 personalizable dimensions (style/lighting/composition/
+   * camera/colorDirection — see personalization.server.ts's
+   * `LEARNABLE_FIELDS`) that THIS message left unspecified and this
+   * user's own learned preference filled in instead — see module doc
+   * comment's "Explicit vs. personalized vs. inferred". Empty for a
+   * Shopify call (no `userId` concept), for a user with no learned
+   * preference yet, or when the message specified every dimension
+   * itself. Never contains a value the message itself specified. */
+  personalizationApplied: string[];
   /** Short noun phrases that must visibly appear in the frame — added
    * elements plus the named scene/action, when present. */
   importantElements: string[];
@@ -160,12 +192,21 @@ export interface BuildCreativeBriefInput {
   composition: string | null;
   camera: string | null;
   colorDirection: string | null;
+  depthOfField: string | null;
   addElements: string[];
   removeElements: string[];
   colorOverride: string | null;
   materialOverride: string | null;
   isEditTurn: boolean;
   preservationRequirements: string[];
+  /** Which of `style`/`lighting`/`composition`/`camera`/`colorDirection`
+   * above were filled in by this user's own learned preference
+   * (`services/creative-studio/personalization.server.ts`'s
+   * `applyLearnedDefaults`) rather than specified by THIS message — see
+   * module doc comment's "Explicit vs. personalized vs. inferred".
+   * `[]`/omitted for a Shopify call or a user with no learned preference
+   * applied this turn (the common case). */
+  personalizedFields?: readonly string[];
   /** A real vendor's own holistic reasoning, when a configured
    * multimodal-capable `IntentParsingProvider` supplied one — see module
    * doc comment. `null`/absent for the heuristic parser (always) and for
@@ -245,19 +286,37 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   return decisions;
 }
 
-function transformationEntries(input: BuildCreativeBriefInput): string[] {
-  const entries: string[] = [];
-  if (input.action) entries.push(`pose/action: ${input.action}`);
-  if (input.scene) entries.push(`environment: ${input.scene}`);
-  if (input.lighting) entries.push(`lighting: ${input.lighting}`);
-  if (input.composition) entries.push(`composition: ${input.composition}`);
-  if (input.camera) entries.push(`camera: ${input.camera}`);
-  if (input.colorDirection) entries.push(`color palette: ${input.colorDirection}`);
-  if (input.style.length > 0) entries.push(`visual style: ${input.style.join(", ")}`);
-  if (input.addElements.length > 0) entries.push(`add: ${input.addElements.join(", ")}`);
-  if (input.removeElements.length > 0) entries.push(`remove: ${input.removeElements.join(", ")}`);
-  if (input.colorOverride) entries.push(`product color: ${input.colorOverride}`);
-  if (input.materialOverride) entries.push(`product material: ${input.materialOverride}`);
+interface TaggedEntry {
+  /** The `BuildCreativeBriefInput` field this entry came from — only
+   * ever one of `personalization.server.ts`'s `LEARNABLE_FIELDS`
+   * ("style"/"lighting"/"composition"/"camera"/"colorDirection") can
+   * possibly appear in a caller's `personalizedFields` list, so only
+   * entries tagged with one of those five are ever eligible to be
+   * reclassified as `personalizationApplied` below. */
+  field: string;
+  entry: string;
+}
+
+/** Every "dimension: value" entry this turn's EFFECTIVE creative fields
+ * describe, each tagged with which field it came from — `buildCreativeBrief`
+ * splits these into `transformationRequirements` (explicit) vs.
+ * `personalizationApplied` (filled in by learned preference) using that
+ * tag, rather than this function needing to know about personalization
+ * at all. */
+function transformationEntries(input: BuildCreativeBriefInput): TaggedEntry[] {
+  const entries: TaggedEntry[] = [];
+  if (input.action) entries.push({ field: "action", entry: `pose/action: ${input.action}` });
+  if (input.scene) entries.push({ field: "scene", entry: `environment: ${input.scene}` });
+  if (input.lighting) entries.push({ field: "lighting", entry: `lighting: ${input.lighting}` });
+  if (input.composition) entries.push({ field: "composition", entry: `composition: ${input.composition}` });
+  if (input.camera) entries.push({ field: "camera", entry: `camera: ${input.camera}` });
+  if (input.colorDirection) entries.push({ field: "colorDirection", entry: `color palette: ${input.colorDirection}` });
+  if (input.depthOfField) entries.push({ field: "depthOfField", entry: `depth of field: ${input.depthOfField}` });
+  if (input.style.length > 0) entries.push({ field: "style", entry: `visual style: ${input.style.join(", ")}` });
+  if (input.addElements.length > 0) entries.push({ field: "addElements", entry: `add: ${input.addElements.join(", ")}` });
+  if (input.removeElements.length > 0) entries.push({ field: "removeElements", entry: `remove: ${input.removeElements.join(", ")}` });
+  if (input.colorOverride) entries.push({ field: "colorOverride", entry: `product color: ${input.colorOverride}` });
+  if (input.materialOverride) entries.push({ field: "materialOverride", entry: `product material: ${input.materialOverride}` });
   return entries;
 }
 
@@ -269,7 +328,12 @@ function transformationEntries(input: BuildCreativeBriefInput): string[] {
  * `plan-builder.ts`'s existing atomic-field prompt clauses, not a
  * renamed copy of them.
  */
-function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transformations: string[], inferred: string[]): string {
+function composeOverallCreativeDirection(
+  input: BuildCreativeBriefInput,
+  transformations: string[],
+  personalizationApplied: string[],
+  inferred: string[],
+): string {
   const objective = INTENT_OBJECTIVE[input.intent];
   const sentences: string[] = [objective];
 
@@ -287,6 +351,16 @@ function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transfo
     );
   }
 
+  // Priority model (see this project's "explicit > personalization >
+  // inference" ordering): a personalized default is only ever real
+  // evidence about dimensions THIS message left unspecified — stated as
+  // its own, clearly-conditioned clause, never merged into the explicit
+  // clause above, so the prompt itself can never make a learned habit
+  // look like something the merchant asked for this turn.
+  if (personalizationApplied.length > 0) {
+    sentences.push(`This merchant's own usual preference, applied only because this request didn't specify it: ${personalizationApplied.join("; ")}.`);
+  }
+
   if (input.style.length > 0) {
     sentences.push(`The overall result should feel ${input.style.join(", ")}, not a generic default.`);
   }
@@ -302,8 +376,25 @@ function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transfo
   return sentences.join(" ");
 }
 
+/**
+ * The ONLY field names `buildCreativeBrief` will ever reclassify as
+ * `personalizationApplied` — mirrors
+ * `personalization.server.ts`'s `LEARNABLE_FIELDS` exactly. This is a
+ * structural guard, not just a convention followed by today's one real
+ * caller: request-specific CONTENT (`action`/`scene`/`addElements`/
+ * `removeElements`/the attribute overrides) can NEVER be personalization
+ * -sourced by design (personalization never learns a subject/scene/
+ * action — see that file's own doc comment), so even a future caller
+ * bug that passed one of those names in `personalizedFields` could never
+ * make an explicit request look like a learned habit.
+ */
+const PERSONALIZABLE_ENTRY_FIELDS: ReadonlySet<string> = new Set(["style", "lighting", "composition", "camera", "colorDirection"]);
+
 export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrief {
-  const transformations = transformationEntries(input);
+  const allEntries = transformationEntries(input);
+  const personalizedSet = new Set((input.personalizedFields ?? []).filter((field) => PERSONALIZABLE_ENTRY_FIELDS.has(field)));
+  const transformations = allEntries.filter((e) => !personalizedSet.has(e.field)).map((e) => e.entry);
+  const personalizationApplied = allEntries.filter((e) => personalizedSet.has(e.field)).map((e) => e.entry);
   const importantElements = [...(input.scene ? [input.scene] : []), ...(input.action ? [input.action] : []), ...input.addElements];
 
   const inferredCreativeDecisions =
@@ -313,20 +404,21 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
 
   // A real vendor's own holistic sentence is assumed to already fold in
   // its own creative-director reasoning (it IS the creative-director
-  // reasoning) — the deterministic `inferredCreativeDecisions` list is
-  // still computed and persisted either way (traceability, tests), but
-  // only appended into the COMPOSED sentence, never spliced into a real
-  // vendor's own prose.
+  // reasoning) — the deterministic `inferredCreativeDecisions`/
+  // `personalizationApplied` lists are still computed and persisted
+  // either way (traceability, tests), but only appended into the
+  // COMPOSED sentence, never spliced into a real vendor's own prose.
   const overallCreativeDirection =
     input.externalCreativeDirection && input.externalCreativeDirection.trim().length > 0
       ? input.externalCreativeDirection.trim()
-      : composeOverallCreativeDirection(input, transformations, inferredCreativeDecisions);
+      : composeOverallCreativeDirection(input, transformations, personalizationApplied, inferredCreativeDecisions);
 
   return {
     creativeObjective: INTENT_OBJECTIVE[input.intent],
     subjectTreatment: input.action ? `natural, in the middle of ${input.action}, not stiffly posed` : null,
     preservationRequirements: input.preservationRequirements,
     transformationRequirements: transformations,
+    personalizationApplied,
     importantElements,
     inferredCreativeDecisions,
     overallCreativeDirection,

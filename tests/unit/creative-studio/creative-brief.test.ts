@@ -19,6 +19,7 @@ function baseInput(overrides: Partial<BuildCreativeBriefInput> = {}): BuildCreat
     composition: null,
     camera: null,
     colorDirection: null,
+    depthOfField: null,
     addElements: [],
     removeElements: [],
     colorOverride: null,

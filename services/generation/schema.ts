@@ -122,6 +122,11 @@ export const CreativeStudioPlanSchema = z.object({
     composition: z.string().min(1).nullable().default(null),
     camera: z.string().min(1).nullable().default(null),
     colorDirection: z.string().min(1).nullable().default(null),
+    /** How sharp vs. blurred the space around the subject should read —
+     * see intent-schema.ts's `depthOfField` doc comment.
+     * `.nullable().default(null)` — same backward-compatibility
+     * reasoning as `subject`/`action`. */
+    depthOfField: z.string().min(1).nullable().default(null),
     addElements: z.array(z.string()).default([]),
     removeElements: z.array(z.string()).default([]),
     /** Requested removals that named a protected brand/identity element
@@ -158,6 +163,13 @@ export const CreativeStudioPlanSchema = z.object({
       subjectTreatment: z.string().min(1).nullable().default(null),
       preservationRequirements: z.array(z.string()).default([]),
       transformationRequirements: z.array(z.string()).default([]),
+      // Which of style/lighting/composition/camera/colorDirection came
+      // from this user's OWN learned preference rather than this
+      // message — see services/creative-studio/creative-brief.ts's
+      // "Explicit vs. personalized vs. inferred" doc comment.
+      // `.default([])` so an older persisted plan (from before this
+      // field existed) still parses fine.
+      personalizationApplied: z.array(z.string()).default([]),
       importantElements: z.array(z.string()).default([]),
       // What a professional creative director inferred was necessary to
       // execute the explicit request well — see

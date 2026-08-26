@@ -34,6 +34,7 @@ describe("buildCreativeContext", () => {
           composition: "commercial product advertising",
           camera: null,
           colorDirection: null,
+          depthOfField: null,
           addElements: [],
           removeElements: [],
           blockedRemovals: [],

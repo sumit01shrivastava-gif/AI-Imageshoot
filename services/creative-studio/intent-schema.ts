@@ -92,6 +92,12 @@ export const ParsedIntentSchema = z.object({
   camera: z.string().min(1).nullable().default(null),
   /** e.g. "warm and golden", "cool and clean". */
   colorDirection: z.string().min(1).nullable().default(null),
+  /** e.g. "shallow depth of field, background softly blurred", "deep
+   * focus, everything sharp". A genuinely distinct creative dimension
+   * from `composition` (camera framing/angle) — how sharp vs. blurred
+   * the space around the subject reads — with nowhere else in this
+   * schema to live; `null` when not specified/implied. */
+  depthOfField: z.string().min(1).nullable().default(null),
 
   /** Short noun phrases to add — "a woman holding it", "a marble
    * pedestal" — from ADD_MODEL/ADD_ELEMENT-shaped instructions. */

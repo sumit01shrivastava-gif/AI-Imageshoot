@@ -59,6 +59,9 @@ export interface CreativeContext {
    * already existed on the persisted plan. */
   activeCamera: string | null;
   activeColorDirection: string | null;
+  /** Same carry-forward reasoning as `activeCamera`/`activeColorDirection`
+   * — see intent-schema.ts's `depthOfField` doc comment. */
+  activeDepthOfField: string | null;
 
   /** Bounded (see `buildCreativeContext`'s `maxPreviousInstructions`),
    * most-recent-last — light continuity for the parser/assistant replies,
@@ -110,6 +113,7 @@ export function buildCreativeContext(input: BuildCreativeContextInput): Creative
     activeComposition: creative?.composition ?? null,
     activeCamera: creative?.camera ?? null,
     activeColorDirection: creative?.colorDirection ?? null,
+    activeDepthOfField: creative?.depthOfField ?? null,
 
     previousInstructions: input.recentInstructions.slice(-max),
 

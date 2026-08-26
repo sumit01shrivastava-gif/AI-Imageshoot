@@ -45,10 +45,22 @@
  * boundary in this codebase (CLAUDE.md "Reject malformed provider
  * output"). This class only makes the call and returns the parsed JSON
  * body as-is.
+ *
+ * `systemInstruction` (the "creative director" upgrade): the request
+ * body now also carries `CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION`
+ * (creative-director-instructions.ts) — the actual, generalized
+ * instructions for reasoning like a professional creative director
+ * (explicit-vs-inferred separation, reference-image identity-vs
+ * -transformation, contradiction handling), rather than assuming
+ * whatever runs behind `AI_PROVIDER_BASE_URL` already has its own
+ * equivalent framing baked in. Purely additive — an endpoint that
+ * ignores unknown fields sees no behavior change; one that wants this
+ * app's own creative-director framing now has it.
  */
 import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
+import { CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION } from "./creative-director-instructions";
 import type { IntentParsingProvider, ParseIntentInput, ParsedIntentRawOutput } from "./types";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -76,6 +88,7 @@ export class ProductionIntentParsingProvider implements IntentParsingProvider {
         },
         body: JSON.stringify({
           model: env.AI_PROVIDER_MODEL || "default",
+          systemInstruction: CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION,
           message: input.message,
           creativeContext: input.creativeContext,
           candidateResultCount: input.candidateResultCount,
@@ -109,7 +122,7 @@ export class ProductionIntentParsingProvider implements IntentParsingProvider {
     } catch {
       throw new ProviderResponseError(this.name, "response body was not valid JSON");
     }
-    if (typeof parsed !== "object" || parsed === null) {
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new ProviderResponseError(this.name, "response was not a JSON object");
     }
 

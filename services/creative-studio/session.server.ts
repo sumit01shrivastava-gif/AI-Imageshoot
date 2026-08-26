@@ -51,6 +51,7 @@ import { uploadReferenceImages, type UploadedReferenceImageInput } from "./refer
 import {
   applyLearnedDefaults,
   recordCorrectionSignal,
+  recordRegenerateSignal,
   recordExplicitFeedback,
   recordReviewSignal,
   contextForIntent,
@@ -396,6 +397,7 @@ export async function sendCreativeMessage(
         composition: creativeContext.activeComposition,
         camera: creativeContext.activeCamera,
         colorDirection: creativeContext.activeColorDirection,
+        depthOfField: creativeContext.activeDepthOfField,
       },
       {
         style: modeCorrectedIntent.style,
@@ -403,6 +405,7 @@ export async function sendCreativeMessage(
         composition: modeCorrectedIntent.composition,
         camera: modeCorrectedIntent.camera,
         colorDirection: modeCorrectedIntent.colorDirection,
+        depthOfField: modeCorrectedIntent.depthOfField,
       },
       // THIS turn's own context bucket — see personalization.server.ts's
       // "Context-aware weighting": a correction is evidence about what
@@ -410,10 +413,59 @@ export async function sendCreativeMessage(
       // not a global, request-type-blind preference.
       contextForIntent(modeCorrectedIntent.intent),
     );
+
+    // A "pure" regenerate — the merchant asked to try again without
+    // stating ANY new creative direction (a bare "Regenerate this.", the
+    // Creative Studio UI's own Regenerate button — app/routes/studio.c.$sessionId.tsx)
+    // — is weak, but real, negative evidence about the PREVIOUS turn's
+    // active field values (see personalization.server.ts's
+    // `recordRegenerateSignal` doc comment for why this is deliberately
+    // the weakest signal and cannot, on its own, override anything). Only
+    // fires when this turn genuinely specified nothing new — a
+    // "Regenerate, but darker" turn already has its own new `lighting`
+    // value and is handled entirely by the correction signal above.
+    const hasNoNewCreativeDirection =
+      modeCorrectedIntent.style.length === 0 &&
+      modeCorrectedIntent.lighting === null &&
+      modeCorrectedIntent.composition === null &&
+      modeCorrectedIntent.camera === null &&
+      modeCorrectedIntent.colorDirection === null &&
+      modeCorrectedIntent.depthOfField === null;
+    if (modeCorrectedIntent.intent === "REGENERATE" && hasNoNewCreativeDirection) {
+      await recordRegenerateSignal(
+        options.userId,
+        {
+          style: creativeContext.activeStyle,
+          lighting: creativeContext.activeLighting,
+          composition: creativeContext.activeComposition,
+          camera: creativeContext.activeCamera,
+          colorDirection: creativeContext.activeColorDirection,
+          depthOfField: creativeContext.activeDepthOfField,
+        },
+        contextForIntent(modeCorrectedIntent.intent),
+      );
+    }
   }
   const effectiveIntent: ParsedIntent = options.userId
     ? await applyLearnedDefaults(options.userId, modeCorrectedIntent)
     : modeCorrectedIntent;
+
+  // Which learnable fields `applyLearnedDefaults` actually filled in —
+  // i.e. which of `effectiveIntent`'s creative fields reflect this
+  // user's OWN learned preference rather than something THIS message
+  // said. Computed once here (not just for the diagnostic log below) so
+  // it can be threaded into the plan builders: `CreativeBrief` needs
+  // this distinction to keep "what the user explicitly requested" and
+  // "what personalization filled in" structurally separate — see
+  // creative-brief.ts's `personalizationApplied` doc comment. Without
+  // this, a learned default merged into `effectiveIntent` was
+  // indistinguishable from something the merchant actually typed this
+  // turn once it reached plan-builder.ts.
+  const personalizedFields = (["style", "lighting", "composition", "camera", "colorDirection", "depthOfField"] as const).filter((field) => {
+    const before = modeCorrectedIntent[field];
+    const after = effectiveIntent[field];
+    return (Array.isArray(before) ? before.length === 0 : before === null) && (Array.isArray(after) ? after.length > 0 : after !== null);
+  });
 
   // Cost is mode-aware (an edit/image-to-image request costs more per
   // output than a fresh text-to-image one) — see
@@ -446,6 +498,7 @@ export async function sendCreativeMessage(
         brandStylePreset: null,
         creativeSessionId: session.id,
         rawInstruction: trimmed,
+        personalizedFields,
       })
     : buildStandaloneCreativeGenerationPlan({
         parsedIntent: effectiveIntent,
@@ -459,6 +512,7 @@ export async function sendCreativeMessage(
         // `activeSubject` doc comment.
         activeSubject: creativeContext.activeSubject,
         activeAction: creativeContext.activeAction,
+        personalizedFields,
       });
 
   // Safe diagnostics: the resolved structural creative decisions for
@@ -468,6 +522,17 @@ export async function sendCreativeMessage(
   // is what makes "why didn't this turn's instruction come through
   // correctly" diagnosable after the fact without exposing anything
   // sensitive — see docs/creative-studio.md "Preserve vs. transform".
+  // Creative Decision Trace — safe diagnostics for "why was this
+  // generated," without exposing raw content: which PROVIDER actually
+  // parsed this turn's intent (so a production incident can distinguish
+  // "the real LLM path ran" from "it silently fell back to the
+  // heuristic parser" — see FallbackIntentParser's own `name` composition),
+  // and COUNTS (never the actual text) of what the Creative Director
+  // decided was explicit vs. inferred vs. personalized. Every value here
+  // is a count, a boolean, or a field name/intent value already safe to
+  // log elsewhere in this codebase — never the merchant's message, the
+  // synthesized prompt, or any learned preference's actual value.
+  const brief = plan.creativeIntent?.creativeBrief;
   logger.info("creative_studio.plan.built", {
     creativeSessionId: session.id,
     isShopifySession: Boolean(product),
@@ -479,15 +544,23 @@ export async function sendCreativeMessage(
     hasLighting: Boolean(plan.creativeDirection.lighting),
     referenceImageCount: plan.referenceImages.length,
     outputCount: plan.outputCount,
+    // Which provider actually produced this turn's ParsedIntent —
+    // e.g. "openai-llm+fallback:heuristic" (FallbackIntentParser's own
+    // name composition) makes it observable, after the fact, whether a
+    // configured real LLM is genuinely being used in production or the
+    // conversational feature is silently running on the heuristic
+    // default the whole time.
+    intentParserUsed: parser.name,
     // Personalization (Layer 2) — safe: which FIELDS a learned default
     // filled in, never the actual learned values/confidence themselves
     // or anything about who the user is beyond whether one exists.
     personalizationEligible: Boolean(options.userId),
-    personalizedFields: (["style", "lighting", "composition", "camera", "colorDirection"] as const).filter((field) => {
-      const before = modeCorrectedIntent[field];
-      const after = effectiveIntent[field];
-      return (Array.isArray(before) ? before.length === 0 : before === null) && (Array.isArray(after) ? after.length > 0 : after !== null);
-    }),
+    personalizedFields,
+    // Creative Director reasoning (Phase B/E) — counts only.
+    explicitTransformationCount: brief?.transformationRequirements.length ?? 0,
+    personalizationAppliedCount: brief?.personalizationApplied.length ?? 0,
+    inferredCreativeDecisionCount: brief?.inferredCreativeDecisions.length ?? 0,
+    preservationRequirementCount: brief?.preservationRequirements.length ?? 0,
   });
 
   const job = await createAndEnqueueGenerationJob(context, {
@@ -583,6 +656,7 @@ async function getLearnableFieldsForResult(
         composition: creative.composition,
         camera: creative.camera,
         colorDirection: creative.colorDirection,
+        depthOfField: creative.depthOfField,
       },
       context: contextForIntent(creativeIntent.intent),
     };

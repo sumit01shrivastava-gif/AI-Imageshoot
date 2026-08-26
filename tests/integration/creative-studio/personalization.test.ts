@@ -114,6 +114,15 @@ async function creativeFieldsForJob(jobId: string) {
   return (job.plan as { creativeIntent: { creative: { lighting: string | null } } }).creativeIntent.creative;
 }
 
+async function creativeBriefForJob(jobId: string) {
+  const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId }, select: { plan: true } });
+  return (
+    job.plan as {
+      creativeIntent: { creativeBrief: { transformationRequirements: string[]; personalizationApplied: string[] } };
+    }
+  ).creativeIntent.creativeBrief;
+}
+
 describe("personalization — real end-to-end wiring through sendCreativeMessage", () => {
   it("a learned lighting preference (from repeated approvals) is applied as a default on a LATER turn that doesn't specify one", async () => {
     const { id: sessionId } = await session.startCreativeSession(CONTEXT, {});
@@ -137,6 +146,15 @@ describe("personalization — real end-to-end wiring through sendCreativeMessage
     await waitForJob(result.generationJobId);
     const creative = await creativeFieldsForJob(result.generationJobId);
     expect(creative.lighting).toBe("warm lighting");
+
+    // The persisted CreativeBrief correctly attributes this to the
+    // user's OWN learned preference, not to something the "of a ceramic
+    // mug" message itself said — the real, previously-undetected
+    // imprecision this pass fixed (see creative-brief.ts's
+    // "Explicit vs. personalized vs. inferred" doc comment).
+    const brief = await creativeBriefForJob(result.generationJobId);
+    expect(brief.personalizationApplied).toContain("lighting: warm lighting");
+    expect(brief.transformationRequirements.some((e) => e.startsWith("lighting:"))).toBe(false);
   }, 20000);
 
   it("an explicit lighting instruction in the CURRENT message overrides the learned preference", async () => {
@@ -157,6 +175,13 @@ describe("personalization — real end-to-end wiring through sendCreativeMessage
     await waitForJob(result.generationJobId);
     const creative = await creativeFieldsForJob(result.generationJobId);
     expect(creative.lighting).toBe("dim lighting");
+
+    // The explicit current-turn value is correctly attributed as
+    // explicit — never misclassified as a learned preference just
+    // because this user happens to have one on file for this field.
+    const brief = await creativeBriefForJob(result.generationJobId);
+    expect(brief.transformationRequirements).toContain("lighting: dim lighting");
+    expect(brief.personalizationApplied.some((e) => e.startsWith("lighting:"))).toBe(false);
   }, 20000);
 
   it("User B never receives User A's learned preference", async () => {
@@ -194,6 +219,53 @@ describe("personalization — real end-to-end wiring through sendCreativeMessage
     const result = await session.sendCreativeMessage(CONTEXT, noUserSessionId, "Create a photo of a ceramic mug");
     await waitForJob(result.generationJobId);
     const creative = await creativeFieldsForJob(result.generationJobId);
+    expect(creative.lighting).toBeNull();
+  }, 20000);
+});
+
+describe("regenerate signal — real end-to-end wiring (Phase 6: behavioral learning loop)", () => {
+  it("a 'pure' regenerate (the Creative Studio UI's own Regenerate button — no new creative direction) records a weak negative signal for the previous turn's active lighting", async () => {
+    const { id: sessionId } = await session.startCreativeSession(CONTEXT, {});
+    const first = await session.sendCreativeMessage(CONTEXT, sessionId, "Create a product photo with warm lighting", { userId: USER_A });
+    await waitForJob(first.generationJobId);
+
+    // The exact message the Creative Studio UI's Regenerate button sends
+    // — see app/routes/studio.c.$sessionId.tsx.
+    await session.sendCreativeMessage(CONTEXT, sessionId, "Regenerate this.", { userId: USER_A });
+
+    const rows = await prisma.creativePreferenceObservation.findMany({ where: { userId: USER_A, field: "lighting", value: "warm lighting" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].negativeWeight).toBeCloseTo(0.15, 5);
+    expect(rows[0].positiveWeight).toBe(0);
+  }, 20000);
+
+  it("a regenerate that ALSO states new creative direction ('but darker') is handled entirely as a correction, not a regenerate signal", async () => {
+    const { id: sessionId } = await session.startCreativeSession(CONTEXT, {});
+    const first = await session.sendCreativeMessage(CONTEXT, sessionId, "Create a product photo with warm lighting", { userId: USER_A });
+    await waitForJob(first.generationJobId);
+
+    await session.sendCreativeMessage(CONTEXT, sessionId, "Regenerate this, but darker", { userId: USER_A });
+
+    // The OLD value ("warm lighting") gets the correction signal's
+    // negative weight (0.3), never the weaker regenerate weight (0.15) —
+    // a stated new value is real evidence, not a bare "try again."
+    const rows = await prisma.creativePreferenceObservation.findMany({ where: { userId: USER_A, field: "lighting", value: "warm lighting" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].negativeWeight).toBeCloseTo(0.3, 5);
+  }, 20000);
+
+  it("a single regenerate never becomes an applied default for a later, unrelated request", async () => {
+    const { id: sessionId } = await session.startCreativeSession(CONTEXT, {});
+    const first = await session.sendCreativeMessage(CONTEXT, sessionId, "Create a product photo with warm lighting", { userId: USER_A });
+    await waitForJob(first.generationJobId);
+    await session.sendCreativeMessage(CONTEXT, sessionId, "Regenerate this.", { userId: USER_A });
+
+    const { id: freshSessionId } = await session.startCreativeSession(CONTEXT, {});
+    const result = await session.sendCreativeMessage(CONTEXT, freshSessionId, "Create a photo of a different item", { userId: USER_A });
+    await waitForJob(result.generationJobId);
+    const creative = await creativeFieldsForJob(result.generationJobId);
+    // The regenerate signal alone (weight 0.15) never clears
+    // MIN_DECAYED_WEIGHT_TO_APPLY (1.5) — no default is applied.
     expect(creative.lighting).toBeNull();
   }, 20000);
 });

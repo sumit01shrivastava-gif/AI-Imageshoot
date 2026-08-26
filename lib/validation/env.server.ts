@@ -115,6 +115,14 @@ const envSchema = z.object({
   // than overloading AI_IMAGE_GENERATION_MODEL. Falls back to
   // AI_PROVIDER_MODEL when unset.
   AI_IMAGE_EDIT_MODEL: z.string().optional(),
+  // Model identifier for the Creative Studio's real LLM-backed intent
+  // parser (services/ai/openai-intent-parser.server.ts, when
+  // AI_PROVIDER=openai; services/ai/production-intent-parser.server.ts
+  // otherwise) — a distinct concern from image generation, so kept as
+  // its own var rather than overloading AI_IMAGE_GENERATION_MODEL/
+  // AI_IMAGE_EDIT_MODEL. Falls back to AI_PROVIDER_MODEL, then to that
+  // provider file's own hardcoded default, when unset.
+  AI_PROVIDER_INTENT_MODEL: z.string().optional(),
   // Per-request timeout, in milliseconds, for
   // production-image-generation-provider.server.ts's outbound calls.
   // Optional — defaults to that file's own DEFAULT_REQUEST_TIMEOUT_MS

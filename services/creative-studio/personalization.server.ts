@@ -85,6 +85,28 @@
  * non-negotiable rule the whole module exists to serve: personalization
  * is a default layer, never a constraint against the current request.
  *
+ * ## Creative Director judgment vs. durable user preference
+ *
+ * This module has no notion of WHERE a recorded field value came from —
+ * whether the merchant typed it, a real LLM's own creative judgment
+ * populated it, or personalization itself already filled it in on a
+ * prior turn (see creative-brief.ts's "Explicit vs. personalized vs.
+ * inferred" for where that distinction actually lives). What this module
+ * guarantees instead, regardless of provenance, is that evidence must be
+ * SUFFICIENT before it durably changes behavior — mapping onto four
+ * conceptual categories: (A) an explicit, stated preference ("I always
+ * want X") — not a feature this product currently collects directly, but
+ * the highest `SIGNAL_WEIGHT` tier (`explicit`) exists for exactly this;
+ * (B) a REPEATEDLY demonstrated behavioral preference — the only
+ * category `applyLearnedDefaults` will ever actually apply, since a
+ * single review/regenerate/correction observation can never alone clear
+ * `MIN_DECAYED_WEIGHT_TO_APPLY`; (C) a one-off Creative Director
+ * decision for THIS specific request; (D) a system default necessary for
+ * visual quality. (C) and (D) never become durable preferences from a
+ * single occurrence — only if the SAME value keeps recurring across
+ * genuinely separate approved/reinforced turns (i.e., it has, in effect,
+ * become (B)) does it ever get applied.
+ *
  * ## Context-aware weighting — a preference is not always one global taste
  *
  * A merchant may genuinely want dark, cinematic imagery for a campaign/
@@ -186,10 +208,14 @@ export function contextForIntent(intent: string): PreferenceContext {
  * request-specific CONTENT (what this particular image is of/where it's
  * set), not stable TASTE — a merchant asking for "beach" today and
  * "temple" tomorrow isn't a preference conflict, it's just two different
- * requests. `style`/`lighting`/`composition`/`camera`/`colorDirection`
- * are the fields that plausibly represent a recurring aesthetic
- * preference across otherwise-unrelated requests. */
-export const LEARNABLE_FIELDS = ["style", "lighting", "composition", "camera", "colorDirection"] as const;
+ * requests. `style`/`lighting`/`composition`/`camera`/`colorDirection`/
+ * `depthOfField` are the fields that plausibly represent a recurring
+ * aesthetic preference across otherwise-unrelated requests — a merchant
+ * who consistently wants a shallow, blurred-background treatment (or,
+ * just as validly, consistently wants everything sharp/deep-focus for
+ * accurate catalog listings) is expressing real, stable taste the same
+ * way a lighting or composition preference would be. */
+export const LEARNABLE_FIELDS = ["style", "lighting", "composition", "camera", "colorDirection", "depthOfField"] as const;
 export type LearnableField = (typeof LEARNABLE_FIELDS)[number];
 
 /** How much weight one observation of a given kind carries — see module
@@ -199,6 +225,16 @@ const SIGNAL_WEIGHT = {
   explicit: 1.0,
   review: 0.6,
   correction: 0.3,
+  /** The weakest signal of all — a "pure" regenerate (no new creative
+   * direction stated, just "try again") on a result that used a given
+   * field value. Deliberately weaker than `correction`: a correction at
+   * least names a NEW value the merchant wants instead, real (if
+   * inferential) evidence about what they prefer; a bare regenerate only
+   * shows the merchant wasn't fully satisfied with what came out, which
+   * could be about the field value, the image quality, a rendering
+   * artifact, or nothing to do with any structured field at all. See
+   * `recordRegenerateSignal`'s own doc comment. */
+  regenerate: 0.15,
 } as const;
 export type SignalSource = keyof typeof SIGNAL_WEIGHT;
 
@@ -239,7 +275,7 @@ function emptyProfile(userId: string, context: PreferenceContext): CreativeProfi
   return {
     userId,
     context,
-    fields: { style: {}, lighting: {}, composition: {}, camera: {}, colorDirection: {} },
+    fields: { style: {}, lighting: {}, composition: {}, camera: {}, colorDirection: {}, depthOfField: {} },
   };
 }
 
@@ -409,7 +445,7 @@ function clearsApplicationThreshold(score: FieldValueScore | undefined, now: Dat
 
 /** The single-value learnable fields — `style` is handled separately
  * below since it's array-valued. */
-const SINGLE_VALUE_FIELDS = ["lighting", "composition", "camera", "colorDirection"] as const satisfies readonly LearnableField[];
+const SINGLE_VALUE_FIELDS = ["lighting", "composition", "camera", "colorDirection", "depthOfField"] as const satisfies readonly LearnableField[];
 
 /**
  * Fills in whichever of `intent`'s learnable fields are currently
@@ -459,6 +495,7 @@ export interface LearnableCreativeFields {
   composition: string | null;
   camera: string | null;
   colorDirection: string | null;
+  depthOfField: string | null;
 }
 
 async function recordFields(
@@ -551,4 +588,28 @@ export async function recordCorrectionSignal(
     }
   }
   await Promise.all(tasks);
+}
+
+/**
+ * A "pure" regenerate — the merchant asked to try again WITHOUT stating
+ * any new creative direction (session.server.ts only calls this when
+ * this turn's own fields are all empty/null — see that call site) — is
+ * weak, but real, negative evidence about the PREVIOUS result's active
+ * field values. Deliberately distinct from `recordCorrectionSignal`:
+ * that function only fires when a field's value actually CHANGED between
+ * turns (real evidence of what the merchant wants INSTEAD); this one
+ * fires for the complementary case where nothing changed but the
+ * merchant still weren't satisfied enough to keep it — there is no "new
+ * value" to record a positive signal for, only a weak negative one for
+ * what was already there. Per this module's own "do not blindly learn
+ * every action" principle (and this feature's explicit product
+ * requirement: "do not assume regenerate = dislike everything"), this
+ * is deliberately the WEAKEST signal in `SIGNAL_WEIGHT` — a single
+ * regenerate can never, on its own, cross `MIN_DECAYED_WEIGHT_TO_APPLY`
+ * against an established preference; only a genuinely repeated pattern
+ * of regenerating the same field value across separate turns would ever
+ * accumulate enough weight to matter.
+ */
+export async function recordRegenerateSignal(userId: string, activeFields: LearnableCreativeFields, context: PreferenceContext): Promise<void> {
+  await recordFields(userId, activeFields, "negative", "regenerate", context);
 }

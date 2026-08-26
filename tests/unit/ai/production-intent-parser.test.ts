@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
 import { ProviderRequestError, ProviderResponseError } from "../../../services/ai/http-provider-utils.server";
+import { CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION } from "../../../services/ai/creative-director-instructions";
 import type { IntentParsingProvider, ParseIntentInput, ParsedIntentRawOutput } from "../../../services/ai/types";
 
 const REAL_FETCH = global.fetch;
@@ -65,6 +66,23 @@ describe("ProductionIntentParsingProvider", () => {
     global.fetch = vi.fn(async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
     const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
     await expect(new ProductionIntentParsingProvider().parseIntent(INPUT)).rejects.toBeInstanceOf(ProviderResponseError);
+  });
+
+  it("throws ProviderResponseError when the response body is valid JSON but not an object (e.g. a bare array)", async () => {
+    global.fetch = vi.fn(async () => new Response("[1,2,3]", { status: 200 })) as unknown as typeof fetch;
+    const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
+    await expect(new ProductionIntentParsingProvider().parseIntent(INPUT)).rejects.toBeInstanceOf(ProviderResponseError);
+  });
+
+  it("sends the real creative-director system instruction on every request (Phase 3's upgrade)", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      capturedBody = JSON.parse(init!.body as string);
+      return new Response(JSON.stringify({ intent: "VARIATION", mode: "VARIATION", changeSummary: "x" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const { ProductionIntentParsingProvider } = await import("../../../services/ai/production-intent-parser.server");
+    await new ProductionIntentParsingProvider().parseIntent(INPUT);
+    expect(capturedBody!.systemInstruction).toBe(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION);
   });
 
   it("throws when AI_PROVIDER_BASE_URL/AI_PROVIDER_API_KEY are unset", async () => {

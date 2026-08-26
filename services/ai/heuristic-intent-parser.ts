@@ -88,6 +88,14 @@ const GERUND_ACTION_PATTERN =
 
 const CAMERA_PATTERN = /\b(eye[- ]level|overhead|45[- ]degree|low angle|high angle|macro|close[- ]up|top[- ]down)\b/i;
 const COLOR_DIRECTION_PATTERN = /\b(warm tones|cool tones|monochrome|pastel|vibrant colou?rs?|muted colou?rs?)\b/i;
+/** A genuinely distinct creative dimension from `composition`/`camera` —
+ * how sharp vs. blurred the space around the subject reads. Deliberately
+ * a small, symmetric pair of patterns (shallow vs. deep), not an
+ * exhaustive photography-jargon taxonomy — see intent-schema.ts's
+ * `depthOfField` doc comment. */
+const SHALLOW_DEPTH_OF_FIELD_PATTERN =
+  /\b(shallow depth of field|blurr?y?e?d?\s+background|background\s+(?:is\s+)?blurr?y?e?d?|bokeh|out[- ]of[- ]focus background)\b/i;
+const DEEP_DEPTH_OF_FIELD_PATTERN = /\b(deep depth of field|deep focus|everything (?:in focus|sharp))\b/i;
 
 // The article after the preposition is now OPTIONAL ("at beach" as well
 // as "at a beach") — casual phrasing routinely drops it, and requiring
@@ -282,6 +290,12 @@ function extractColorDirection(message: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
+function extractDepthOfField(message: string): string | null {
+  if (SHALLOW_DEPTH_OF_FIELD_PATTERN.test(message)) return "shallow depth of field, background softly blurred";
+  if (DEEP_DEPTH_OF_FIELD_PATTERN.test(message)) return "deep focus, background sharp";
+  return null;
+}
+
 /** See `ACTION_PATTERN`/`GERUND_ACTION_PATTERN`'s doc comment and
  * intent-schema.ts's `action` field. Tries the verb-triggered form
  * first ("perform yoga"); the gerund-after-referent form is a
@@ -438,6 +452,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
       : null;
     const camera = extractCamera(message);
     const colorDirection = extractColorDirection(message);
+    const depthOfField = extractDepthOfField(message);
     const addElements = extractAddElements(message);
     const removeElements = extractRemoveElements(message);
     const preserveHints = extractPreserveHints(message);
@@ -455,6 +470,7 @@ export class HeuristicIntentParser implements IntentParsingProvider {
       composition,
       camera,
       colorDirection,
+      depthOfField,
       addElements,
       removeElements,
       variationCount,

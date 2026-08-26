@@ -117,6 +117,7 @@ function synthesizeCreativePrompt(
     composition: string | null;
     camera: string | null;
     colorDirection: string | null;
+    depthOfField: string | null;
     addElements: string[];
     removeElements: string[];
     colorOverride: string | null;
@@ -162,6 +163,7 @@ function synthesizeCreativePrompt(
   if (creative.composition) parts.push(`${creative.composition} composition`);
   if (creative.camera) parts.push(`${creative.camera} camera angle`);
   if (creative.colorDirection) parts.push(`${creative.colorDirection} color palette`);
+  if (creative.depthOfField) parts.push(creative.depthOfField);
   if (creative.addElements.length > 0) parts.push(`with ${creative.addElements.join(", ")}`);
   if (creative.removeElements.length > 0) parts.push(`without ${creative.removeElements.join(", ")}`);
   // The creative-override mechanism's effect on the prompt text itself
@@ -202,6 +204,16 @@ export interface BuildCreativeGenerationPlanInput {
    * `creativeDirection.prompt`. */
   rawInstruction: string;
   aspectRatioOverride?: AspectRatioValue;
+  /** Which of `parsedIntent`'s style/lighting/composition/camera/
+   * colorDirection were filled in by this user's own learned preference
+   * (session.server.ts's `applyLearnedDefaults`) rather than specified
+   * by THIS message — threaded straight through to
+   * `creative-brief.ts`'s `buildCreativeBrief` so the persisted plan can
+   * tell the two apart. See that file's "Explicit vs. personalized vs.
+   * inferred" doc comment. `[]`/omitted for a Shopify call (no `userId`
+   * concept — see personalization.server.ts) or when nothing was
+   * personalized this turn. */
+  personalizedFields?: readonly string[];
 }
 
 /**
@@ -213,8 +225,17 @@ export interface BuildCreativeGenerationPlanInput {
  * defeat the entire point of this feature).
  */
 export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanInput): GenerationPlan {
-  const { product, intelligence, sourceMediaIds, parsedIntent, previousResultUrl, brandStylePreset, creativeSessionId, rawInstruction } =
-    input;
+  const {
+    product,
+    intelligence,
+    sourceMediaIds,
+    parsedIntent,
+    previousResultUrl,
+    brandStylePreset,
+    creativeSessionId,
+    rawInstruction,
+    personalizedFields,
+  } = input;
 
   const requestedIds = new Set(sourceMediaIds.length > 0 ? sourceMediaIds : product.media.map((m) => m.id));
   const sourceImages = product.media
@@ -262,6 +283,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     composition: parsedIntent.composition,
     camera: parsedIntent.camera,
     colorDirection: parsedIntent.colorDirection,
+    depthOfField: parsedIntent.depthOfField,
     addElements: parsedIntent.addElements,
     removeElements,
     blockedRemovals,
@@ -282,12 +304,14 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     composition: creative.composition,
     camera: creative.camera,
     colorDirection: creative.colorDirection,
+    depthOfField: creative.depthOfField,
     addElements: creative.addElements,
     removeElements: creative.removeElements,
     colorOverride: creative.colorOverride,
     materialOverride: creative.materialOverride,
     isEditTurn,
     preservationRequirements: identityConstraints.immutable,
+    personalizedFields,
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
   });
@@ -388,6 +412,12 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
    * `CreativeContext.activeAction`. See intent-schema.ts's `action` doc
    * comment. */
   activeAction?: string | null;
+  /** Which of `parsedIntent`'s style/lighting/composition/camera/
+   * colorDirection were filled in by this user's own learned preference
+   * rather than specified by THIS message — see
+   * `BuildCreativeGenerationPlanInput.personalizedFields`'s identical
+   * doc comment. */
+  personalizedFields?: readonly string[];
 }
 
 /**
@@ -431,7 +461,7 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
  *     clause.
  */
 export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCreativeGenerationPlanInput): GenerationPlan {
-  const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction } = input;
+  const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction, personalizedFields } = input;
 
   // This turn's own extracted subject wins; a follow-up that doesn't
   // restate one ("make it brighter") falls back to whatever this
@@ -471,6 +501,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     composition: parsedIntent.composition,
     camera: parsedIntent.camera,
     colorDirection: parsedIntent.colorDirection,
+    depthOfField: parsedIntent.depthOfField,
     addElements: parsedIntent.addElements,
     removeElements,
     blockedRemovals,
@@ -505,6 +536,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     composition: creative.composition,
     camera: creative.camera,
     colorDirection: creative.colorDirection,
+    depthOfField: creative.depthOfField,
     addElements: creative.addElements,
     removeElements: creative.removeElements,
     colorOverride: creative.colorOverride,
@@ -516,6 +548,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     // comment); reference-image fidelity is still asserted structurally
     // by composeOverallCreativeDirection's `isEditTurn` branch.
     preservationRequirements: [],
+    personalizedFields,
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
   });
