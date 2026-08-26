@@ -177,6 +177,19 @@ export const ParsedIntentSchema = z.object({
    * same full backward-compatibility reasoning as `subject`/`action`.
    */
   overallCreativeDirection: z.string().min(1).nullable().default(null),
+
+  /**
+   * A real, multimodal-capable parser's OWN inferred creative decisions —
+   * what a professional creative director would add to execute the
+   * explicit request well, beyond what the merchant literally said (e.g.
+   * "ensure anatomically plausible weight distribution for the new
+   * pose"). `[]`/absent for the heuristic parser (always — see
+   * services/creative-studio/creative-brief.ts's `inferCreativeDecisions`
+   * for its own deterministic fallback) and for a real provider that
+   * chose not to supply any. `.default([])`, same full
+   * backward-compatibility reasoning as `overallCreativeDirection`.
+   */
+  inferredCreativeDecisions: z.array(z.string()).default([]),
 });
 
 export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;

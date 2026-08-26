@@ -289,6 +289,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     isEditTurn,
     preservationRequirements: identityConstraints.immutable,
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
+    externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -516,6 +517,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     // by composeOverallCreativeDirection's `isEditTurn` branch.
     preservationRequirements: [],
     externalCreativeDirection: parsedIntent.overallCreativeDirection,
+    externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
   });
 
   const prompt = synthesizeCreativePrompt(

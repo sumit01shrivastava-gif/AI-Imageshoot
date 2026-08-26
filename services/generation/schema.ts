@@ -159,6 +159,12 @@ export const CreativeStudioPlanSchema = z.object({
       preservationRequirements: z.array(z.string()).default([]),
       transformationRequirements: z.array(z.string()).default([]),
       importantElements: z.array(z.string()).default([]),
+      // What a professional creative director inferred was necessary to
+      // execute the explicit request well — see
+      // services/creative-studio/creative-brief.ts's "Explicit vs.
+      // inferred" doc comment. `.default([])` so an older persisted plan
+      // (from before this field existed) still parses fine.
+      inferredCreativeDecisions: z.array(z.string()).default([]),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()

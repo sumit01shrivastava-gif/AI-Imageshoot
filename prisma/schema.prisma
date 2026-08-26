@@ -1527,6 +1527,25 @@ model CreativePreferenceObservation {
   // "premium". Free text, same reasoning as `field`.
   value String
 
+  // Which coarse creative CONTEXT this observation was made in — one of
+  // services/creative-studio/personalization.server.ts's
+  // `PreferenceContext` ("campaign" | "catalog" | "general"), derived
+  // from the request's own `intent`. A plain string, not a Prisma enum,
+  // for the same "no migration for a future addition" reason as `field`.
+  //
+  // This exists to satisfy a real, explicitly-requested requirement: a
+  // merchant's preference is not always ONE global taste — someone may
+  // genuinely want dark, cinematic imagery for a campaign/lifestyle shot
+  // and bright, clean imagery for a plain catalog listing. Without this
+  // column, both observations would land on the same (userId, field,
+  // value) row and the system would incorrectly report "this user
+  // prefers dark lighting" everywhere, including catalog images they
+  // never asked to be dark. Each context is a fully separate bucket of
+  // observations — there is deliberately no cross-context fallback (see
+  // `getProfile`'s doc comment) so an unrelated context can never
+  // contaminate another.
+  context String @default("general")
+
   positiveWeight Float    @default(0)
   negativeWeight Float    @default(0)
   sampleCount    Int      @default(0)
@@ -1535,9 +1554,10 @@ model CreativePreferenceObservation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // One row per (user, field, value) — an observation of an
-  // already-seen value updates this row rather than inserting a new one.
-  @@unique([userId, field, value])
+  // One row per (user, field, value, context) — an observation of an
+  // already-seen (value, context) pair updates this row rather than
+  // inserting a new one.
+  @@unique([userId, field, value, context])
   @@index([userId])
 }
 

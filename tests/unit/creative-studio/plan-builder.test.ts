@@ -621,6 +621,42 @@ describe("buildStandaloneCreativeGenerationPlan", () => {
       expect(brief.transformationRequirements.some((entry) => /lighting:.*dark/i.test(entry))).toBe(true);
       expect(brief.overallCreativeDirection).toMatch(/yoga/i);
       expect(plan.creativeDirection.prompt).not.toMatch(/preserve the original image/i);
+
+      // Explicit vs. inferred (this prompt's own requirement): the pose
+      // change the merchant explicitly asked for lives in
+      // transformationRequirements; the anatomical-plausibility/
+      // environment-coherence decisions a creative director would ADD are
+      // a separate, clearly-attributed list — never merged into or
+      // mistaken for the explicit request.
+      expect(brief.inferredCreativeDecisions.length).toBeGreaterThan(0);
+      expect(brief.inferredCreativeDecisions.some((d) => /anatomically plausible/i.test(d))).toBe(true);
+      expect(brief.inferredCreativeDecisions).not.toContain("pose/action: yoga");
+      expect(plan.creativeDirection.prompt).toMatch(/as the creative director/i);
+    });
+
+    it("explicit user intent always takes priority over an inferred creative decision — an explicit, deliberately un-moody lighting instruction is never edited/replaced by inference", async () => {
+      // A specific, deliberately non-cinematic lighting instruction — must
+      // survive untouched and must never trigger the moody/shadow-control
+      // inference rule, which only fires for dark/dramatic/cinematic
+      // requests (see creative-brief.ts's MOODY_PATTERN).
+      const rawInstruction = "Use soft even shadowless lighting";
+      const parsedIntent = await intent(rawInstruction, 1);
+      const plan = buildStandaloneCreativeGenerationPlan({
+        parsedIntent,
+        uploadedReferenceImageUrls: ["https://signed.example.test/model-photo.png"],
+        previousResultUrl: null,
+        creativeSessionId: "session-1",
+        rawInstruction,
+      });
+
+      const brief = plan.creativeIntent!.creativeBrief!;
+      // The EXACT explicit value survives untouched, character for
+      // character, regardless of any inferred decision.
+      expect(plan.creativeIntent!.creative.lighting).toBe("soft even shadowless lighting");
+      expect(brief.transformationRequirements.some((e) => e === "lighting: soft even shadowless lighting")).toBe(true);
+      // No inferred decision claims darkness/moodiness — the request was
+      // explicitly the opposite, and nothing here contradicts it.
+      expect(brief.inferredCreativeDecisions.some((d) => /shadow and highlight control/i.test(d))).toBe(false);
     });
 
     it("a broad re-creation request ('use this model for a new campaign') still only preserves identity, not the original pose/scene", async () => {

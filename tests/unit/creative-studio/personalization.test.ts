@@ -1,13 +1,20 @@
 /**
  * Unit tests: services/creative-studio/personalization.server.ts — the
- * Layer 2 (per-user, confidence-weighted, time-decayed) creative
- * -intelligence model. Deliberately backed by `InMemoryCreativeProfileStore`
- * (injected via `setConfiguredCreativeProfileStoreForTests`), NOT the
- * resolved (real, PostgreSQL-backed) default — this file tests the pure
- * confidence/decay/threshold ALGORITHM fast and without a database; see
+ * Layer 2 (per-user, confidence-weighted, time-decayed, context-scoped)
+ * creative-intelligence model. Deliberately backed by
+ * `InMemoryCreativeProfileStore` (injected via
+ * `setConfiguredCreativeProfileStoreForTests`), NOT the resolved (real,
+ * PostgreSQL-backed) default — this file tests the pure confidence/decay/
+ * threshold/context ALGORITHM fast and without a database; see
  * tests/integration/creative-studio/personalization.test.ts for real
  * end-to-end coverage against the actual persistent store and the real
  * queue/worker pipeline.
+ *
+ * Every `record*` call below is given an explicit context ("campaign" —
+ * see personalization.server.ts's `contextForIntent`: `CREATE_LIFESTYLE`,
+ * what `baseIntent()` below always uses, maps to "campaign") so recorded
+ * observations are visible to `applyLearnedDefaults(userId, baseIntent())`,
+ * which derives that same bucket internally from the intent it's given.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -19,6 +26,7 @@ import {
   setConfiguredCreativeProfileStoreForTests,
   resetConfiguredCreativeProfileStoreForTests,
   decayFactor,
+  contextForIntent,
   InMemoryCreativeProfileStore,
   type LearnableCreativeFields,
 } from "../../../services/creative-studio/personalization.server";
@@ -26,6 +34,7 @@ import { parseParsedIntent, type ParsedIntent } from "../../../services/creative
 
 const USER_A = "user-a";
 const USER_B = "user-b";
+const CAMPAIGN = "campaign" as const;
 
 function baseIntent(overrides: Partial<ParsedIntent> = {}): ParsedIntent {
   return parseParsedIntent({
@@ -54,7 +63,7 @@ afterEach(() => {
 describe("applyLearnedDefaults", () => {
   it("never overrides a field the current request already specifies — explicit always wins", async () => {
     for (let i = 0; i < 5; i++) {
-      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive", CAMPAIGN);
     }
     const intent = baseIntent({ lighting: "bright and airy" });
     const result = await applyLearnedDefaults(USER_A, intent);
@@ -64,14 +73,14 @@ describe("applyLearnedDefaults", () => {
   it("does not apply a learned value until it clears the minimum decayed-weight threshold, even with 100% positive confidence", async () => {
     // A single correction-strength (weakest) observation — weight 0.3,
     // well below MIN_DECAYED_WEIGHT_TO_APPLY (1.5).
-    await recordCorrectionSignal(USER_A, fields({ lighting: "bright" }), fields({ lighting: "cinematic" }));
+    await recordCorrectionSignal(USER_A, fields({ lighting: "bright" }), fields({ lighting: "cinematic" }), CAMPAIGN);
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.lighting).toBeNull();
   });
 
   it("applies a learned default once it clears both the decayed-weight and confidence thresholds", async () => {
     for (let i = 0; i < 2; i++) {
-      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive", CAMPAIGN);
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.lighting).toBe("cinematic");
@@ -79,11 +88,11 @@ describe("applyLearnedDefaults", () => {
 
   it("applies up to 2 highest-confidence style keywords when the request specifies none", async () => {
     for (let i = 0; i < 5; i++) {
-      await recordExplicitFeedback(USER_A, fields({ style: ["premium", "moody", "editorial"] }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ style: ["premium", "moody", "editorial"] }), "positive", CAMPAIGN);
     }
     // Make "premium" strictly the strongest by also giving it extra votes.
     for (let i = 0; i < 3; i++) {
-      await recordExplicitFeedback(USER_A, fields({ style: ["premium"] }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ style: ["premium"] }), "positive", CAMPAIGN);
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.style.length).toBeLessThanOrEqual(2);
@@ -105,7 +114,7 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
     // 3 explicit observations of the same value clears both thresholds
     // (weight 1.0 each -> confidence 1.0, sampleCount 3).
     for (let i = 0; i < 3; i++) {
-      await recordExplicitFeedback(USER_A, fields({ composition: "tight framing" }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ composition: "tight framing" }), "positive", CAMPAIGN);
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     expect(result.composition).toBe("tight framing");
@@ -114,11 +123,11 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
   it("weak/single feedback does not permanently redefine an established preference", async () => {
     // A strong, established preference for "cinematic" lighting.
     for (let i = 0; i < 10; i++) {
-      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic" }), "positive", CAMPAIGN);
     }
     // One single, later rejection of a result that happened to also use
     // "cinematic" lighting.
-    await recordReviewSignal(USER_A, fields({ lighting: "cinematic" }), "REJECTED");
+    await recordReviewSignal(USER_A, fields({ lighting: "cinematic" }), "REJECTED", CAMPAIGN);
 
     const result = await applyLearnedDefaults(USER_A, baseIntent());
     // 10 * 1.0 positive vs. 1 * 0.6 negative -> confidence ~0.94, still
@@ -134,6 +143,7 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
         USER_A,
         { ...fields(), lighting: "bright and airy" },
         { ...fields(), lighting: "darker, moodier lighting" },
+        CAMPAIGN,
       );
     }
     const result = await applyLearnedDefaults(USER_A, baseIntent());
@@ -144,7 +154,7 @@ describe("signal weighting — explicit > review > correction (see SIGNAL_WEIGHT
 describe("multi-tenant isolation between users", () => {
   it("User A's preferences never influence User B's generation", async () => {
     for (let i = 0; i < 5; i++) {
-      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic", style: ["moody"] }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ lighting: "cinematic", style: ["moody"] }), "positive", CAMPAIGN);
     }
     const resultForB = await applyLearnedDefaults(USER_B, baseIntent());
     expect(resultForB.lighting).toBeNull();
@@ -157,8 +167,8 @@ describe("multi-tenant isolation between users", () => {
 
   it("two users can develop opposite preferences for the same field with no cross-contamination", async () => {
     for (let i = 0; i < 4; i++) {
-      await recordExplicitFeedback(USER_A, fields({ composition: "tight framing" }), "positive");
-      await recordExplicitFeedback(USER_B, fields({ composition: "wide establishing shot" }), "positive");
+      await recordExplicitFeedback(USER_A, fields({ composition: "tight framing" }), "positive", CAMPAIGN);
+      await recordExplicitFeedback(USER_B, fields({ composition: "wide establishing shot" }), "positive", CAMPAIGN);
     }
     const a = await applyLearnedDefaults(USER_A, baseIntent());
     const b = await applyLearnedDefaults(USER_B, baseIntent());
@@ -190,6 +200,55 @@ describe("decayFactor — the time-decay curve", () => {
     const observedAt = new Date("2026-06-02T00:00:00Z");
     expect(decayFactor(observedAt.toISOString(), now)).toBeLessThanOrEqual(1);
     expect(decayFactor(observedAt.toISOString(), now)).toBeGreaterThan(0);
+  });
+});
+
+describe("contextForIntent — context-aware weighting (a preference is not always one global taste)", () => {
+  it("maps fresh commercial/lifestyle-style intents to 'campaign'", () => {
+    expect(contextForIntent("CREATE_LIFESTYLE")).toBe("campaign");
+    expect(contextForIntent("CREATE_SOCIAL")).toBe("campaign");
+    expect(contextForIntent("CREATE_BANNER")).toBe("campaign");
+    expect(contextForIntent("ADD_MODEL")).toBe("campaign");
+    expect(contextForIntent("CHANGE_MODEL")).toBe("campaign");
+  });
+
+  it("maps plain catalog listing intent to 'catalog'", () => {
+    expect(contextForIntent("CREATE_MARKETPLACE")).toBe("catalog");
+  });
+
+  it("same-image edit/variation intents default to 'campaign' (the common-case bucket — see contextForIntent's doc comment)", () => {
+    expect(contextForIntent("CHANGE_LIGHTING")).toBe("campaign");
+    expect(contextForIntent("VARIATION")).toBe("campaign");
+    expect(contextForIntent("REGENERATE")).toBe("campaign");
+  });
+
+  it("safely falls back to 'campaign' for an unrecognized/legacy persisted intent string, never throws", () => {
+    expect(contextForIntent("SOME_FUTURE_INTENT_NOT_YET_MAPPED")).toBe("campaign");
+  });
+
+  it("a preference learned in the 'campaign' context is NOT applied to a 'catalog' request — no cross-context fallback", async () => {
+    for (let i = 0; i < 5; i++) {
+      await recordExplicitFeedback(USER_A, fields({ lighting: "dark and moody" }), "positive", "campaign");
+    }
+    // Same field, same value, but a CREATE_MARKETPLACE (catalog) request.
+    const catalogIntent = baseIntent({ intent: "CREATE_MARKETPLACE" });
+    const result = await applyLearnedDefaults(USER_A, catalogIntent);
+    expect(result.lighting).toBeNull();
+
+    // The campaign-context preference is still there for a campaign request.
+    const campaignResult = await applyLearnedDefaults(USER_A, baseIntent());
+    expect(campaignResult.lighting).toBe("dark and moody");
+  });
+
+  it("the SAME user can hold opposite preferences in different contexts simultaneously — dark for campaigns, bright for catalog", async () => {
+    for (let i = 0; i < 5; i++) {
+      await recordExplicitFeedback(USER_A, fields({ lighting: "dark cinematic" }), "positive", "campaign");
+      await recordExplicitFeedback(USER_A, fields({ lighting: "bright and clean" }), "positive", "catalog");
+    }
+    const campaignResult = await applyLearnedDefaults(USER_A, baseIntent({ intent: "CREATE_LIFESTYLE" }));
+    const catalogResult = await applyLearnedDefaults(USER_A, baseIntent({ intent: "CREATE_MARKETPLACE" }));
+    expect(campaignResult.lighting).toBe("dark cinematic");
+    expect(catalogResult.lighting).toBe("bright and clean");
   });
 });
 

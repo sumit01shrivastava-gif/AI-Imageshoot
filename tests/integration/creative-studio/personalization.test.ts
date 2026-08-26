@@ -227,12 +227,17 @@ describe("personalization — real PostgreSQL persistence (proves this survives 
   }, 20000);
 
   it("a preference not reinforced in a long time decays below a freshly-reinforced competing value for the same field", async () => {
+    // freshIntent() uses CREATE_LIFESTYLE -> the "campaign" context bucket
+    // (see personalization.server.ts's contextForIntent) — both seeded
+    // rows below must be in that same bucket for applyLearnedDefaults to
+    // ever see them.
     // "warm lighting" observed heavily, but a long time ago.
     await prisma.creativePreferenceObservation.create({
       data: {
         userId: USER_A,
         field: "lighting",
         value: "warm lighting",
+        context: "campaign",
         positiveWeight: 10,
         negativeWeight: 0,
         sampleCount: 10,
@@ -242,8 +247,8 @@ describe("personalization — real PostgreSQL persistence (proves this survives 
     // "dim lighting" observed just now, far fewer times.
     for (let i = 0; i < 3; i++) {
       await prisma.creativePreferenceObservation.upsert({
-        where: { userId_field_value: { userId: USER_A, field: "lighting", value: "dim lighting" } },
-        create: { userId: USER_A, field: "lighting", value: "dim lighting", positiveWeight: 0.6, negativeWeight: 0, sampleCount: 1 },
+        where: { userId_field_value_context: { userId: USER_A, field: "lighting", value: "dim lighting", context: "campaign" } },
+        create: { userId: USER_A, field: "lighting", value: "dim lighting", context: "campaign", positiveWeight: 0.6, negativeWeight: 0, sampleCount: 1 },
         update: { positiveWeight: { increment: 0.6 }, sampleCount: { increment: 1 }, lastObservedAt: new Date() },
       });
     }
@@ -254,5 +259,21 @@ describe("personalization — real PostgreSQL persistence (proves this survives 
     // observations -> decayed weight 1.8 (clears it). The fresher,
     // less-historically-observed value wins.
     expect(result.lighting).toBe("dim lighting");
+  }, 20000);
+
+  it("a preference learned in one context never leaks into another context for the same user (real Postgres rows)", async () => {
+    for (let i = 0; i < 5; i++) {
+      await prisma.creativePreferenceObservation.upsert({
+        where: { userId_field_value_context: { userId: USER_A, field: "lighting", value: "dark and moody", context: "campaign" } },
+        create: { userId: USER_A, field: "lighting", value: "dark and moody", context: "campaign", positiveWeight: 1, negativeWeight: 0, sampleCount: 1 },
+        update: { positiveWeight: { increment: 1 }, sampleCount: { increment: 1 }, lastObservedAt: new Date() },
+      });
+    }
+
+    const catalogResult = await applyLearnedDefaults(USER_A, parseParsedIntent({ intent: "CREATE_MARKETPLACE", mode: "TEXT_TO_IMAGE", changeSummary: "test" }));
+    expect(catalogResult.lighting).toBeNull();
+
+    const campaignResult = await applyLearnedDefaults(USER_A, freshIntent());
+    expect(campaignResult.lighting).toBe("dark and moody");
   }, 20000);
 });

@@ -86,6 +86,59 @@ describe("buildCreativeBrief — Part P regression: the yoga/temple failure clas
   });
 });
 
+describe("buildCreativeBrief — inferredCreativeDecisions (explicit vs. inferred)", () => {
+  it("a requested pose/action change infers an anatomical-plausibility decision, kept separate from transformationRequirements", () => {
+    const brief = buildCreativeBrief(baseInput({ action: "yoga" }));
+    expect(brief.transformationRequirements).toEqual(["pose/action: yoga"]);
+    expect(brief.inferredCreativeDecisions.some((d) => /anatomically plausible/i.test(d))).toBe(true);
+    // The explicit and inferred lists never overlap in content.
+    expect(brief.inferredCreativeDecisions).not.toContain("pose/action: yoga");
+  });
+
+  it("a requested night scene infers subject/environment lighting coherence (the 'luxury hotel at night' worked example)", () => {
+    const brief = buildCreativeBrief(baseInput({ scene: "a luxury hotel at night" }));
+    expect(brief.inferredCreativeDecisions.some((d) => /nighttime/i.test(d))).toBe(true);
+    expect(brief.inferredCreativeDecisions.some((d) => /coherent photograph/i.test(d))).toBe(true);
+  });
+
+  it("'premium' style direction infers studio-quality/commercial-polish decisions (the sneaker-ad worked example)", () => {
+    const brief = buildCreativeBrief(baseInput({ style: ["premium"] }));
+    expect(brief.inferredCreativeDecisions.some((d) => /studio-quality/i.test(d))).toBe(true);
+  });
+
+  it("a fresh commercial/lifestyle intent infers subject-vs-background visual hierarchy", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", isEditTurn: false }));
+    expect(brief.inferredCreativeDecisions.some((d) => /visually dominant/i.test(d))).toBe(true);
+  });
+
+  it("infers nothing when no explicit field conditions any rule — never invents a decision independent of the request", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "UPSCALE" }));
+    expect(brief.inferredCreativeDecisions).toEqual([]);
+  });
+
+  it("a real vendor's own inferred decisions are used verbatim instead of the deterministic rule table", () => {
+    const vendorDecisions = ["A hand-authored, richly-reasoned inference from a real multimodal model."];
+    const brief = buildCreativeBrief(baseInput({ action: "yoga", externalInferredCreativeDecisions: vendorDecisions }));
+    expect(brief.inferredCreativeDecisions).toEqual(vendorDecisions);
+  });
+
+  it("inferred decisions appear in overallCreativeDirection as their own clause, distinct from the explicit-transformation clause", () => {
+    const brief = buildCreativeBrief(baseInput({ action: "yoga" }));
+    expect(brief.overallCreativeDirection).toMatch(/as the creative director.*anatomically plausible/i);
+  });
+
+  it("a real vendor's own overallCreativeDirection is never mixed with the deterministic inferred-decisions sentence", () => {
+    const brief = buildCreativeBrief(
+      baseInput({ action: "yoga", externalCreativeDirection: "Vendor sentence with no mention of the word plausible." }),
+    );
+    expect(brief.overallCreativeDirection).toBe("Vendor sentence with no mention of the word plausible.");
+    // The deterministic list is still computed/persisted for traceability...
+    expect(brief.inferredCreativeDecisions.length).toBeGreaterThan(0);
+    // ...but never spliced into the vendor's own sentence.
+    expect(brief.overallCreativeDirection).not.toMatch(/anatomically plausible/i);
+  });
+});
+
 describe("buildCreativeBrief — general behavior", () => {
   it("uses a real vendor-supplied holistic direction when one is provided, instead of the deterministic template", () => {
     const vendorSentence = "A hand-authored, richly-reasoned creative direction from a real multimodal model.";

@@ -48,7 +48,15 @@ import { parseGenerationPlan, type GenerationPlan } from "../generation/schema";
 import { checkGenerationEntitlement, reserveGenerationCredits, InsufficientCreditsError, PlanLimitExceededError, type EntitlementCheck } from "../usage/entitlement.server";
 import { getCreditCost } from "../usage/credit-costs";
 import { uploadReferenceImages, type UploadedReferenceImageInput } from "./reference-images.server";
-import { applyLearnedDefaults, recordCorrectionSignal, recordExplicitFeedback, recordReviewSignal, type LearnableCreativeFields } from "./personalization.server";
+import {
+  applyLearnedDefaults,
+  recordCorrectionSignal,
+  recordExplicitFeedback,
+  recordReviewSignal,
+  contextForIntent,
+  type LearnableCreativeFields,
+  type PreferenceContext,
+} from "./personalization.server";
 
 export { ProductNotFoundError, ProductNotAnalyzedError, MissingSourceImagesError, GenerationResultNotFoundError, InsufficientCreditsError, PlanLimitExceededError };
 
@@ -396,6 +404,11 @@ export async function sendCreativeMessage(
         camera: modeCorrectedIntent.camera,
         colorDirection: modeCorrectedIntent.colorDirection,
       },
+      // THIS turn's own context bucket — see personalization.server.ts's
+      // "Context-aware weighting": a correction is evidence about what
+      // this user wants for requests LIKE the one they're making now,
+      // not a global, request-type-blind preference.
+      contextForIntent(modeCorrectedIntent.intent),
     );
   }
   const effectiveIntent: ParsedIntent = options.userId
@@ -542,26 +555,36 @@ export async function selectCreativeResult(context: AuthContext, sessionId: stri
 }
 
 /** Reads back the `creative` fields (style/lighting/composition/camera/
- * colorDirection) a specific result's owning job used — the shared
- * lookup both `reviewCreativeResult` and `recordCreativeFeedback` need
- * to turn a reaction to a RESULT into a learning signal about the
- * CREATIVE CHOICES that produced it. `null` for a missing/cross-shop
- * result, a non-CREATIVE_STUDIO job (shouldn't happen for a Creative
- * Studio result, but never assumed), or a plan that fails to parse —
- * personalization is best-effort and must never be the thing that turns
- * a working Approve/Reject click into an error. */
-async function getLearnableFieldsForResult(context: AuthContext, resultId: string): Promise<LearnableCreativeFields | null> {
+ * colorDirection) a specific result's owning job used, plus the
+ * preference-context bucket that job's own ORIGINATING intent maps to
+ * (`contextForIntent` — see personalization.server.ts's "Context-aware
+ * weighting") — the shared lookup both `reviewCreativeResult` and
+ * `recordCreativeFeedback` need to turn a reaction to a RESULT into a
+ * learning signal about the CREATIVE CHOICES that produced it, recorded
+ * into the SAME bucket that request belonged to. `null` for a missing/
+ * cross-shop result, a non-CREATIVE_STUDIO job (shouldn't happen for a
+ * Creative Studio result, but never assumed), or a plan that fails to
+ * parse — personalization is best-effort and must never be the thing
+ * that turns a working Approve/Reject click into an error. */
+async function getLearnableFieldsForResult(
+  context: AuthContext,
+  resultId: string,
+): Promise<{ fields: LearnableCreativeFields; context: PreferenceContext } | null> {
   const row = await getGenerationPlanForResult(context.shop, resultId);
   if (!row) return null;
   try {
-    const creative = parseGenerationPlan(row.plan).creativeIntent?.creative;
-    if (!creative) return null;
+    const creativeIntent = parseGenerationPlan(row.plan).creativeIntent;
+    const creative = creativeIntent?.creative;
+    if (!creative || !creativeIntent) return null;
     return {
-      style: creative.style,
-      lighting: creative.lighting,
-      composition: creative.composition,
-      camera: creative.camera,
-      colorDirection: creative.colorDirection,
+      fields: {
+        style: creative.style,
+        lighting: creative.lighting,
+        composition: creative.composition,
+        camera: creative.camera,
+        colorDirection: creative.colorDirection,
+      },
+      context: contextForIntent(creativeIntent.intent),
     };
   } catch {
     return null;
@@ -588,8 +611,8 @@ export async function reviewCreativeResult(
   await reviewGenerationResult(context, resultId, decision);
   if (!userId) return;
   try {
-    const fields = await getLearnableFieldsForResult(context, resultId);
-    if (fields) await recordReviewSignal(userId, fields, decision);
+    const learnable = await getLearnableFieldsForResult(context, resultId);
+    if (learnable) await recordReviewSignal(userId, learnable.fields, decision, learnable.context);
   } catch (error) {
     logger.warn("creative_studio.review_signal_failed", {
       resultId,
@@ -615,9 +638,9 @@ export async function recordCreativeFeedback(
   resultId: string,
   signal: "positive" | "negative",
 ): Promise<void> {
-  const fields = await getLearnableFieldsForResult(context, resultId);
-  if (!fields) return;
-  await recordExplicitFeedback(userId, fields, signal);
+  const learnable = await getLearnableFieldsForResult(context, resultId);
+  if (!learnable) return;
+  await recordExplicitFeedback(userId, learnable.fields, signal, learnable.context);
 }
 
 export async function listSessionsForProduct(context: AuthContext, productId: string): Promise<CreativeSessionRow[]> {

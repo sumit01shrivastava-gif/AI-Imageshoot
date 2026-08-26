@@ -84,13 +84,102 @@
  * merchant's own current message specified. This is the one
  * non-negotiable rule the whole module exists to serve: personalization
  * is a default layer, never a constraint against the current request.
+ *
+ * ## Context-aware weighting — a preference is not always one global taste
+ *
+ * A merchant may genuinely want dark, cinematic imagery for a campaign/
+ * lifestyle shot and bright, clean imagery for a plain catalog listing —
+ * that is not a contradiction, it is two different, equally valid
+ * preferences for two different KINDS of request. Every observation is
+ * therefore recorded and retrieved within a coarse `PreferenceContext`
+ * bucket (`contextForIntent`, derived from the request's own `intent` —
+ * never from free text), and `applyLearnedDefaults` only ever looks at
+ * the CURRENT request's own context bucket. There is deliberately NO
+ * cross-context fallback: a value that clears the threshold in
+ * "campaign" is never offered as a default for a "catalog" request, even
+ * if "catalog" has no observations of its own yet. This is what actually
+ * prevents "the user rejected one dark catalog photo" or "the user liked
+ * one dark campaign photo" from collapsing into a single, wrong,
+ * request-type-blind "this user likes dark images" — each bucket only
+ * ever reflects evidence gathered within it.
  */
 import type { ParsedIntent } from "./intent-schema";
+import type { CreativeIntentValue } from "./types";
 import {
   listPreferenceObservations,
   upsertPreferenceObservation,
   type PreferenceObservationRow,
 } from "../../db/repositories/creative-preference.repository";
+
+/**
+ * The coarse creative-request buckets a learned preference is scoped
+ * to — see module doc comment's "Context-aware weighting". Deliberately
+ * only 2 buckets, not one per `CreativeIntentValue`: the goal is to
+ * separate "a plain, accurate catalog listing photo" (where a merchant's
+ * campaign-style taste for dark/cinematic/dramatic treatment would
+ * actively be WRONG to apply) from everything else, not to build a
+ * second, finer-grained taxonomy alongside `CreativeIntentValue`.
+ *
+ * `"campaign"` is deliberately the DEFAULT for every intent except
+ * `CREATE_MARKETPLACE` — including same-image edit/variation intents
+ * (`CHANGE_LIGHTING`, `VARIATION`, `REGENERATE`, ...). A same-image edit
+ * on its own carries no catalog-vs-campaign signal (e.g. "make it
+ * brighter" says nothing about which kind of shoot this is), and the
+ * overwhelming majority of real Creative Studio activity is
+ * lifestyle/model/social/banner-style content, not plain catalog
+ * listings — so defaulting an ambiguous edit to "campaign" is the
+ * common-case-correct choice. A known, explicitly-named limitation of
+ * this first pass (not silently glossed over): a `CHANGE_LIGHTING`
+ * turn that is REALLY refining an ongoing catalog-context session
+ * currently gets bucketed as "campaign" rather than inheriting that
+ * session's own established context — true session-level context
+ * carry-forward (mirroring how `creative-context.ts` already carries
+ * `activeSubject`/`activeAction` forward) is a natural next step, not
+ * implemented here.
+ */
+export const PREFERENCE_CONTEXTS = ["campaign", "catalog"] as const;
+export type PreferenceContext = (typeof PREFERENCE_CONTEXTS)[number];
+
+const CONTEXT_BY_INTENT: Record<CreativeIntentValue, PreferenceContext> = {
+  // Plain, accurate product-listing photography — the one intent with an
+  // unambiguous "this must NOT get campaign-style treatment" signal.
+  CREATE_MARKETPLACE: "catalog",
+  // Everything else defaults to "campaign" — see doc comment above.
+  CREATE_LIFESTYLE: "campaign",
+  CREATE_SOCIAL: "campaign",
+  CREATE_BANNER: "campaign",
+  ADD_MODEL: "campaign",
+  CHANGE_MODEL: "campaign",
+  EDIT_BACKGROUND: "campaign",
+  CHANGE_SCENE: "campaign",
+  CHANGE_LIGHTING: "campaign",
+  CHANGE_CAMERA: "campaign",
+  CHANGE_COMPOSITION: "campaign",
+  CHANGE_PROPS: "campaign",
+  CHANGE_COLOR: "campaign",
+  REMOVE_ELEMENT: "campaign",
+  ADD_ELEMENT: "campaign",
+  UPSCALE: "campaign",
+  VARIATION: "campaign",
+  MULTI_VARIATION: "campaign",
+  REGENERATE: "campaign",
+};
+
+/** Derives the preference-context bucket for one request's intent —
+ * the ONLY place this mapping is decided (never guessed at a call
+ * site). Exported so session.server.ts can derive the same bucket a
+ * persisted result's ORIGINATING intent used, for review/feedback
+ * signals recorded after the fact. Accepts a plain `string` too (a
+ * persisted `GenerationPlan.creativeIntent.intent` is stored as an
+ * un-re-validated string — see generation/schema.ts's
+ * `CreativeStudioPlanSchema` doc comment) and safely falls back to
+ * `"campaign"` (the default bucket above) for anything unrecognized,
+ * matching this whole module's "personalization is best-effort, never
+ * throws" contract — a genuinely malformed/legacy plan must never turn a
+ * working Approve/Reject click into an error. */
+export function contextForIntent(intent: string): PreferenceContext {
+  return (CONTEXT_BY_INTENT as Record<string, PreferenceContext>)[intent] ?? "campaign";
+}
 
 /** The creative fields this module learns from — deliberately a SUBSET
  * of `ParsedIntent`'s full field set. `scene`/`action`/`subject` are
@@ -137,6 +226,7 @@ export interface FieldValueScore {
 
 export interface CreativeProfile {
   userId: string;
+  context: PreferenceContext;
   /** field -> value -> score. A `Record`, not a single "current value"
    * per field, so multi-valued fields (`style`) and "the merchant used
    * to prefer X, now prefers Y" (both tracked, Y's confidence rising as
@@ -145,21 +235,29 @@ export interface CreativeProfile {
   fields: Record<LearnableField, Record<string, FieldValueScore>>;
 }
 
-function emptyProfile(userId: string): CreativeProfile {
+function emptyProfile(userId: string, context: PreferenceContext): CreativeProfile {
   return {
     userId,
+    context,
     fields: { style: {}, lighting: {}, composition: {}, camera: {}, colorDirection: {} },
   };
 }
 
 export interface CreativeProfileStore {
-  getProfile(userId: string): Promise<CreativeProfile>;
+  getProfile(userId: string, context: PreferenceContext): Promise<CreativeProfile>;
   /** Records one observation and returns nothing — callers that need
    * the updated profile call `getProfile` again; keeping this
    * fire-and-forget-shaped mirrors how every other "record a usage/
    * audit event" function in this codebase behaves (e.g.
    * services/usage/usage-accounting.server.ts). */
-  recordObservation(userId: string, field: LearnableField, value: string, signal: "positive" | "negative", source: SignalSource): Promise<void>;
+  recordObservation(
+    userId: string,
+    field: LearnableField,
+    value: string,
+    signal: "positive" | "negative",
+    source: SignalSource,
+    context: PreferenceContext,
+  ): Promise<void>;
 }
 
 /** Fast, DB-free implementation used ONLY by unit tests of the pure
@@ -169,8 +267,12 @@ export interface CreativeProfileStore {
 export class InMemoryCreativeProfileStore implements CreativeProfileStore {
   private readonly profiles = new Map<string, CreativeProfile>();
 
-  async getProfile(userId: string): Promise<CreativeProfile> {
-    return this.profiles.get(userId) ?? emptyProfile(userId);
+  private key(userId: string, context: PreferenceContext): string {
+    return `${userId}::${context}`;
+  }
+
+  async getProfile(userId: string, context: PreferenceContext): Promise<CreativeProfile> {
+    return this.profiles.get(this.key(userId, context)) ?? emptyProfile(userId, context);
   }
 
   async recordObservation(
@@ -179,8 +281,10 @@ export class InMemoryCreativeProfileStore implements CreativeProfileStore {
     value: string,
     signal: "positive" | "negative",
     source: SignalSource,
+    context: PreferenceContext,
   ): Promise<void> {
-    const profile = this.profiles.get(userId) ?? emptyProfile(userId);
+    const key = this.key(userId, context);
+    const profile = this.profiles.get(key) ?? emptyProfile(userId, context);
     const existing = profile.fields[field][value];
     const weight = SIGNAL_WEIGHT[source];
     const next: FieldValueScore = {
@@ -190,7 +294,7 @@ export class InMemoryCreativeProfileStore implements CreativeProfileStore {
       lastObservedAt: new Date().toISOString(),
     };
     profile.fields[field][value] = next;
-    this.profiles.set(userId, profile);
+    this.profiles.set(key, profile);
   }
 
   /** Test-only: clears every stored profile so one test's observations
@@ -217,9 +321,12 @@ function toFieldValueScore(row: PreferenceObservationRow): FieldValueScore {
  * request handled by Vercel is immediately visible to a request handled
  * by Railway, and vice versa. */
 export class PrismaCreativeProfileStore implements CreativeProfileStore {
-  async getProfile(userId: string): Promise<CreativeProfile> {
-    const rows = await listPreferenceObservations(userId);
-    const profile = emptyProfile(userId);
+  /** Only ever reads THIS context's rows (`listPreferenceObservations`'s
+   * own `WHERE context = ...` — see that function's doc comment) — never
+   * a cross-context read, by construction. */
+  async getProfile(userId: string, context: PreferenceContext): Promise<CreativeProfile> {
+    const rows = await listPreferenceObservations(userId, context);
+    const profile = emptyProfile(userId, context);
     for (const row of rows) {
       if ((LEARNABLE_FIELDS as readonly string[]).includes(row.field)) {
         profile.fields[row.field as LearnableField][row.value] = toFieldValueScore(row);
@@ -234,9 +341,10 @@ export class PrismaCreativeProfileStore implements CreativeProfileStore {
     value: string,
     signal: "positive" | "negative",
     source: SignalSource,
+    context: PreferenceContext,
   ): Promise<void> {
     const weight = SIGNAL_WEIGHT[source];
-    await upsertPreferenceObservation(userId, field, value, signal === "positive" ? weight : 0, signal === "negative" ? weight : 0);
+    await upsertPreferenceObservation(userId, field, value, signal === "positive" ? weight : 0, signal === "negative" ? weight : 0, context);
   }
 }
 
@@ -306,12 +414,16 @@ const SINGLE_VALUE_FIELDS = ["lighting", "composition", "camera", "colorDirectio
 /**
  * Fills in whichever of `intent`'s learnable fields are currently
  * `null`/empty with this user's highest-confidence learned value for
- * that field, when one clears the application threshold. NEVER touches
- * a field the current message already specified — see module doc
- * comment's "Explicit always wins".
+ * that field IN THIS REQUEST'S OWN CONTEXT BUCKET (see module doc
+ * comment's "Context-aware weighting" — `contextForIntent` derives the
+ * bucket from `intent.intent`, never guessed at the call site), when one
+ * clears the application threshold. NEVER touches a field the current
+ * message already specified — see module doc comment's "Explicit always
+ * wins".
  */
 export async function applyLearnedDefaults(userId: string, intent: ParsedIntent): Promise<ParsedIntent> {
-  const profile = await getConfiguredCreativeProfileStore().getProfile(userId);
+  const context = contextForIntent(intent.intent);
+  const profile = await getConfiguredCreativeProfileStore().getProfile(userId, context);
   let result = intent;
 
   for (const field of SINGLE_VALUE_FIELDS) {
@@ -354,15 +466,16 @@ async function recordFields(
   fields: LearnableCreativeFields,
   signal: "positive" | "negative",
   source: SignalSource,
+  context: PreferenceContext,
 ): Promise<void> {
   const storeRef = getConfiguredCreativeProfileStore();
   const tasks: Promise<void>[] = [];
   for (const field of SINGLE_VALUE_FIELDS) {
     const value = fields[field];
-    if (value) tasks.push(storeRef.recordObservation(userId, field, value, signal, source));
+    if (value) tasks.push(storeRef.recordObservation(userId, field, value, signal, source, context));
   }
   for (const value of fields.style) {
-    tasks.push(storeRef.recordObservation(userId, "style", value, signal, source));
+    tasks.push(storeRef.recordObservation(userId, "style", value, signal, source, context));
   }
   await Promise.all(tasks);
 }
@@ -370,13 +483,16 @@ async function recordFields(
 /** The strongest signal — an explicit "I like this" / "not my style"
  * reaction to a specific result (see app/routes/studio.c.$sessionId.tsx's
  * feedback buttons). Records every learnable field value present on the
- * job that produced the result. */
+ * job that produced the result, into that job's OWN originating
+ * `intent`'s context bucket (see session.server.ts's
+ * `getLearnableFieldsForResult`, the caller that derives it). */
 export async function recordExplicitFeedback(
   userId: string,
   fields: LearnableCreativeFields,
   signal: "positive" | "negative",
+  context: PreferenceContext,
 ): Promise<void> {
-  await recordFields(userId, fields, signal, "explicit");
+  await recordFields(userId, fields, signal, "explicit", context);
 }
 
 /** A weaker, but still real, signal — approving or rejecting a result
@@ -388,8 +504,9 @@ export async function recordReviewSignal(
   userId: string,
   fields: LearnableCreativeFields,
   decision: "APPROVED" | "REJECTED",
+  context: PreferenceContext,
 ): Promise<void> {
-  await recordFields(userId, fields, decision === "APPROVED" ? "positive" : "negative", "review");
+  await recordFields(userId, fields, decision === "APPROVED" ? "positive" : "negative", "review", context);
 }
 
 /**
@@ -400,11 +517,15 @@ export async function recordReviewSignal(
  * differ (a field going from "specified" to "unspecified" is NOT a
  * correction — the merchant simply didn't mention it this turn, which
  * `activeX` carry-forward already handles correctly on its own).
+ * `context` is THIS (the new/current) turn's own context bucket — a
+ * correction is evidence about what this user wants for requests LIKE
+ * the one they're making right now.
  */
 export async function recordCorrectionSignal(
   userId: string,
   previous: LearnableCreativeFields,
   current: LearnableCreativeFields,
+  context: PreferenceContext,
 ): Promise<void> {
   const storeRef = getConfiguredCreativeProfileStore();
   const tasks: Promise<void>[] = [];
@@ -412,8 +533,8 @@ export async function recordCorrectionSignal(
     const prevValue = previous[field];
     const newValue = current[field];
     if (prevValue && newValue && prevValue !== newValue) {
-      tasks.push(storeRef.recordObservation(userId, field, prevValue, "negative", "correction"));
-      tasks.push(storeRef.recordObservation(userId, field, newValue, "positive", "correction"));
+      tasks.push(storeRef.recordObservation(userId, field, prevValue, "negative", "correction", context));
+      tasks.push(storeRef.recordObservation(userId, field, newValue, "positive", "correction", context));
     }
   }
   // `style` is multi-valued — treat a keyword dropped between turns as a
@@ -423,10 +544,10 @@ export async function recordCorrectionSignal(
   const newStyle = new Set(current.style);
   if (prevStyle.size > 0 && newStyle.size > 0) {
     for (const value of prevStyle) {
-      if (!newStyle.has(value)) tasks.push(storeRef.recordObservation(userId, "style", value, "negative", "correction"));
+      if (!newStyle.has(value)) tasks.push(storeRef.recordObservation(userId, "style", value, "negative", "correction", context));
     }
     for (const value of newStyle) {
-      if (!prevStyle.has(value)) tasks.push(storeRef.recordObservation(userId, "style", value, "positive", "correction"));
+      if (!prevStyle.has(value)) tasks.push(storeRef.recordObservation(userId, "style", value, "positive", "correction", context));
     }
   }
   await Promise.all(tasks);

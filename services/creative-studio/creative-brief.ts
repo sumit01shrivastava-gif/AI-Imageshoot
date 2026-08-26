@@ -40,8 +40,52 @@
  * can produce a genuinely richer interpretation than a deterministic
  * template ever could. Either way, `CreativeBrief.overallCreativeDirection`
  * is never null/empty for a built plan.
+ *
+ * ## Explicit vs. inferred — the two kinds of creative decision
+ *
+ * `transformationRequirements` is exclusively WHAT THE USER EXPLICITLY
+ * REQUESTED — every entry traces back to a non-null field the intent
+ * parser actually extracted from this turn's own message (or a creative
+ * override). `inferredCreativeDecisions` is the separate, genuinely new
+ * concept this section adds: WHAT A PROFESSIONAL CREATIVE DIRECTOR
+ * SHOULD DO TO EXECUTE THAT REQUEST WELL, even though the merchant never
+ * said it in those words — e.g. a requested pose change implies
+ * "anatomically plausible body mechanics," a requested night scene
+ * implies "light the subject to plausibly match a nighttime environment
+ * rather than pasting a dark background behind daylight lighting." These
+ * are never invented independently of what was explicitly requested —
+ * each one is conditioned on an explicit field already being present
+ * (see `inferCreativeDecisions`'s own per-rule comments) — and never
+ * contradicts it, only strengthens its execution. `inferCreativeDecisions`
+ * is a small, deterministic, always-on default (same "real non-AI
+ * default" philosophy as the rest of this file); when a real,
+ * multimodal-capable `IntentParsingProvider` supplies its OWN inferred
+ * decisions, those are used instead (see
+ * `externalInferredCreativeDecisions`) — a real creative-director model
+ * reasoning over the actual reference image can make far more specific,
+ * contextual calls (e.g. genuinely deciding what "premium" implies for
+ * THIS product) than a fixed rule table ever could; the deterministic
+ * rules below exist so the system is never creatively inert while no
+ * live vendor is configured.
  */
 import type { CreativeIntentValue } from "./types";
+
+/** Style/lighting keywords that indicate a moody/dramatic treatment was
+ * asked for — used only to decide whether to add a shadow-control
+ * inference, never to invent a mood that wasn't requested. */
+const MOODY_PATTERN = /\b(dark|moody|dramatic|cinematic|noir|night)\b/i;
+const PREMIUM_PATTERN = /\b(premium|luxury|luxurious|high[- ]end|upscale)\b/i;
+const NIGHT_PATTERN = /\bnight\b/i;
+/** Intents that describe a FRESH, from-scratch creative image (as
+ * opposed to editing/varying an existing one) where subject-vs-background
+ * visual hierarchy is always a relevant creative concern. */
+const FRESH_CREATIVE_INTENTS: ReadonlySet<CreativeIntentValue> = new Set([
+  "CREATE_LIFESTYLE",
+  "CREATE_MARKETPLACE",
+  "CREATE_SOCIAL",
+  "CREATE_BANNER",
+  "ADD_MODEL",
+]);
 
 export interface CreativeBrief {
   /** One sentence naming what this generation is FOR — e.g. "Produce an
@@ -71,6 +115,12 @@ export interface CreativeBrief {
   /** Short noun phrases that must visibly appear in the frame — added
    * elements plus the named scene/action, when present. */
   importantElements: string[];
+  /** WHAT A PROFESSIONAL CREATIVE DIRECTOR SHOULD INFER IS NECESSARY TO
+   * EXECUTE THE EXPLICIT REQUEST WELL — see module doc comment's
+   * "Explicit vs. inferred". Always empty-or-conditioned-on an explicit
+   * field already present; never contradicts `transformationRequirements`
+   * or `preservationRequirements`. */
+  inferredCreativeDecisions: string[];
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -121,6 +171,78 @@ export interface BuildCreativeBriefInput {
    * doc comment. `null`/absent for the heuristic parser (always) and for
    * a real provider that chose not to supply one. */
   externalCreativeDirection?: string | null;
+  /** A real vendor's own inferred creative decisions — see module doc
+   * comment's "Explicit vs. inferred". `undefined`/empty for the
+   * heuristic parser (always) and for a real provider that chose not to
+   * supply any. */
+  externalInferredCreativeDecisions?: string[] | null;
+}
+
+/**
+ * The small, deterministic "what should a professional creative director
+ * add here" rule table — see module doc comment's "Explicit vs.
+ * inferred". Each rule is conditioned on an explicit field already being
+ * present, so this never invents a creative direction independent of
+ * what was actually requested; it only strengthens the EXECUTION of
+ * that request. Capped implicitly by how few rules exist — deliberately
+ * NOT an exhaustive checklist (Part F's own instruction: "the planner
+ * should infer only what is useful").
+ */
+function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
+  const decisions: string[] = [];
+
+  // A requested pose/action change: physical plausibility is a real,
+  // recurring failure mode (the exact "yoga" worked example) — a pose
+  // change without this note risks anatomically implausible results.
+  if (input.action) {
+    decisions.push("Ensure anatomically plausible, natural body mechanics and weight distribution for the new pose/action.");
+  }
+
+  // A requested environment/scene change: subject and background must
+  // read as one coherent photograph, not a cutout pasted over a
+  // separately-lit background — the exact failure this whole feature was
+  // originally built to prevent.
+  if (input.scene) {
+    decisions.push(
+      "Match the subject's perspective, scale, and lighting direction to the new environment so it reads as one coherent photograph, not a cutout pasted onto a separate background.",
+    );
+  }
+
+  // A nighttime scene specifically: the subject's own lighting must
+  // plausibly belong to that environment (the "luxury hotel at night"
+  // worked example) — a very common, specific failure mode distinct from
+  // the general environment-coherence note above.
+  if (input.scene && NIGHT_PATTERN.test(input.scene)) {
+    decisions.push("Light the subject to plausibly match the nighttime environment, not daylight lighting with a dark background substituted in.");
+  }
+
+  // Explicitly moody/dark/cinematic direction: real cinematography uses
+  // deliberate shadow shaping, not a uniform brightness reduction.
+  const moodyRequested = (input.lighting && MOODY_PATTERN.test(input.lighting)) || input.style.some((s) => MOODY_PATTERN.test(s));
+  if (moodyRequested) {
+    decisions.push("Use deliberate, motivated shadow and highlight control rather than uniformly darkening the whole frame.");
+  }
+
+  // "Premium"/"luxury"-style direction: the sneaker-ad worked example —
+  // a real creative director's own contextual judgment (via a real
+  // vendor's `externalInferredCreativeDecisions`) should ultimately
+  // decide what "premium" means for THIS product; this is the reasonable
+  // deterministic default while none is configured.
+  const premiumRequested = input.style.some((s) => PREMIUM_PATTERN.test(s));
+  if (premiumRequested) {
+    decisions.push(
+      "Apply controlled, high-end studio-quality lighting, a clean and uncluttered composition, and realistic material/surface rendering (accurate reflections and shadows) befitting premium commercial work.",
+    );
+  }
+
+  // A fresh, from-scratch commercial/lifestyle image: the subject must
+  // stay the visual focal point regardless of how elaborate the
+  // background/environment becomes.
+  if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
+    decisions.push("Keep the subject visually dominant against a supportive, non-competing background.");
+  }
+
+  return decisions;
 }
 
 function transformationEntries(input: BuildCreativeBriefInput): string[] {
@@ -147,7 +269,7 @@ function transformationEntries(input: BuildCreativeBriefInput): string[] {
  * `plan-builder.ts`'s existing atomic-field prompt clauses, not a
  * renamed copy of them.
  */
-function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transformations: string[]): string {
+function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transformations: string[], inferred: string[]): string {
   const objective = INTENT_OBJECTIVE[input.intent];
   const sentences: string[] = [objective];
 
@@ -169,6 +291,14 @@ function composeOverallCreativeDirection(input: BuildCreativeBriefInput, transfo
     sentences.push(`The overall result should feel ${input.style.join(", ")}, not a generic default.`);
   }
 
+  // WHAT A PROFESSIONAL CREATIVE DIRECTOR SHOULD INFER — kept as its own,
+  // clearly-attributed closing sentence (never merged into the explicit
+  // transformation clause above) so the prompt itself preserves the same
+  // explicit-vs-inferred distinction the structured `CreativeBrief` does.
+  if (inferred.length > 0) {
+    sentences.push(`As the creative director on this shot, also ensure: ${inferred.join("; ")}.`);
+  }
+
   return sentences.join(" ");
 }
 
@@ -176,10 +306,21 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
   const transformations = transformationEntries(input);
   const importantElements = [...(input.scene ? [input.scene] : []), ...(input.action ? [input.action] : []), ...input.addElements];
 
+  const inferredCreativeDecisions =
+    input.externalInferredCreativeDecisions && input.externalInferredCreativeDecisions.length > 0
+      ? input.externalInferredCreativeDecisions
+      : inferCreativeDecisions(input);
+
+  // A real vendor's own holistic sentence is assumed to already fold in
+  // its own creative-director reasoning (it IS the creative-director
+  // reasoning) — the deterministic `inferredCreativeDecisions` list is
+  // still computed and persisted either way (traceability, tests), but
+  // only appended into the COMPOSED sentence, never spliced into a real
+  // vendor's own prose.
   const overallCreativeDirection =
     input.externalCreativeDirection && input.externalCreativeDirection.trim().length > 0
       ? input.externalCreativeDirection.trim()
-      : composeOverallCreativeDirection(input, transformations);
+      : composeOverallCreativeDirection(input, transformations, inferredCreativeDecisions);
 
   return {
     creativeObjective: INTENT_OBJECTIVE[input.intent],
@@ -187,6 +328,7 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     preservationRequirements: input.preservationRequirements,
     transformationRequirements: transformations,
     importantElements,
+    inferredCreativeDecisions,
     overallCreativeDirection,
   };
 }
