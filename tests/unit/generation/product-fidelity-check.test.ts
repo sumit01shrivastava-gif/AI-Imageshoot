@@ -111,6 +111,24 @@ describe("checkProductFidelity", () => {
       }),
     );
     expect(result.productModelInteractionValid).toBe(true);
+    expect(result.productModelPhysicalRealismPresent).toBe(false);
+  });
+
+  it("productModelPhysicalRealismPresent is true when the prompt carries compact scale/contact/occlusion guidance", () => {
+    const result = checkProductFidelity(
+      basePlan({
+        generationType: "MODEL_SHOOT",
+        creativeDirection: {
+          prompt:
+            "Preserve the product exactly as shown in the source image — it is the source of truth. Model photography, the model wearing it naturally around the wrist, keeping the product clearly visible at real-world scale with natural contact, correct perspective, believable occlusion, and contact shadows.",
+          negativeConstraints: [],
+          environment: null,
+          lighting: null,
+          composition: null,
+        },
+      }),
+    );
+    expect(result.productModelPhysicalRealismPresent).toBe(true);
   });
 
   it("productModelInteractionValid is false — the real regression this check exists to catch — for MODEL_SHOOT when the prompt never actually says how the model relates to the product", () => {

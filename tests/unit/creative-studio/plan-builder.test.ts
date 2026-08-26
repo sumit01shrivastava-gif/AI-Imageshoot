@@ -828,6 +828,24 @@ describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", 
     expect(plan.creativeIntent!.creativeBrief!.negativeCreativeDecisions).toEqual(["generic studio backdrop", "unnecessary decorative props"]);
   });
 
+  it("keeps structured execution priorities in the provider prompt even when a real provider supplies its own overall direction", async () => {
+    const parsedIntent = await llmIntent({
+      overallCreativeDirection: "A concise vendor-authored campaign direction.",
+      inferredCreativeDecisions: ["Keep the product as the immediate visual hero with deliberate negative space."],
+    });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a lifestyle image",
+    });
+    expect(plan.creativeDirection.prompt).toContain("A concise vendor-authored campaign direction.");
+    expect(plan.creativeDirection.prompt).toContain("Execution priorities: Keep the product as the immediate visual hero with deliberate negative space.");
+  });
+
   it("falls back to the one deterministic negative-decision rule (subject dominance) for a fresh creative intent when no provider decisions are supplied", async () => {
     const parsedIntent = await llmIntent({});
     const plan = buildCreativeGenerationPlan({

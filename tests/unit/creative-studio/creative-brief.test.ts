@@ -249,9 +249,30 @@ describe("buildCreativeBrief — creativeConcept and negativeCreativeDecisions (
     expect(brief.creativeConcept).toBeNull();
   });
 
-  it("negativeCreativeDecisions falls back to the one deterministic subject-dominance-paired rule for a fresh creative intent", () => {
+  it("negativeCreativeDecisions applies a context-aware subject-dominance restraint for a fresh creative intent", () => {
     const brief = buildCreativeBrief(baseInput({ intent: "CREATE_LIFESTYLE", isEditTurn: false }));
     expect(brief.negativeCreativeDecisions).toEqual(["Avoid a generic background/environment that competes with or overshadows the subject."]);
+  });
+
+  it("adds restraint only when the request makes the failure mode relevant", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "ADD_MODEL",
+        category: "Cosmetics",
+        lighting: "dark and cinematic",
+        depthOfField: "shallow depth of field",
+        addElements: ["a single mirror"],
+      }),
+    );
+    expect(brief.negativeCreativeDecisions).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/distorted anatomy/i),
+        expect.stringMatching(/excessive darkness/i),
+        expect.stringMatching(/key detail plane/i),
+        expect.stringMatching(/unrequested decorative accessories/i),
+        expect.stringMatching(/invented packaging copy/i),
+      ]),
+    );
   });
 
   it("negativeCreativeDecisions is empty for a non-fresh (edit) intent with no explicit provider decisions", () => {

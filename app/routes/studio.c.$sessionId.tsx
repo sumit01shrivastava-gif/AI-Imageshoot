@@ -8,7 +8,7 @@
  * (a standalone session has no Shopify product to publish to — see
  * CreativeSessionRow.product's schema comment).
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { randomUUID } from "node:crypto";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useRevalidator } from "react-router";
@@ -184,6 +184,7 @@ export default function StudioConversation() {
   const feedbackFetcher = useFetcher<typeof action>();
   const composerRef = useRef<ComposerHandle>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
 
   const latestJob = jobs[0] ?? null;
   const isInFlight = latestJob ? ["PENDING", "QUEUED", "PROCESSING"].includes(latestJob.status) : false;
@@ -210,6 +211,8 @@ export default function StudioConversation() {
   }, [messages.length]);
 
   const isSending = messageFetcher.state !== "idle";
+  const optimisticMessage = isSending ? pendingMessage : null;
+  const isGenerating = isInFlight || Boolean(optimisticMessage);
   const insufficientCredits =
     messageFetcher.data && !messageFetcher.data.ok && "reason" in messageFetcher.data && messageFetcher.data.reason === "insufficient_credits";
 
@@ -222,6 +225,7 @@ export default function StudioConversation() {
     formData.set("intent", "send-message");
     formData.set("message", trimmed);
     files.forEach((file) => formData.append("images", file));
+    setPendingMessage(trimmed || "Create a clean, professional product photo from this image.");
     messageFetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
   }
 
@@ -236,10 +240,10 @@ export default function StudioConversation() {
 
         {!currentResult ? (
           <div className="studio-canvas-stage">
-            {isInFlight ? (
+            {isGenerating ? (
               <StudioGenerationLoading
-                title={jobStatusPhrase(latestJob!.status, latestJob!.results.length || 1)}
-                activeStep={latestJob!.status === "PROCESSING" ? 2 : 0}
+                title={latestJob ? jobStatusPhrase(latestJob.status, latestJob.results.length || 1) : "Your creative request is underway…"}
+                activeStep={latestJob?.status === "PROCESSING" ? 2 : 0}
               />
             ) : (
               <p className="studio-canvas-placeholder">Nothing generated yet — describe what you want below to get started.</p>
@@ -353,11 +357,17 @@ export default function StudioConversation() {
               {message.content}
             </div>
           ))}
+          {optimisticMessage && <div className="studio-msg studio-msg-pending" data-role="USER">{optimisticMessage}</div>}
+          {optimisticMessage && (
+            <div className="studio-msg studio-msg-pending" data-role="ASSISTANT">
+              I&rsquo;ve got it — your creative direction is now in motion.
+            </div>
+          )}
           {/* Must NOT disappear the moment a job finishes — SUCCEEDED
               gets its own confirmation line here too, not just while
               in flight (FAILED already has its own, more specific
               banner above). */}
-          {latestJob && latestJob.status !== "FAILED" && (
+          {(latestJob && latestJob.status !== "FAILED") && (
             <div className="studio-status-line" role="status" aria-live="polite">
               {isInFlight && <span className="studio-dot-pulse" aria-hidden="true" />}
               {jobStatusPhrase(latestJob.status, latestJob.results.length || 1)}

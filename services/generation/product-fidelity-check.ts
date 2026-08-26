@@ -33,12 +33,24 @@ export interface ProductFidelityCheck {
    * model-imagery request whose prompt never actually says how the
    * model relates to the product at all. */
   productModelInteractionValid: boolean;
+  /** A requested model interaction includes the minimum physical cues
+   * needed to avoid a decorative, disconnected product placement. */
+  productModelPhysicalRealismPresent: boolean;
   productVisibilityAdequate: boolean;
   negativeConstraintsPresent: boolean;
+  /** A vendor-authored concept is useful only if it reached the final
+   * provider prompt; this is a structural coherence guard, not a claim
+   * that the concept is artistically good. */
+  creativeConceptApplied: boolean;
+  /** Fresh commercial requests carry at least one compact, structured
+   * execution priority into the final prompt. */
+  commercialQualityDirectionPresent: boolean;
 }
 
 const INTERACTION_VERB_PATTERN = /\b(wearing|holding|held|hold|using|use|pouring|pour|serving|serve|displaying|display)\b/i;
+const PHYSICAL_INTERACTION_PATTERN = /\b(real-world scale|natural contact|occlusion|contact shadows?)\b/i;
 const MODEL_INTENTS = new Set(["ADD_MODEL", "CHANGE_MODEL"]);
+const FRESH_COMMERCIAL_INTENTS = new Set(["CREATE_LIFESTYLE", "CREATE_MARKETPLACE", "CREATE_SOCIAL", "CREATE_BANNER", "ADD_MODEL"]);
 
 /** Checks a built `GenerationPlan` for internal product-fidelity
  * consistency — never throws (a check that could itself break
@@ -71,6 +83,7 @@ export function checkProductFidelity(plan: GenerationPlan): ProductFidelityCheck
 
   const modelRequested = plan.generationType === "MODEL_SHOOT" || (plan.creativeIntent ? MODEL_INTENTS.has(plan.creativeIntent.intent) : false);
   const productModelInteractionValid = !modelRequested || INTERACTION_VERB_PATTERN.test(prompt);
+  const productModelPhysicalRealismPresent = !modelRequested || PHYSICAL_INTERACTION_PATTERN.test(prompt);
 
   // A genuinely pathological case: a negative constraint naming the
   // product's own category would hide the very thing this shoot exists
@@ -81,13 +94,24 @@ export function checkProductFidelity(plan: GenerationPlan): ProductFidelityCheck
     plan.category && plan.creativeDirection.negativeConstraints.some((c) => c.toLowerCase().includes(plan.category!.toLowerCase()))
   );
 
+  const creativeBrief = plan.creativeIntent?.creativeBrief;
+  const creativeConceptApplied =
+    !creativeBrief?.creativeConcept || prompt.includes(`creative concept: ${creativeBrief.creativeConcept.toLowerCase()}`);
+  const commercialQualityDirectionPresent =
+    !plan.creativeIntent ||
+    !FRESH_COMMERCIAL_INTENTS.has(plan.creativeIntent.intent) ||
+    creativeBrief?.inferredCreativeDecisions.some((decision) => prompt.includes(decision.toLowerCase())) === true;
+
   return {
     referenceProductPresent,
     productFidelityRequired: referenceProductPresent,
     productIdentityPreserved,
     userExplicitInstructionsPreserved,
     productModelInteractionValid,
+    productModelPhysicalRealismPresent,
     productVisibilityAdequate,
     negativeConstraintsPresent: plan.creativeDirection.negativeConstraints.length > 0,
+    creativeConceptApplied,
+    commercialQualityDirectionPresent,
   };
 }

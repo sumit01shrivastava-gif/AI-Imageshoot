@@ -159,6 +159,11 @@ function synthesizeCreativePrompt(
    * `overallCreativeDirection`'s existing closing-sentence role.
    */
   creativeConcept: string | null,
+  /** Compact, structured execution priorities. This remains separate
+   * from the holistic direction so a real vendor's prose cannot
+   * accidentally omit its own operational decisions before the final
+   * provider prompt is assembled. */
+  inferredCreativeDecisions: string[],
 ): string {
   const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
@@ -199,8 +204,10 @@ function synthesizeCreativePrompt(
   // (the common case on the deterministic path) — never an empty/filler
   // sentence.
   const conceptClause = creativeConcept ? ` Creative concept: ${creativeConcept}.` : "";
+  const executionClause =
+    inferredCreativeDecisions.length > 0 ? ` Execution priorities: ${inferredCreativeDecisions.slice(0, 3).join(" ")}` : "";
 
-  return `${identityInstruction}${referenceFidelity}${conceptClause} ${parts.join(", ")}. ${overallCreativeDirection}`;
+  return `${identityInstruction}${referenceFidelity}${conceptClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -347,6 +354,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     isEditTurn ? "the reference image provided" : null,
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
+    creativeBrief.inferredCreativeDecisions,
   );
 
   const referenceImages = isEditTurn ? [{ url: previousResultUrl!, role: "previous_result" as const }] : [];
@@ -593,6 +601,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     isEditTurn ? referenceNoun : null,
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
+    creativeBrief.inferredCreativeDecisions,
   );
 
   // Ground-truth reference for the actual PROVIDER call —

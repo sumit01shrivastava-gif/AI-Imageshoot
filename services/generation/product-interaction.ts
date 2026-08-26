@@ -42,7 +42,11 @@ interface ProductInteractionRule {
 // plural Shopify product-type label ("Bangles", "Necklaces", "Rings"),
 // and `\b` alone doesn't tolerate that trailing "s".
 const PRODUCT_INTERACTION_RULES: ProductInteractionRule[] = [
-  { pattern: /\b(rings?|bracelets?|bangles?|necklaces?|earrings?|jewel(le)?ry|pendants?)\b/i, interaction: "wearing it naturally on the correct body part, at real-world scale" },
+  { pattern: /\b(rings?)\b/i, interaction: "wearing it naturally on a finger" },
+  { pattern: /\b(bracelets?|bangles?)\b/i, interaction: "wearing it naturally around the wrist" },
+  { pattern: /\b(necklaces?|pendants?)\b/i, interaction: "wearing it naturally at the neck" },
+  { pattern: /\b(earrings?)\b/i, interaction: "wearing it naturally at the ears" },
+  { pattern: /\b(jewel(le)?ry)\b/i, interaction: "wearing it naturally on the appropriate body part" },
   { pattern: /\b(glasses|eyewear|sunglasses|spectacles)\b/i, interaction: "wearing it correctly positioned on the face" },
   { pattern: /\b(watch(es)?|wristwatch(es)?)\b/i, interaction: "wearing it naturally on the wrist" },
   { pattern: /\b(shoes?|sneakers?|footwear|boots?|sandals?|heels?)\b/i, interaction: "wearing it naturally on the foot" },
@@ -51,12 +55,16 @@ const PRODUCT_INTERACTION_RULES: ProductInteractionRule[] = [
   { pattern: /\b(skincare|beauty|cosmetics?|makeup|perfumes?|fragrances?)\b/i, interaction: "holding, applying, or displaying it the way it would actually be used" },
   { pattern: /\b(electronics?|devices?|gadgets?|phones?|laptops?|cameras?|headphones?|speakers?)\b/i, interaction: "holding or using it naturally, the way it would actually be operated" },
   { pattern: /\b(foods?|snacks?|beverages?|drinks?|bottles?|beers?|wines?|coffees?|teas?)\b/i, interaction: "holding, pouring, or serving it the way it would actually be presented" },
+  { pattern: /\b(home|furniture|decor|appliances?|housewares?|lifestyle)\b/i, interaction: "interacting with it only where physically and commercially natural, otherwise displaying it without forced human contact" },
 ];
 
 /** The physically sensible default for a category this table doesn't
  * recognize — never "wearing it," which would be wrong for most
  * uncovered categories (furniture, home goods, appliances, ...). */
 const DEFAULT_INTERACTION = "holding or displaying it naturally, in a way that matches how this kind of product is actually used";
+const EXPLICIT_INTERACTION_PATTERN = /\b(wear(?:ing)?|hold(?:ing)?|carry(?:ing)?|use|using|operate|operating|pour(?:ing)?|serve|serving|apply|applying|display(?:ing)?)\b/i;
+const PHYSICAL_REALISM_SUFFIX =
+  ", keeping the product clearly visible at real-world scale with natural contact, correct perspective, believable occlusion, and contact shadows where it touches the body or surface";
 
 /**
  * Resolves the commercially/physically correct model-product interaction
@@ -64,10 +72,18 @@ const DEFAULT_INTERACTION = "holding or displaying it naturally, in a way that m
  * `category` string, or `null` when none is known). Never throws, never
  * returns an empty string — always a real, sensible phrase.
  */
-export function resolveProductInteraction(categorySignal: string | null): string {
+export function resolveProductInteraction(categorySignal: string | null, explicitAction?: string | null): string {
+  // A merchant's structured action is more specific than a category
+  // default. Preserve it when it actually describes product interaction;
+  // unrelated actions such as running or posing still receive the
+  // category-aware default below.
+  if (explicitAction && EXPLICIT_INTERACTION_PATTERN.test(explicitAction)) {
+    return `following the explicitly requested ${explicitAction} interaction${PHYSICAL_REALISM_SUFFIX}`;
+  }
+
   if (categorySignal) {
     const match = PRODUCT_INTERACTION_RULES.find((rule) => rule.pattern.test(categorySignal));
-    if (match) return match.interaction;
+    if (match) return `${match.interaction}${PHYSICAL_REALISM_SUFFIX}`;
   }
-  return DEFAULT_INTERACTION;
+  return `${DEFAULT_INTERACTION}${PHYSICAL_REALISM_SUFFIX}`;
 }

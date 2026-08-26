@@ -9,10 +9,9 @@
  * page is built on (shared with /login, /signup, /studio — never
  * app/styles/global.css's Shopify-embedded tokens).
  *
- * The gallery/before-after panels below are deliberately abstract
- * geometric placeholders, not fabricated "AI-generated" photos or fake
- * customer content — CLAUDE.md/this phase's own instructions rule out
- * presenting placeholder content as if it were real generated output.
+ * The homepage art uses a purpose-built, unbranded editorial still-life
+ * asset. It communicates the visual category without pretending to be a
+ * merchant result or making a live generation request.
  */
 import type { LinksFunction, LoaderFunctionArgs } from "react-router";
 import { redirect, Form, Link, useLoaderData } from "react-router";
@@ -112,14 +111,13 @@ export default function Landing() {
       </header>
 
       <section className="landing-section" aria-label="Example creative directions">
+        <figure className="landing-hero-art">
+          <img src="/ai-imageshoot-editorial-hero.png" alt="Editorial product photography featuring perfume, jewelry, and footwear" />
+          <figcaption>Commercial imagery, art-directed around the product.</figcaption>
+        </figure>
         <div className="landing-gallery">
           {GALLERY_ITEMS.map((item) => (
             <div key={item.label} className="landing-gallery-card" data-tone={item.tone}>
-              <svg width="16" height="16" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-                <path d="M4 13V5C4 4.44772 4.44772 4 5 4H13" stroke="#f4f4f3" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M28 19V27C28 27.5523 27.5523 28 27 28H19" stroke="#f4f4f3" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" />
-                <rect x="13" y="13" width="6" height="6" rx="1.25" fill="#f4f4f3" />
-              </svg>
               <span>{item.label}</span>
             </div>
           ))}
@@ -228,7 +226,7 @@ export default function Landing() {
       </section>
 
       <footer className="landing-footer">
-        <span>AI Imageshoot</span>
+        <span>AI ImageShoot — A Promotive Digital Solutions Product</span>
         <span>
           <Link to="/login">Log in</Link>
         </span>

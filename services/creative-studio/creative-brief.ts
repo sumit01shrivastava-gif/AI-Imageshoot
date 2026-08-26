@@ -129,6 +129,33 @@ import { resolveProductInteraction } from "../generation/product-interaction";
 const MOODY_PATTERN = /\b(dark|moody|dramatic|cinematic|noir|night)\b/i;
 const PREMIUM_PATTERN = /\b(premium|luxury|luxurious|high[- ]end|upscale)\b/i;
 const NIGHT_PATTERN = /\bnight\b/i;
+const SHALLOW_DEPTH_PATTERN = /\b(shallow|blurred|bokeh)\b/i;
+const MATERIAL_CATEGORY_PATTERNS: ReadonlyArray<{ pattern: RegExp; decision: string }> = [
+  {
+    pattern: /\b(jewelry|jewellery|watch|metal)\b/i,
+    decision: "Use controlled specular highlights and precise edge definition so metal, stones, and fine detail remain readable rather than glittering into indistinct glare.",
+  },
+  {
+    pattern: /\b(glass|bottle|fragrance|perfume)\b/i,
+    decision: "Render glass with believable reflection, refraction, and transparent depth; retain the product silhouette and label/detail readability rather than making it look plastic.",
+  },
+  {
+    pattern: /\b(cosmetics?|beauty|skincare|makeup)\b/i,
+    decision: "Use clean, controlled light that keeps packaging, finish, and product details readable without invented copy or distracting beauty props.",
+  },
+  {
+    pattern: /\b(clothing|apparel|fashion|fabric|textile)\b/i,
+    decision: "Light fabric to reveal believable weave, drape, seams, and volume without flattening its texture or distorting its fit.",
+  },
+  {
+    pattern: /\b(electronic|device|phone|laptop|computer|headphone)\b/i,
+    decision: "Use controlled reflections and clean edge separation so the device reads as a precise, real object rather than a glossy synthetic render.",
+  },
+  {
+    pattern: /\b(food|beverage|drink|coffee|tea|snack)\b/i,
+    decision: "Preserve believable food texture, moisture, temperature cues, and scale; lighting should make the product appetizing without artificial gloss.",
+  },
+];
 /** Intents that describe a FRESH, from-scratch creative image (as
  * opposed to editing/varying an existing one) where subject-vs-background
  * visual hierarchy is always a relevant creative concern. */
@@ -343,7 +370,7 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   // composite (quality-floor pass, Priority 2 and human realism).
   if (input.intent === "ADD_MODEL" || input.intent === "CHANGE_MODEL") {
     decisions.push(
-      `Have the model ${resolveProductInteraction(input.category ?? null)}, at correct real-world scale, with anatomically correct hands (correct finger count, natural joints, believable grip) and realistic contact shadows where the product touches the body.`,
+      `Have the model ${resolveProductInteraction(input.category ?? null, input.action)}, with anatomically correct hands (correct finger count, natural joints, believable grip), realistic skin contact, and no floating or clipped-through product.`,
     );
   }
 
@@ -365,7 +392,12 @@ function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   // (ADD_MODEL is itself one of these intents), the model and
   // environment exist to sell the product, not to compete with it.
   if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
-    decisions.push("Keep the subject visually dominant — neither the model (if any) nor the environment should visually overpower the product.");
+    decisions.push(
+      "Keep the product visually dominant as the immediate visual hero, using foreground, midground, background, crop, and negative space deliberately; neither the model (if any) nor the environment should visually overpower it.",
+    );
+
+    const materialDecision = MATERIAL_CATEGORY_PATTERNS.find(({ pattern }) => pattern.test(input.category ?? input.subjectPhrase))?.decision;
+    if (materialDecision) decisions.push(materialDecision);
   }
 
   return decisions;
@@ -388,6 +420,30 @@ function inferNegativeCreativeDecisions(input: BuildCreativeBriefInput): string[
 
   if (FRESH_CREATIVE_INTENTS.has(input.intent)) {
     decisions.push("Avoid a generic background/environment that competes with or overshadows the subject.");
+  }
+
+  if (input.intent === "ADD_MODEL" || input.intent === "CHANGE_MODEL") {
+    decisions.push(
+      "Avoid distorted anatomy, implausible hands, incorrect product scale, floating or duplicated products, or product contact that clips through or fuses with the body.",
+    );
+    decisions.push("Avoid poses, wardrobe, hair, or accessories that obscure the product's defining details or the body region where it is worn or used.");
+  }
+
+  const moodyRequested = (input.lighting && MOODY_PATTERN.test(input.lighting)) || input.style.some((style) => MOODY_PATTERN.test(style));
+  if (moodyRequested) {
+    decisions.push("Avoid excessive darkness, clipped highlights, or saturated grading that hides the product's material and important detail.");
+  }
+
+  if (input.depthOfField && SHALLOW_DEPTH_PATTERN.test(input.depthOfField)) {
+    decisions.push("Avoid blur across the product's key detail plane; reserve soft focus for depth separation around the hero product.");
+  }
+
+  if (input.addElements.length > 0) {
+    decisions.push("Avoid unrequested decorative accessories or extra props that compete with the requested additions and the hero product.");
+  }
+
+  if (/\b(cosmetics?|beauty|skincare|makeup|glass|bottle|fragrance|perfume)\b/i.test(input.category ?? input.subjectPhrase)) {
+    decisions.push("Avoid invented packaging copy or unreadable product labeling.");
   }
 
   return decisions;

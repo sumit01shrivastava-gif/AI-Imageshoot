@@ -10,7 +10,7 @@
  * the actual generation result is rendered there, polled from the real
  * queue/worker, never faked here.
  */
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { randomUUID } from "node:crypto";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect, useFetcher } from "react-router";
@@ -25,6 +25,7 @@ import {
 } from "../../services/creative-studio/session.server";
 import { logger } from "../../lib/logging/logger.server";
 import { Composer, type ComposerHandle } from "../components/composer";
+import { StudioGenerationLoading } from "../components/studio-generation-loading";
 
 const GENERIC_ERROR = "I couldn't start this creation. Please try again.";
 
@@ -122,6 +123,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function StudioNewConversation() {
   const fetcher = useFetcher<typeof action>();
   const composerRef = useRef<ComposerHandle>(null);
+  const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
   const isSending = fetcher.state !== "idle";
   const error = fetcher.data && !fetcher.data.ok ? fetcher.data.error : null;
 
@@ -129,7 +131,25 @@ export default function StudioNewConversation() {
     const formData = new FormData();
     formData.set("message", message);
     files.forEach((file) => formData.append("images", file));
+    // Move to a truthful local conversation state immediately. The real
+    // redirect still happens only after the existing session/job action
+    // succeeds; this merely avoids a visually inert landing screen.
+    setSubmittedMessage(message || "Create a clean, professional product photo from this image.");
     fetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
+  }
+
+  if (submittedMessage && isSending) {
+    return (
+      <div className="studio-launching" aria-live="polite">
+        <div className="studio-launching-transcript">
+          <div className="studio-msg" data-role="USER">{submittedMessage}</div>
+          <div className="studio-msg" data-role="ASSISTANT">I&rsquo;ve got it — your creative request has been received.</div>
+        </div>
+        <div className="studio-launching-stage">
+          <StudioGenerationLoading title="Starting your creative session…" activeStep={0} />
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -12,10 +12,12 @@ import { describe, expect, it } from "vitest";
 import { resolveProductInteraction } from "../../../services/generation/product-interaction";
 
 describe("resolveProductInteraction", () => {
-  it("jewelry: wearing on the correct body part", () => {
-    expect(resolveProductInteraction("Fine Jewelry")).toMatch(/wearing it naturally on the correct body part/i);
-    expect(resolveProductInteraction("Bangles")).toMatch(/wearing it naturally on the correct body part/i);
-    expect(resolveProductInteraction("Necklaces")).toMatch(/wearing it naturally on the correct body part/i);
+  it("jewelry: uses the appropriate body region and visible physical contact", () => {
+    expect(resolveProductInteraction("Fine Jewelry")).toMatch(/appropriate body part/i);
+    expect(resolveProductInteraction("Bangles")).toMatch(/around the wrist/i);
+    expect(resolveProductInteraction("Necklaces")).toMatch(/at the neck/i);
+    expect(resolveProductInteraction("Rings")).toMatch(/on a finger/i);
+    expect(resolveProductInteraction("Bangles")).toMatch(/clearly visible.*natural contact.*occlusion/i);
   });
 
   it("eyewear: worn on the face", () => {
@@ -50,9 +52,9 @@ describe("resolveProductInteraction", () => {
     expect(resolveProductInteraction("Beverages")).toMatch(/holding, pouring, or serving/i);
   });
 
-  it("an unrecognized category falls back to a physically sensible generic interaction, never 'wearing'", () => {
+  it("home/lifestyle products avoid forced human contact when it is not commercially natural", () => {
     const result = resolveProductInteraction("Home Furniture");
-    expect(result).toMatch(/holding or displaying it naturally/i);
+    expect(result).toMatch(/only where physically and commercially natural/i);
     expect(result).not.toMatch(/wearing/i);
   });
 
@@ -62,6 +64,13 @@ describe("resolveProductInteraction", () => {
   });
 
   it("matches case-insensitively and as a substring within a longer category label", () => {
-    expect(resolveProductInteraction("Fine JEWELRY & Gemstones")).toMatch(/correct body part/i);
+    expect(resolveProductInteraction("Fine JEWELRY & Gemstones")).toMatch(/appropriate body part/i);
+  });
+
+  it("preserves an explicit merchant interaction over the category default", () => {
+    const result = resolveProductInteraction("Bangles", "holding the bangles in an open hand");
+    expect(result).toMatch(/explicitly requested holding the bangles in an open hand/i);
+    expect(result).not.toMatch(/around the wrist/i);
+    expect(result).toMatch(/real-world scale.*occlusion/i);
   });
 });
