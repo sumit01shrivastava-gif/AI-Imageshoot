@@ -16,6 +16,46 @@
 import { z } from "zod";
 import { CREATIVE_INTENTS, GENERATION_MODES } from "./types";
 
+/**
+ * A real production bug, root-caused and fixed here: `z.array(...).default([])`
+ * (and the object equivalent, `z.object({...}).default({...})`) only ever
+ * substitutes the default for `undefined` — never for a literal JSON
+ * `null`. A real LLM-backed `IntentParsingProvider` (services/ai/openai-intent-parser.server.ts)
+ * generalized the "absent → null" convention this schema's own *singular*
+ * nullable fields (`subject`/`action`/`scene`/...) correctly use, and
+ * applied it to the array/object fields too — emitting literal `null`
+ * for `addElements`/`removeElements`/`preserveHints`/`style`/
+ * `inferredCreativeDecisions`/`attributeOverrides` instead of `[]`/`{}`,
+ * which `.default()` alone does not catch. Production symptom: a
+ * `parseParsedIntent` rejection ("expected array, received null") on an
+ * otherwise well-formed, successfully-parsed real request — after the
+ * OpenAI call had already succeeded — meaning every real-LLM-parsed
+ * conversation failed before a generation job could ever be created.
+ *
+ * `nullishToDefault` is the fix, applied uniformly to every array/object
+ * field below: accepts `undefined` OR `null` as "nothing provided" and
+ * normalizes either to the field's real default — a `null` an LLM
+ * emits for "no elements to add" is not malformed input, it is a
+ * reasonable (if type-incomplete) way of saying the same thing
+ * `undefined` already means here. This does NOT weaken validation for
+ * anything else: a non-array, non-null, non-undefined value (a string, a
+ * number, an object where an array was expected) still fails exactly as
+ * before, since the inner schema (`z.array(z.string())`, the `z.object`
+ * shape) still runs first and still rejects a genuinely wrong shape.
+ *
+ * Used for the ARRAY fields below (`style`/`addElements`/`removeElements`/
+ * `preserveHints`/`inferredCreativeDecisions`) — there is no inner
+ * per-element default to preserve, so bypassing straight to `[]` for a
+ * null/undefined input is exactly right. `attributeOverrides` (the one
+ * OBJECT field) instead uses `z.preprocess` immediately below, which
+ * normalizes null/undefined to `{}` BEFORE its object schema runs, so
+ * `color`/`material` still come from their OWN `.default(null)` rather
+ * than a separately hand-written stand-in shape.
+ */
+function nullishToDefault<Schema extends z.ZodType, Default>(schema: Schema, defaultValue: Default) {
+  return schema.nullish().transform((value) => value ?? defaultValue);
+}
+
 export const CreativeIntentSchema = z.enum(CREATIVE_INTENTS);
 export const GenerationModeSchema = z.enum(GENERATION_MODES);
 
@@ -82,8 +122,10 @@ export const ParsedIntentSchema = z.object({
    * instruction doesn't describe a scene/environment. */
   scene: z.string().min(1).nullable().default(null),
   /** e.g. ["premium", "skincare advertising"] — descriptive style/mood
-   * tokens, not a single free-text sentence. */
-  style: z.array(z.string()).default([]),
+   * tokens, not a single free-text sentence. See this file's
+   * `nullishToDefault` doc comment — a real provider may emit `null`
+   * here instead of `[]`; both mean "no style keywords." */
+  style: nullishToDefault(z.array(z.string()), []),
   /** e.g. "warm morning sunlight". */
   lighting: z.string().min(1).nullable().default(null),
   /** e.g. "commercial product advertising", "45-degree overhead". */
@@ -100,10 +142,13 @@ export const ParsedIntentSchema = z.object({
   depthOfField: z.string().min(1).nullable().default(null),
 
   /** Short noun phrases to add — "a woman holding it", "a marble
-   * pedestal" — from ADD_MODEL/ADD_ELEMENT-shaped instructions. */
-  addElements: z.array(z.string()).default([]),
-  /** Short noun phrases to remove — from REMOVE_ELEMENT instructions. */
-  removeElements: z.array(z.string()).default([]),
+   * pedestal" — from ADD_MODEL/ADD_ELEMENT-shaped instructions. See this
+   * file's `nullishToDefault` doc comment — a real provider may emit
+   * `null` here instead of `[]`. */
+  addElements: nullishToDefault(z.array(z.string()), []),
+  /** Short noun phrases to remove — from REMOVE_ELEMENT instructions.
+   * See `nullishToDefault`'s doc comment. */
+  removeElements: nullishToDefault(z.array(z.string()), []),
 
   /** How many output images this instruction asked for — "give me 3
    * options" → 3. Defaults to 1; capped at the plan schema's own
@@ -132,8 +177,9 @@ export const ParsedIntentSchema = z.object({
    * never from the parser — see docs/creative-studio.md "Identity
    * preservation": a parser (heuristic today, a real model later) must
    * never be the sole thing standing between a request and the product
-   * being redesigned. */
-  preserveHints: z.array(z.string()).default([]),
+   * being redesigned. See `nullishToDefault`'s doc comment — a real
+   * provider may emit `null` here instead of `[]`. */
+  preserveHints: nullishToDefault(z.array(z.string()), []),
 
   /**
    * The structured "creative override" mechanism (Part 2): explicit,
@@ -148,14 +194,21 @@ export const ParsedIntentSchema = z.object({
    * `null` for each field means "no override requested" — the
    * corresponding identity anchor (if Product Intelligence observed one)
    * stays fully immutable. See docs/creative-studio.md "Creative
-   * overrides".
+   * overrides". Also see `nullishToDefault`'s doc comment — a real
+   * provider may emit a literal `null` for the whole object instead of
+   * `{}`/omitting it. `z.preprocess` normalizes that null/undefined into
+   * the canonical empty shape `{}` BEFORE the object schema below ever
+   * runs, so `color`/`material` are populated by their OWN `.default(null)`
+   * exactly as if the provider had sent `{}` itself — never a bypassed,
+   * hand-written stand-in shape.
    */
-  attributeOverrides: z
-    .object({
+  attributeOverrides: z.preprocess(
+    (value) => value ?? {},
+    z.object({
       color: z.string().min(1).nullable().default(null),
       material: z.string().min(1).nullable().default(null),
-    })
-    .default({ color: null, material: null }),
+    }),
+  ),
 
   /** One machine-generated sentence summarizing the requested change —
    * used as the seed for prompt synthesis (plan-builder.ts), not sent to
@@ -192,10 +245,11 @@ export const ParsedIntentSchema = z.object({
    * pose"). `[]`/absent for the heuristic parser (always — see
    * services/creative-studio/creative-brief.ts's `inferCreativeDecisions`
    * for its own deterministic fallback) and for a real provider that
-   * chose not to supply any. `.default([])`, same full
-   * backward-compatibility reasoning as `overallCreativeDirection`.
+   * chose not to supply any. Same full backward-compatibility reasoning
+   * as `overallCreativeDirection`; see `nullishToDefault`'s doc comment
+   * for why this also accepts a literal `null`, not just `undefined`.
    */
-  inferredCreativeDecisions: z.array(z.string()).default([]),
+  inferredCreativeDecisions: nullishToDefault(z.array(z.string()), []),
 });
 
 export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;
