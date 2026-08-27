@@ -33,11 +33,14 @@ describe("CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION", () => {
 
   it("requires a product-derived campaign proposition when broad creative freedom is given", () => {
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/broad creative freedom/i);
-    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/strongest commercially viable proposition/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/more art-directed fidelity-safe candidate/i);
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/visible form language, materials, finish, color, category/i);
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/2–4 compact candidate campaign propositions/i);
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/non-cliché value/i);
-    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/Do not output those candidates/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/Do not output candidates/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/hard fidelity qualification/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/easy, centered catalogue composition/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/environmental storytelling, compositional sophistication/i);
   });
 
   it("instructs contradiction handling via confidence, not silent guessing", () => {
