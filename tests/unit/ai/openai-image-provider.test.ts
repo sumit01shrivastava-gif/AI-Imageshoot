@@ -191,10 +191,20 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(editInit?.body).toBeInstanceOf(FormData);
     const form = editInit!.body as FormData;
     expect(form.get("model")).toBe("gpt-image-2");
-    expect(form.get("image")).toBeInstanceOf(Blob);
+    expect(form.get("image[]")).toBeInstanceOf(Blob);
+    expect(form.get("image")).toBeNull();
     // Never a manually-set Content-Type — fetch must set its own
     // multipart boundary, or OpenAI can't parse the body at all.
     expect((editInit?.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
+
+    // Serialize with the same native Node Request/FormData implementation
+    // used by fetch: the wire body has OpenAI's documented image[] field,
+    // a generated multipart boundary, and the exact validated image bytes.
+    const outbound = new Request(editUrl, { method: "POST", headers: editInit?.headers, body: form });
+    expect(outbound.headers.get("content-type")).toMatch(/^multipart\/form-data; boundary=/);
+    const wire = Buffer.from(await outbound.arrayBuffer());
+    expect(wire.toString("latin1")).toContain('name="image[]"; filename="reference-0.png"');
+    expect(wire.includes(Buffer.from(reference))).toBe(true);
   });
 
   it("uses the image[] field name for more than one reference image", async () => {
@@ -294,7 +304,7 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product.webp", role: "product_original" }] }),
       );
 
-      const file = form!.get("image") as File;
+      const file = form!.get("image[]") as File;
       expect(file.type).toBe(contentType);
       expect(file.name).toBe(`reference-0.${expectedExtension}`);
     });
@@ -315,7 +325,7 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product", role: "product_original" }] }),
       );
 
-      const file = form!.get("image") as File;
+      const file = form!.get("image[]") as File;
       expect(file.type).toBe("image/jpeg");
       expect(file.name).toBe("reference-0.jpg");
     });
@@ -336,7 +346,7 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/mismatched", role: "product_original" }] }),
       );
 
-      const file = form!.get("image") as File;
+      const file = form!.get("image[]") as File;
       expect(file.type).toBe("image/jpeg");
       expect(file.name).toBe("reference-0.jpg");
     });
@@ -362,7 +372,7 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/cmyk.jpg", role: "product_original" }] }),
       );
 
-      const file = form!.get("image") as File;
+      const file = form!.get("image[]") as File;
       expect(file.type).toBe("image/png");
       expect(file.name).toBe("reference-0.png");
       expect(new Uint8Array(await file.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
@@ -424,6 +434,33 @@ describe("OpenAIImageGenerationProvider", () => {
     global.fetch = vi.fn(async () => new Response("error", { status: 500 })) as unknown as typeof fetch;
     const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
     await expect(new OpenAIImageGenerationProvider().generateImage(baseInput())).rejects.toBeInstanceOf(ProviderRequestError);
+  });
+
+  it("classifies OpenAI's deterministic invalid_image_file 400 as a non-retryable ProviderInputError", async () => {
+    const reference = await validImageBytes("jpeg");
+    global.fetch = vi.fn(async (url: string) => {
+      if (url === "https://cdn.example.test/reference.jpg") {
+        return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/jpeg" } });
+      }
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: "Invalid image file or mode for image 1, please check your image file.",
+            type: "image_generation_user_error",
+            code: "invalid_image_file",
+            param: null,
+          },
+        }),
+        { status: 400 },
+      );
+    }) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    await expect(
+      new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/reference.jpg", role: "product_original" }] }),
+      ),
+    ).rejects.toBeInstanceOf(ProviderInputError);
   });
 
   it("throws ProviderRequestError (not a special auth type) on a 401 — status is still classifiable via .status", async () => {

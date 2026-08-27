@@ -317,6 +317,15 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         errorParam: errorDetail?.param ?? null,
         errorMessage: errorDetail?.message ?? null,
       });
+      // OpenAI has already parsed the multipart request and explicitly
+      // classified this as an invalid image input. Replaying unchanged
+      // bytes cannot make that deterministic 400 transient; surface it to
+      // the worker as an unrecoverable input failure instead of spending
+      // all three BullMQ attempts. Other 4xx/5xx/network errors retain
+      // the existing retry behavior.
+      if (response.status === 400 && errorDetail?.code === "invalid_image_file") {
+        throw new ProviderInputError(this.name, "OpenAI rejected reference image input");
+      }
       throw new ProviderRequestError(this.name, response.status);
     }
 
@@ -393,9 +402,10 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
    * fetched (from this app's own signed storage URLs — never a
    * merchant-supplied arbitrary URL, see build-input.ts/plan-builder.ts's
    * server-side resolution) and attached as real file parts, never
-   * base64-encoded JSON. A single reference uses the field name `image`;
-   * more than one uses `image[]` repeated, per OpenAI's documented
-   * multi-image-input contract for `gpt-image-*` edits. */
+   * base64-encoded JSON. OpenAI's documented curl examples use the
+   * repeated `image[]` multipart field for both single-image edits and
+   * multi-reference edits; do not switch to the legacy singular `image`
+   * field based on count. */
   private async callEdits(
     baseUrl: string,
     apiKey: string,
@@ -409,7 +419,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     form.set("size", args.size);
     form.set("quality", args.quality);
 
-    const fieldName = args.referenceUrls.length === 1 ? "image" : "image[]";
+    const fieldName = "image[]";
     let index = 0;
     for (const url of args.referenceUrls) {
       const reference = await this.fetchReferenceImage(url, timeoutMs, index);
@@ -419,7 +429,19 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         reference.bytes.byteOffset,
         reference.bytes.byteOffset + reference.bytes.byteLength,
       ) as ArrayBuffer;
-      form.append(fieldName, new Blob([body], { type: reference.contentType }), `reference-${index}.${reference.extension}`);
+      const filename = `reference-${index}.${reference.extension}`;
+      form.append(fieldName, new Blob([body], { type: reference.contentType }), filename);
+      logger.info("ai_provider.generation.reference_multipart_prepared", {
+        provider: this.name,
+        referenceIndex: index,
+        fieldName,
+        referenceImageCount: args.referenceUrls.length,
+        contentType: reference.contentType,
+        extension: reference.extension,
+        filename,
+        byteLength: reference.bytes.byteLength,
+        normalized: reference.normalized,
+      });
       index += 1;
     }
 
@@ -550,7 +572,14 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       contentType: rawContentType || null,
       byteLength: sourceBytes.length,
       detectedFormat,
+      width: metadata.width ?? null,
+      height: metadata.height ?? null,
+      colorSpace: metadata.space ?? null,
+      channels: metadata.channels ?? null,
+      isProgressive: metadata.isProgressive ?? null,
+      hasProfile: metadata.hasProfile ?? null,
       extension: prepared.extension,
+      multipartContentType: prepared.contentType,
       normalized: prepared.normalized,
       redirected: response.redirected,
     });

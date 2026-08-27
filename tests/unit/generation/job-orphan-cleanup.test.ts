@@ -9,8 +9,9 @@
  * tests (tests/integration/generation/generation-idempotency.test.ts).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Job } from "bullmq";
+import { UnrecoverableError, type Job } from "bullmq";
 import { logger } from "../../../lib/logging/logger.server";
+import { ProviderInputError, ProviderRequestError } from "../../../services/ai/http-provider-utils.server";
 
 const getGenerationJob = vi.fn();
 const markProcessing = vi.fn();
@@ -55,6 +56,13 @@ vi.mock("../../../services/usage/usage-accounting.server", () => ({
   recordUsageEvent: (...args: unknown[]) => recordUsageEvent(...args),
 }));
 
+const settleGenerationCredits = vi.fn().mockResolvedValue(undefined);
+const refundGenerationCredits = vi.fn().mockResolvedValue(undefined);
+vi.mock("../../../services/usage/entitlement.server", () => ({
+  settleGenerationCredits: (...args: unknown[]) => settleGenerationCredits(...args),
+  refundGenerationCredits: (...args: unknown[]) => refundGenerationCredits(...args),
+}));
+
 const PLAN = {
   generationType: "PRODUCT_CLEANUP",
   assetType: "product_studio",
@@ -93,6 +101,8 @@ beforeEach(() => {
   storageGetSignedUrl.mockReset().mockResolvedValue("https://signed.example.test/x");
   storageDelete.mockReset().mockResolvedValue(undefined);
   recordUsageEvent.mockReset().mockResolvedValue(undefined);
+  settleGenerationCredits.mockReset().mockResolvedValue(undefined);
+  refundGenerationCredits.mockReset().mockResolvedValue(undefined);
   generateImage.mockReset().mockResolvedValue({
     outputs: [
       { data: new Uint8Array([1, 2, 3, 4]), contentType: "image/png" },
@@ -103,6 +113,29 @@ beforeEach(() => {
 });
 
 describe("processGenerationJob — orphaned-storage cleanup", () => {
+  it("marks a deterministic invalid reference input terminally failed without consuming all retry attempts", async () => {
+    generateImage.mockRejectedValue(new ProviderInputError("openai", "OpenAI rejected reference image input"));
+
+    const { processGenerationJob } = await import("../../../services/generation/job.server");
+
+    await expect(processGenerationJob(fakeJob(), "fake-token")).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(markFailed).toHaveBeenCalledTimes(1);
+    expect(refundGenerationCredits).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a transient provider failure retryable before the final attempt", async () => {
+    const transientError = new ProviderRequestError("openai", 503);
+    generateImage.mockRejectedValue(transientError);
+
+    const { processGenerationJob } = await import("../../../services/generation/job.server");
+
+    await expect(processGenerationJob(fakeJob(), "fake-token")).rejects.toBe(transientError);
+
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(refundGenerationCredits).not.toHaveBeenCalled();
+  });
+
   it("deletes every just-uploaded object when createResults fails, then rethrows", async () => {
     createResults.mockRejectedValue(new Error("simulated DB write failure"));
 
