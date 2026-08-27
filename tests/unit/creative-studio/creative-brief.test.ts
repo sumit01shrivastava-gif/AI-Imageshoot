@@ -103,6 +103,32 @@ describe("buildCreativeBrief — inferredCreativeDecisions (explicit vs. inferre
     expect(brief.inferredCreativeDecisions.join(" ")).toMatch(/incidental source setting, packaging, display/i);
   });
 
+  it("treats a plain social-media deliverable as campaign transformation even without a luxury/cinematic style token", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CREATE_SOCIAL",
+        isEditTurn: false,
+        subjectPhrase: "the watch",
+        style: [],
+      }),
+    );
+
+    expect(brief.campaignSceneTransformation).toBe(true);
+    expect(brief.inferredCreativeDecisions.join(" ")).toMatch(/do not improve, recreate, or borrow the incidental source setting/i);
+  });
+
+  it("does not replace an explicitly requested source scene for a campaign deliverable", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CREATE_SOCIAL",
+        isEditTurn: false,
+        scene: "the existing presentation box",
+      }),
+    );
+
+    expect(brief.campaignSceneTransformation).toBe(false);
+  });
+
   it("keeps an explicit source-scene preservation/edit request out of campaign-scene replacement", () => {
     const brief = buildCreativeBrief(
       baseInput({

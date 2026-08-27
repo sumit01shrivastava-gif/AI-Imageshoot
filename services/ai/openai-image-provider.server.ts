@@ -391,6 +391,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     timeoutMs: number,
     args: { model: string; input: GenerateImageInput; referenceUrls: string[]; size: string; quality: string },
   ): Promise<OpenAIImagesResponse> {
+    const referencePreparationStartedAt = Date.now();
     const references = await Promise.all(args.referenceUrls.map((url, index) => this.fetchReferenceImage(url, timeoutMs, index)));
     const files = await Promise.all(
       references.map(async (reference, index) => {
@@ -415,9 +416,11 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         return file;
       }),
     );
+    const referencePrepareMs = Date.now() - referencePreparationStartedAt;
     const sdkBaseUrl = baseUrl.replace(/\/$/, "").endsWith("/v1") ? baseUrl.replace(/\/$/, "") : `${baseUrl.replace(/\/$/, "")}/v1`;
     const client = new OpenAI({ apiKey, baseURL: sdkBaseUrl, timeout: timeoutMs, maxRetries: 0 });
-    return client.images.edit({
+    const providerRequestStartedAt = Date.now();
+    const response = await client.images.edit({
       model: args.model,
       image: files.length === 1 ? files[0] : files,
       prompt: this.buildPrompt(args.input),
@@ -428,6 +431,15 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       // Images Edit contract rejects that parameter. It belongs to a
       // separate API architecture, not this SDK edit call.
     });
+    logger.info("ai_provider.generation.request_completed", {
+      provider: this.name,
+      endpoint: "edits",
+      model: args.model,
+      referenceImageCount: files.length,
+      referencePrepareMs,
+      providerGenerationMs: Date.now() - providerRequestStartedAt,
+    });
+    return response;
   }
 
   private throwOpenAIEditError(error: unknown): never {

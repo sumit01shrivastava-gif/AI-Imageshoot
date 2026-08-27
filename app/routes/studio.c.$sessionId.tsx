@@ -53,6 +53,19 @@ function jobStatusPhrase(status: string, outputCount: number): string {
   return "";
 }
 
+function attachmentsForMessage(value: unknown): Array<{ url: string; contentType: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    return typeof value.url === "string" ? [{ url: value.url, contentType: typeof value.contentType === "string" ? value.contentType : "image/*" }] : [];
+  });
+}
+
+function renderMessageContent(content: string) {
+  return content.split(/\n/).map((line, index) => <span key={`${index}-${line}`}>{line || "\u00a0"}<br /></span>);
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { context } = await requireWorkspaceContext(request);
 
@@ -213,7 +226,7 @@ export default function StudioConversation() {
 
   useEffect(() => {
     if (!isInFlight) return;
-    const id = setInterval(() => revalidator.revalidate(), 3000);
+    const id = setInterval(() => revalidator.revalidate(), 1000);
     return () => clearInterval(id);
   }, [isInFlight, revalidator]);
 
@@ -350,8 +363,52 @@ function submitMessage(text: string, files: File[] = []) {
             </p>
           )}
           {messages.map((message) => (
-            <div key={message.id} className="studio-msg" data-role={message.role === "SYSTEM" ? "ASSISTANT" : message.role}>
-              {message.content}
+            <div key={message.id} className="studio-turn" data-role={message.role === "SYSTEM" ? "ASSISTANT" : message.role}>
+            <div className="studio-msg" data-role={message.role === "SYSTEM" ? "ASSISTANT" : message.role}>
+              {message.role === "USER" && attachmentsForMessage(message.attachments).length > 0 && (
+                <div className="studio-message-attachments">
+                  {attachmentsForMessage(message.attachments).map((attachment) => (
+                    <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer" className="studio-message-attachment">
+                      <img src={attachment.url} alt="Reference attached to this request" />
+                    </a>
+                  ))}
+                </div>
+              )}
+              <div className="studio-message-content">{renderMessageContent(message.content)}</div>
+            </div>
+            {message.role === "ASSISTANT" && message.generationJobId && (() => {
+              const turnJob = jobs.find((job) => job.id === message.generationJobId);
+              const turnResult = turnJob?.results[turnJob.results.length - 1];
+              const active = turnJob && ["PENDING", "QUEUED", "PROCESSING"].includes(turnJob.status);
+              if (!turnJob) return null;
+              return <>
+                <div className="studio-turn-generation">
+                  {active && <StudioGenerationLoading title={jobStatusPhrase(turnJob.status, turnJob.results.length || 1)} activeStep={turnJob.status === "PROCESSING" ? 2 : 1} />}
+                  {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
+                  {turnResult?.url && <img className="studio-turn-result" src={turnResult.url} alt="Generated result" />}
+                </div>
+                {turnResult?.url && (
+                  <div className="studio-turn-result-meta">
+                    <div className="studio-turn-result-actions">
+                      <a className="studio-btn" data-variant="primary" href={turnResult.url} target="_blank" rel="noreferrer" download="creation.png">
+                        Download
+                      </a>
+                      <button type="button" className="studio-btn" onClick={focusComposer} disabled={isSending}>Edit / Continue</button>
+                      <details className="studio-more-actions">
+                        <summary>More actions</summary>
+                        <div className="studio-secondary-actions">
+                          <button type="button" className="studio-btn" onClick={() => submitMessage("Give me another variation.")} disabled={isSending}>Variation</button>
+                          <button type="button" className="studio-btn" onClick={() => submitMessage("Regenerate this.")} disabled={isSending}>Regenerate</button>
+                          <button type="button" className="studio-btn" disabled={turnResult.reviewStatus === "APPROVED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: turnResult.id, decision: "APPROVED" }, { method: "POST" })}>Approve</button>
+                          <button type="button" className="studio-btn" data-variant="danger" disabled={turnResult.reviewStatus === "REJECTED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: turnResult.id, decision: "REJECTED" }, { method: "POST" })}>Reject</button>
+                        </div>
+                      </details>
+                    </div>
+                    <p className="studio-result-confirmation">Your image is ready. Continue with a refinement or start a new direction below.</p>
+                  </div>
+                )}
+              </>;
+            })()}
             </div>
           ))}
           {optimisticMessage && <div className="studio-msg studio-msg-pending" data-role="USER">{optimisticMessage}</div>}

@@ -337,7 +337,16 @@ export interface BuildCreativeBriefInput {
  * never relaxes the product lock. */
 function requiresCampaignSceneTransformation(input: BuildCreativeBriefInput): boolean {
   if (input.isEditTurn || input.scene || !FRESH_CREATIVE_INTENTS.has(input.intent)) return false;
-  return input.style.some((style) => CAMPAIGN_INTENT_PATTERN.test(style)) || Boolean(input.externalCreativeConcept?.trim());
+  // A channel-deliverable such as social or banner creative is an explicit
+  // request for a newly art-directed campaign asset, even when the
+  // heuristic parser did not extract a separate adjective such as
+  // "cinematic" or "luxury". Previously "create a social media creative"
+  // produced CREATE_SOCIAL with an empty style array, leaving the source
+  // photograph's box/background eligible to anchor the generated scene.
+  // Marketplace remains deliberately excluded: that intent prioritizes a
+  // clear product listing image rather than autonomous campaign invention.
+  const campaignDeliverable = input.intent === "CREATE_SOCIAL" || input.intent === "CREATE_BANNER";
+  return campaignDeliverable || input.style.some((style) => CAMPAIGN_INTENT_PATTERN.test(style)) || Boolean(input.externalCreativeConcept?.trim());
 }
 
 /**

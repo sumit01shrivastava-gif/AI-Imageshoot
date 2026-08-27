@@ -199,7 +199,14 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
   const attempt = job.attemptsMade + 1;
   const totalAttempts = job.opts.attempts ?? 1;
 
-  logger.info("generation.job.start", { shop, generationJobId, attempt, totalAttempts });
+  const workerStartedAt = Date.now();
+  logger.info("generation.job.start", {
+    shop,
+    generationJobId,
+    attempt,
+    totalAttempts,
+    queueWaitMs: typeof job.timestamp === "number" ? Math.max(0, workerStartedAt - job.timestamp) : null,
+  });
 
   const context: AuthContext = { shop, sessionId: "worker:generation", isOnline: false };
 
@@ -244,7 +251,9 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     const plan = parseGenerationPlan(jobRow.plan);
     const input = buildGenerateImageInput(plan, attempt);
     const provider = getConfiguredImageGenerationProvider();
+    const providerStartedAt = Date.now();
     const result = await provider.generateImage(input);
+    const providerGenerationMs = Date.now() - providerStartedAt;
     assertValidGenerateImageResult(result);
 
     const identityValidation = plan.productFacts.identityAnchors
@@ -258,6 +267,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     // upload first lets us see exactly which ones actually landed, so a
     // partial failure can still clean up after itself (see docs/storage.md
     // "Orphaned object prevention" — "partial multi-output failure").
+    const persistStartedAt = Date.now();
     const uploadOutcomes = await Promise.allSettled(
       result.outputs.map((output, index) =>
         persistOutput(shop, generationJobId, index, output, provider.name, identityValidation),
@@ -329,6 +339,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       );
       throw persistError;
     }
+    const resultPersistMs = Date.now() - persistStartedAt;
 
     const durationMs = Date.now() - attemptStartedAt;
     // Usage/credit bookkeeping runs BEFORE `markSucceeded` writes the
@@ -375,6 +386,9 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       providerName: provider.name,
       outputCount: storedResults.length,
       durationMs,
+      providerGenerationMs,
+      resultPersistMs,
+      workerOverheadMs: Math.max(0, durationMs - providerGenerationMs - resultPersistMs),
     });
   } catch (error) {
     const durationMs = Date.now() - attemptStartedAt;

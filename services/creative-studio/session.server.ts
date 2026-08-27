@@ -283,6 +283,7 @@ export async function sendCreativeMessage(
   message: string,
   options: SendCreativeMessageOptions = {},
 ): Promise<SendCreativeMessageResult> {
+  const requestStartedAt = Date.now();
   const trimmed = message.trim();
   if (trimmed.length === 0) throw new EmptyMessageError();
 
@@ -566,6 +567,7 @@ export async function sendCreativeMessage(
     // other field logged here.
     hasCreativeConcept: Boolean(brief?.creativeConcept),
     negativeCreativeDecisionCount: brief?.negativeCreativeDecisions.length ?? 0,
+    planningMs: Date.now() - requestStartedAt,
   });
 
   const job = await createAndEnqueueGenerationJob(context, {
@@ -579,12 +581,22 @@ export async function sendCreativeMessage(
     },
   });
 
+  logger.info("creative_studio.job.enqueued", {
+    creativeSessionId: session.id,
+    generationJobId: job.id,
+    requestToEnqueueMs: Date.now() - requestStartedAt,
+  });
+
   await createCreativeMessage({
     shop: context.shop,
     creativeSessionId: session.id,
     role: "USER",
     content: trimmed,
     intent: effectiveIntent as unknown as Record<string, unknown>,
+    attachments: uploadedReferenceImageUrls.map((url, index) => ({
+      url,
+      contentType: options.referenceImages?.[index]?.contentType ?? "image/*",
+    })),
     generationJobId: job.id,
   });
 

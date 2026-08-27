@@ -510,13 +510,7 @@
 
 /* ---------- Conversation view ---------- */
 
-.studio-conv {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.72fr);
-  min-height: 100vh;
-  overflow: hidden;
-}
+.studio-conv { flex: 1; min-height: 100dvh; }
 
 .studio-launching {
   flex: 1;
@@ -534,12 +528,9 @@
 @keyframes studio-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .studio-canvas {
+  display: none;
   padding: 28px 32px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  border-right: 1px solid var(--studio-border);
 }
 
 .studio-canvas-stage {
@@ -673,6 +664,7 @@
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-width: 0;
 }
 
 .studio-chat-header {
@@ -694,7 +686,9 @@
 .studio-transcript {
   flex: 1;
   overflow-y: auto;
-  padding: 22px 20px;
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  padding: 28px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -721,6 +715,18 @@
   border-bottom-left-radius: 4px;
 }
 .studio-msg-pending { animation: studio-enter .2s ease-out both; }
+.studio-turn { display: flex; flex-direction: column; gap: 10px; }
+.studio-turn[data-role="ASSISTANT"] { align-items: flex-start; }
+.studio-turn-generation { width: min(100%, 920px); margin: 0; overflow: hidden; border-radius: var(--studio-radius-lg); border: 1px solid var(--studio-border); background: radial-gradient(circle at 50% 35%, var(--studio-surface-elevated), var(--studio-surface)); aspect-ratio: 4 / 3; display: grid; place-items: center; }
+.studio-turn-result { width: 100%; height: 100%; object-fit: contain; display: block; background: #060607; }
+.studio-turn-result-meta { width: min(100%, 920px); }
+.studio-turn-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0 2px; }
+.studio-result-confirmation { margin: 8px 0 0; color: var(--studio-ink-subdued); font-size: 13px; line-height: 1.45; }
+.studio-turn-error { width: 100%; padding: 16px; color: var(--studio-error); background: var(--studio-error-bg); font-size: 13px; line-height: 1.5; }
+.studio-message-content { white-space: pre-wrap; overflow-wrap: anywhere; }
+.studio-message-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: -2px 0 10px; }
+.studio-message-attachment { width: 92px; height: 92px; border-radius: 10px; overflow: hidden; border: 1px solid var(--studio-border-strong); display: block; }
+.studio-message-attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .studio-status-line {
   align-self: flex-start;
@@ -746,6 +752,23 @@
   .studio-dot-pulse { animation: none; opacity: 0.7; }
 }
 
+@media (max-width: 720px) {
+  .studio-shell, .studio-conv { display: block; min-height: 100dvh; }
+  .studio-canvas { border-right: 0; padding: 16px; overflow: visible; }
+  .studio-canvas-stage { min-height: 0; aspect-ratio: 1 / 1; }
+  .studio-chat { min-height: auto; }
+  .studio-chat-header { padding: 12px 16px; }
+  .studio-transcript { padding: 16px; overflow: visible; }
+  .studio-chat-composer { position: sticky; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--studio-bg); border-top: 1px solid var(--studio-border); }
+  .studio-msg { max-width: 100%; }
+  .studio-message-attachment { width: 76px; height: 76px; }
+  .studio-canvas-actions { gap: 6px; }
+  .studio-btn { min-height: 40px; padding: 8px 12px; }
+  .studio-turn-generation { width: 100%; aspect-ratio: 1 / 1; border-radius: var(--studio-radius-md); }
+  .studio-turn-result-meta { width: 100%; }
+  .studio-secondary-actions { width: min(320px, calc(100vw - 28px)); }
+}
+
 .studio-banner {
   margin: 0 24px;
   padding: 10px 14px;
@@ -762,7 +785,17 @@
 .studio-chat-composer {
   padding: 14px 24px 22px;
   border-top: 1px solid var(--studio-border);
+  background: color-mix(in srgb, var(--studio-bg) 94%, transparent);
 }
+
+/* The conversation is the workspace. Every result is rendered in its
+   assistant turn below the originating request; the legacy detached canvas
+   is retained only as a compatibility shell and is never displayed. */
+.studio-conv { display: flex; flex-direction: column; }
+.studio-canvas { display: none !important; }
+.studio-chat { flex: 1; min-height: 100dvh; }
+.studio-turn[data-role="ASSISTANT"] { max-width: 100%; }
+.studio-turn-generation:has(.studio-turn-result) { background: #060607; }
 
 /* ---------- Generating state ---------- */
 
