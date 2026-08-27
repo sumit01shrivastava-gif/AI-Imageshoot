@@ -29,7 +29,7 @@ import { IdentityAnchorsSchema } from "../intelligence/schema";
 import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes } from "../generation/schema";
 import { toBrandStyleContext, buildProductFactsContext } from "../generation/build-plan";
 import type { AspectRatioValue } from "../generation/types";
-import type { ParsedIntent } from "./intent-schema";
+import type { ParsedIntent, CampaignCommunication } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
 import { buildIdentityConstraints, buildStandaloneIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
 import { buildCreativeBrief } from "./creative-brief";
@@ -162,6 +162,7 @@ function synthesizeCreativePrompt(
   /** Broad campaign work uses the reference only for product truth, not
    * as the creative composition/default environment. */
   campaignSceneTransformation: boolean,
+  campaignCommunication: CampaignCommunication,
   /** Compact, structured execution priorities. This remains separate
    * from the holistic direction so a real vendor's prose cannot
    * accidentally omit its own operational decisions before the final
@@ -214,8 +215,14 @@ function synthesizeCreativePrompt(
     : "";
   const executionClause =
     inferredCreativeDecisions.length > 0 ? ` Execution priorities: ${inferredCreativeDecisions.slice(0, 3).join(" ")}` : "";
+  const communicationClause =
+    campaignCommunication.mode === "VISUAL_ONLY"
+      ? " Keep the result visual-first: do not add campaign copy, invented branding, logos, labels, slogans, or decorative typography."
+      : campaignCommunication.mode === "MINIMAL_CAMPAIGN_COPY"
+        ? ` CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only this minimal approved copy: headline “${campaignCommunication.headline ?? ""}”${campaignCommunication.supportingLine ? `; supporting line “${campaignCommunication.supportingLine}”` : ""}. Do not add any other text, brand, logo, claim, or badge.`
+        : ` FACTUAL CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only the approved merchant-supplied copy: ${[campaignCommunication.headline, campaignCommunication.supportingLine, ...campaignCommunication.callouts].filter(Boolean).map((copy) => `“${copy}”`).join("; ")}. Do not add, rewrite, or elaborate factual claims, brands, logos, labels, or badges.`;
 
-  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}`;
+  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}${communicationClause}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -351,6 +358,8 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
+    externalCampaignCommunication: parsedIntent.campaignCommunication,
+    trustedCampaignFacts: [product.title, product.description ?? ""],
     category,
   });
 
@@ -363,6 +372,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
     creativeBrief.campaignSceneTransformation,
+    creativeBrief.campaignCommunication,
     creativeBrief.inferredCreativeDecisions,
   );
 
@@ -594,6 +604,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     externalInferredCreativeDecisions: parsedIntent.inferredCreativeDecisions,
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
+    externalCampaignCommunication: parsedIntent.campaignCommunication,
     // A standalone session's "category" is whatever real subject was
     // resolved (see `resolvedSubject` above) — `null` only when neither
     // this turn nor the session ever established one, which correctly
@@ -611,6 +622,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
     creativeBrief.campaignSceneTransformation,
+    creativeBrief.campaignCommunication,
     creativeBrief.inferredCreativeDecisions,
   );
 

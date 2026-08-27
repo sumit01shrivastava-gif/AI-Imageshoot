@@ -190,6 +190,16 @@ export const CreativeStudioPlanSchema = z.object({
       // backward-compatibility reasoning as `inferredCreativeDecisions`.
       negativeCreativeDecisions: z.array(z.string()).default([]),
       campaignSceneTransformation: z.boolean().default(false),
+      campaignCommunication: z
+        .object({
+          mode: z.enum(["VISUAL_ONLY", "MINIMAL_CAMPAIGN_COPY", "FACTUAL_CALLOUTS"]).default("VISUAL_ONLY"),
+          headline: z.string().min(1).max(90).nullable().default(null),
+          supportingLine: z.string().min(1).max(140).nullable().default(null),
+          callouts: z.array(z.string().min(1).max(80)).max(3).default([]),
+          provenance: z.enum(["NONE", "EVOCATIVE", "USER_EXPLICIT", "TRUSTED_CATALOG"]).default("NONE"),
+          reservedTextArea: z.enum(["NONE", "TOP_LEFT", "TOP_RIGHT", "TOP_CENTER", "BOTTOM_LEFT", "BOTTOM_RIGHT", "BOTTOM_CENTER", "SIDE"]).default("NONE"),
+        })
+        .default({ mode: "VISUAL_ONLY", headline: null, supportingLine: null, callouts: [], provenance: "NONE", reservedTextArea: "NONE" }),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()

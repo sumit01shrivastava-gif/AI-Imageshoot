@@ -898,6 +898,65 @@ describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", 
   });
 });
 
+describe("structured campaign communication", () => {
+  it("keeps ordinary product photography visual-only and prohibits decorative text", async () => {
+    const parsedIntent = await llmIntent({ intent: "CREATE_MARKETPLACE" });
+    const plan = buildCreativeGenerationPlan({
+      product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null,
+      creativeSessionId: "session-1", rawInstruction: "Create a clean product photo",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.campaignCommunication.mode).toBe("VISUAL_ONLY");
+    expect(plan.creativeDirection.prompt).toMatch(/do not add campaign copy/i);
+  });
+
+  it("threads minimal evocative campaign copy and its planned safe area into the provider brief", async () => {
+    const parsedIntent = await llmIntent({
+      campaignCommunication: {
+        mode: "MINIMAL_CAMPAIGN_COPY", headline: "Make your move", supportingLine: null, callouts: [],
+        provenance: "EVOCATIVE", reservedTextArea: "TOP_LEFT",
+      },
+    });
+    const plan = buildCreativeGenerationPlan({
+      product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null,
+      creativeSessionId: "session-1", rawInstruction: "Make an advertising campaign",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.campaignCommunication).toMatchObject({ mode: "MINIMAL_CAMPAIGN_COPY", reservedTextArea: "TOP_LEFT" });
+    expect(plan.creativeDirection.prompt).toContain("Make your move");
+    expect(plan.creativeDirection.prompt).toMatch(/top left.*negative space/i);
+  });
+
+  it("allows factual callouts only when explicitly supplied by the merchant", async () => {
+    const parsedIntent = await llmIntent({
+      campaignCommunication: {
+        mode: "FACTUAL_CALLOUTS", headline: "Studio Tote", supportingLine: null, callouts: ["Handcrafted leather"],
+        provenance: "USER_EXPLICIT", reservedTextArea: "BOTTOM_LEFT",
+      },
+    });
+    const plan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null, creativeSessionId: "session-1", rawInstruction: "Use the verified feature: handcrafted leather" });
+    expect(plan.creativeIntent!.creativeBrief!.campaignCommunication.callouts).toEqual(["Handcrafted leather"]);
+    expect(plan.creativeDirection.prompt).toContain("merchant-supplied copy");
+  });
+
+  it("accepts exact trusted catalog callouts but rejects ungrounded catalog-attributed claims", async () => {
+    const parsedIntent = await llmIntent({
+      campaignCommunication: {
+        mode: "FACTUAL_CALLOUTS", headline: "Studio Tote", supportingLine: null, callouts: ["A handcrafted leather tote"],
+        provenance: "TRUSTED_CATALOG", reservedTextArea: "BOTTOM_LEFT",
+      },
+    });
+    const plan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null, creativeSessionId: "session-1", rawInstruction: "Make an ad" });
+    expect(plan.creativeIntent!.creativeBrief!.campaignCommunication.callouts).toEqual(["A handcrafted leather tote"]);
+
+    const ungrounded = buildCreativeGenerationPlan({
+      product: product(), intelligence: intelligence(), sourceMediaIds: [],
+      parsedIntent: await llmIntent({ campaignCommunication: { mode: "FACTUAL_CALLOUTS", headline: "Swiss Precision", supportingLine: null, callouts: ["Water resistant"], provenance: "TRUSTED_CATALOG", reservedTextArea: "BOTTOM_LEFT" } }),
+      previousResultUrl: null, creativeSessionId: "session-1", rawInstruction: "Make an ad",
+    });
+    expect(ungrounded.creativeIntent!.creativeBrief!.campaignCommunication.mode).toBe("VISUAL_ONLY");
+    expect(ungrounded.creativeDirection.prompt).not.toContain("Swiss Precision");
+  });
+});
+
 describe("PRODUCT FIDELITY quality-floor pass — category-aware model interaction is consistent across both generation paths", () => {
   it("the Shopify (product-grounded) path infers the real product's category-aware interaction for ADD_MODEL", async () => {
     const parsedIntent = await llmIntent({ intent: "ADD_MODEL" });

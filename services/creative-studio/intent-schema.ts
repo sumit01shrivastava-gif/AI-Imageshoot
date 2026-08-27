@@ -59,6 +59,30 @@ function nullishToDefault<Schema extends z.ZodType, Default>(schema: Schema, def
 export const CreativeIntentSchema = z.enum(CREATIVE_INTENTS);
 export const GenerationModeSchema = z.enum(GENERATION_MODES);
 
+/** A deliberately small, provider-agnostic communication decision. The
+ * image model remains responsible for rendering any selected copy; this
+ * structured result is also suitable for a future deterministic compositor. */
+export const CampaignCommunicationSchema = z.object({
+  mode: z.enum(["VISUAL_ONLY", "MINIMAL_CAMPAIGN_COPY", "FACTUAL_CALLOUTS"]).default("VISUAL_ONLY"),
+  headline: z.string().min(1).max(90).nullable().default(null),
+  supportingLine: z.string().min(1).max(140).nullable().default(null),
+  callouts: nullishToDefault(z.array(z.string().min(1).max(80)).max(3), []),
+  /** EVOCATIVE copy is non-factual. Factual copy must be merchant-supplied
+   * or match an exact trusted catalog string at plan-build time. */
+  provenance: z.enum(["NONE", "EVOCATIVE", "USER_EXPLICIT", "TRUSTED_CATALOG"]).default("NONE"),
+  reservedTextArea: z.enum(["NONE", "TOP_LEFT", "TOP_RIGHT", "TOP_CENTER", "BOTTOM_LEFT", "BOTTOM_RIGHT", "BOTTOM_CENTER", "SIDE"]).default("NONE"),
+});
+
+export type CampaignCommunication = z.infer<typeof CampaignCommunicationSchema>;
+export const DEFAULT_CAMPAIGN_COMMUNICATION: CampaignCommunication = {
+  mode: "VISUAL_ONLY",
+  headline: null,
+  supportingLine: null,
+  callouts: [],
+  provenance: "NONE",
+  reservedTextArea: "NONE",
+};
+
 /**
  * The structured result of interpreting one merchant message. Every
  * field the intent-parsing layer is allowed to influence — nothing here
@@ -286,6 +310,14 @@ export const ParsedIntentSchema = z.object({
    * `undefined`.
    */
   negativeCreativeDecisions: nullishToDefault(z.array(z.string()), []),
+
+  /** Optional, structured advertising communication chosen by the same
+   * Creative Director pass. Omission safely remains visual-only for old
+   * parsers and ordinary product photography. */
+  campaignCommunication: z.preprocess(
+    (value) => value ?? DEFAULT_CAMPAIGN_COMMUNICATION,
+    CampaignCommunicationSchema,
+  ),
 });
 
 export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;

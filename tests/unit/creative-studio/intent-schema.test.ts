@@ -146,3 +146,32 @@ describe("parseParsedIntent — creativeConcept / negativeCreativeDecisions (Pha
     expect(result.mode).toBe("TEXT_TO_IMAGE");
   });
 });
+
+describe("parseParsedIntent — campaign communication", () => {
+  it("defaults older parser output to visual-only communication", () => {
+    expect(parseParsedIntent(minimalValidRaw()).campaignCommunication).toEqual({
+      mode: "VISUAL_ONLY",
+      headline: null,
+      supportingLine: null,
+      callouts: [],
+      provenance: "NONE",
+      reservedTextArea: "NONE",
+    });
+  });
+
+  it("keeps a compact explicit campaign communication decision structured", () => {
+    const result = parseParsedIntent({
+      ...minimalValidRaw(),
+      campaignCommunication: {
+        mode: "MINIMAL_CAMPAIGN_COPY",
+        headline: "Built for the moment",
+        supportingLine: null,
+        callouts: [],
+        provenance: "USER_EXPLICIT",
+        reservedTextArea: "TOP_LEFT",
+      },
+    });
+    expect(result.campaignCommunication.headline).toBe("Built for the moment");
+    expect(result.campaignCommunication.callouts).toEqual([]);
+  });
+});

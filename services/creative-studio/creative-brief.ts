@@ -121,6 +121,7 @@
  * merged.
  */
 import type { CreativeIntentValue } from "./types";
+import { DEFAULT_CAMPAIGN_COMMUNICATION, type CampaignCommunication } from "./intent-schema";
 import { resolveProductInteraction } from "../generation/product-interaction";
 
 /** Style/lighting keywords that indicate a moody/dramatic treatment was
@@ -231,6 +232,9 @@ export interface CreativeBrief {
   /** Whether this is a broad, fresh campaign request whose source scene
    * must be discarded while product identity remains locked. */
   campaignSceneTransformation: boolean;
+  /** Approved campaign-copy decision, kept separate from the campaign
+   * proposition so a visual world never implies that text is required. */
+  campaignCommunication: CampaignCommunication;
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -313,6 +317,10 @@ export interface BuildCreativeBriefInput {
    * `undefined`/empty for the heuristic parser (always) and for a real
    * provider that chose not to supply any. */
   externalNegativeCreativeDecisions?: string[] | null;
+  externalCampaignCommunication?: CampaignCommunication | null;
+  /** Exact merchant/catalog strings eligible for factual campaign copy.
+   * This is intentionally not visual inference or model-supplied data. */
+  trustedCampaignFacts?: readonly string[];
 }
 
 /** A product-first campaign creates a new world; a narrow edit or an
@@ -594,6 +602,26 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
   const creativeConcept =
     input.externalCreativeConcept && input.externalCreativeConcept.trim().length > 0 ? input.externalCreativeConcept.trim() : null;
 
+  // The parser is untrusted. Keep visual-only as the default; factual
+  // callouts are admissible only when the merchant explicitly supplied
+  // the claim or every exact phrase is grounded in trusted catalog data.
+  const suppliedCommunication = input.externalCampaignCommunication ?? DEFAULT_CAMPAIGN_COMMUNICATION;
+  const normalizedTrustedFacts = (input.trustedCampaignFacts ?? []).map((fact) => fact.trim().toLocaleLowerCase()).filter(Boolean);
+  const factualCopy = [suppliedCommunication.headline, suppliedCommunication.supportingLine, ...suppliedCommunication.callouts].filter(
+    (value): value is string => Boolean(value),
+  );
+  const isTrustedCatalogCopy =
+    suppliedCommunication.provenance === "TRUSTED_CATALOG" &&
+    factualCopy.length > 0 &&
+    factualCopy.every((copy) => normalizedTrustedFacts.some((fact) => fact.includes(copy.trim().toLocaleLowerCase())));
+  const campaignCommunication =
+    suppliedCommunication.mode === "FACTUAL_CALLOUTS" &&
+    suppliedCommunication.provenance !== "USER_EXPLICIT" && !isTrustedCatalogCopy
+      ? DEFAULT_CAMPAIGN_COMMUNICATION
+      : suppliedCommunication.mode === "MINIMAL_CAMPAIGN_COPY"
+        ? { ...suppliedCommunication, callouts: [] }
+        : suppliedCommunication;
+
   // A real vendor's own holistic sentence is assumed to already fold in
   // its own creative-director reasoning (it IS the creative-director
   // reasoning) — the deterministic `inferredCreativeDecisions`/
@@ -616,6 +644,7 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     creativeConcept,
     negativeCreativeDecisions,
     campaignSceneTransformation: requiresCampaignSceneTransformation(input),
+    campaignCommunication,
     overallCreativeDirection,
   };
 }
