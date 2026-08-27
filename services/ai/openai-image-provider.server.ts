@@ -35,6 +35,7 @@
  * shape — every other module still only ever sees `ImageGenerationProvider`.
  */
 import sharp from "sharp";
+import OpenAI, { APIError, toFile } from "openai";
 import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderInputError, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
@@ -69,19 +70,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
  * -image formats — see `fetchReferenceBytes`'s doc comment. Keys are
  * lowercase, parameter-stripped content-types (e.g. `"image/webp"`, not
  * `"image/webp; charset=..."`). */
-const EXTENSION_FOR_CONTENT_TYPE: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-};
-
-const CONTENT_TYPE_FOR_FORMAT = {
-  jpeg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-} as const;
-
-type SupportedReferenceFormat = keyof typeof CONTENT_TYPE_FOR_FORMAT;
+type SupportedReferenceFormat = "jpeg" | "png" | "webp";
 
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 
@@ -116,16 +105,11 @@ function detectSupportedReferenceFormat(bytes: Uint8Array): SupportedReferenceFo
   return null;
 }
 
-function extensionForFormat(format: SupportedReferenceFormat): string {
-  return EXTENSION_FOR_CONTENT_TYPE[CONTENT_TYPE_FOR_FORMAT[format]];
-}
-
 interface PreparedReferenceImage {
   bytes: Uint8Array;
-  contentType: (typeof CONTENT_TYPE_FOR_FORMAT)[SupportedReferenceFormat];
-  extension: string;
-  detectedFormat: SupportedReferenceFormat | null;
-  normalized: boolean;
+  sourceFormat: SupportedReferenceFormat | null;
+  width: number;
+  height: number;
 }
 
 function isEditMode(mode: string | undefined): boolean {
@@ -291,49 +275,47 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       // Never the prompt text, reference URLs/bytes, or credentials.
     });
 
-    let response: Response;
-    let latencyMs: number;
-    try {
-      const measured = await measureLatencyMs(() =>
-        usingReferenceImages
-          ? this.callEdits(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, referenceUrls, size, quality })
-          : this.callGenerations(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, size, quality }),
-      );
-      response = measured.result;
-      latencyMs = measured.latencyMs;
-    } catch (error) {
-      logger.error("ai_provider.generation.request_failed", { provider: this.name, reason: error instanceof Error ? error.name : "unknown" });
-      throw error;
-    }
-
-    if (!response.ok) {
-      const errorDetail = await parseOpenAIErrorBody(response);
-      logger.error("ai_provider.generation.request_failed", {
-        provider: this.name,
-        status: response.status,
-        isAuthError: looksLikeAuthError(response.status),
-        errorType: errorDetail?.type ?? null,
-        errorCode: errorDetail?.code ?? null,
-        errorParam: errorDetail?.param ?? null,
-        errorMessage: errorDetail?.message ?? null,
-      });
-      // OpenAI has already parsed the multipart request and explicitly
-      // classified this as an invalid image input. Replaying unchanged
-      // bytes cannot make that deterministic 400 transient; surface it to
-      // the worker as an unrecoverable input failure instead of spending
-      // all three BullMQ attempts. Other 4xx/5xx/network errors retain
-      // the existing retry behavior.
-      if (response.status === 400 && errorDetail?.code === "invalid_image_file") {
-        throw new ProviderInputError(this.name, "OpenAI rejected reference image input");
-      }
-      throw new ProviderRequestError(this.name, response.status);
-    }
-
     let parsed: unknown;
-    try {
-      parsed = await response.json();
-    } catch {
-      throw new ProviderResponseError(this.name, "response body was not valid JSON");
+    let latencyMs: number;
+    if (usingReferenceImages) {
+      try {
+        const measured = await measureLatencyMs(() =>
+          this.callEdits(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, referenceUrls, size, quality }),
+        );
+        parsed = measured.result;
+        latencyMs = measured.latencyMs;
+      } catch (error) {
+        this.throwOpenAIEditError(error);
+      }
+    } else {
+      let response: Response;
+      try {
+        const measured = await measureLatencyMs(() => this.callGenerations(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, size, quality }));
+        response = measured.result;
+        latencyMs = measured.latencyMs;
+      } catch (error) {
+        logger.error("ai_provider.generation.request_failed", { provider: this.name, reason: error instanceof Error ? error.name : "unknown" });
+        throw error;
+      }
+
+      if (!response.ok) {
+        const errorDetail = await parseOpenAIErrorBody(response);
+        this.throwProviderRequestError(response.status, errorDetail);
+      }
+      try {
+        parsed = await response.json();
+      } catch {
+        throw new ProviderResponseError(this.name, "response body was not valid JSON");
+      }
+    }
+    // The official SDK normally returns parsed JSON. Keep the existing
+    // defensive response check for a proxy that omits its JSON header.
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        throw new ProviderResponseError(this.name, "response body was not valid JSON");
+      }
     }
     if (!isOpenAIImagesResponse(parsed) || !Array.isArray(parsed.data) || parsed.data.length === 0) {
       throw new ProviderResponseError(this.name, "response had no data[] entries");
@@ -398,58 +380,81 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     });
   }
 
-  /** `/v1/images/edits` is multipart/form-data — reference images are
-   * fetched (from this app's own signed storage URLs — never a
-   * merchant-supplied arbitrary URL, see build-input.ts/plan-builder.ts's
-   * server-side resolution) and attached as real file parts, never
-   * base64-encoded JSON. OpenAI's documented curl examples use the
-   * repeated `image[]` multipart field for both single-image edits and
-   * multi-reference edits; do not switch to the legacy singular `image`
-   * field based on count. */
+  /**
+   * The official OpenAI SDK owns multipart serialization.  We hand it
+   * canonical PNG Files rather than reproducing the wire protocol with
+   * hand-built FormData, Blob, and fetch calls.
+   */
   private async callEdits(
     baseUrl: string,
     apiKey: string,
     timeoutMs: number,
     args: { model: string; input: GenerateImageInput; referenceUrls: string[]; size: string; quality: string },
-  ): Promise<Response> {
-    const form = new FormData();
-    form.set("model", args.model);
-    form.set("prompt", this.buildPrompt(args.input));
-    form.set("n", String(args.input.outputCount));
-    form.set("size", args.size);
-    form.set("quality", args.quality);
-
-    const fieldName = "image[]";
-    let index = 0;
-    for (const url of args.referenceUrls) {
-      const reference = await this.fetchReferenceImage(url, timeoutMs, index);
-      // Slice exactly the image view: a Uint8Array may otherwise expose
-      // unrelated bytes from a larger backing buffer as part of the Blob.
-      const body = reference.bytes.buffer.slice(
-        reference.bytes.byteOffset,
-        reference.bytes.byteOffset + reference.bytes.byteLength,
-      ) as ArrayBuffer;
-      const filename = `reference-${index}.${reference.extension}`;
-      form.append(fieldName, new Blob([body], { type: reference.contentType }), filename);
-      logger.info("ai_provider.generation.reference_multipart_prepared", {
-        provider: this.name,
-        referenceIndex: index,
-        fieldName,
-        referenceImageCount: args.referenceUrls.length,
-        contentType: reference.contentType,
-        extension: reference.extension,
-        filename,
-        byteLength: reference.bytes.byteLength,
-        normalized: reference.normalized,
-      });
-      index += 1;
-    }
-
-    return fetchWithTimeout(`${baseUrl}/v1/images/edits`, "calling OpenAI image edit", timeoutMs, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` }, // multipart boundary is set by fetch itself — never set Content-Type manually here.
-      body: form,
+  ): Promise<OpenAIImagesResponse> {
+    const references = await Promise.all(args.referenceUrls.map((url, index) => this.fetchReferenceImage(url, timeoutMs, index)));
+    const files = await Promise.all(
+      references.map(async (reference, index) => {
+        const filename = `reference-${index}.png`;
+        const file = await toFile(Buffer.from(reference.bytes), filename, { type: "image/png" });
+        logger.info("ai_provider.generation.reference_sdk_prepared", {
+          provider: this.name,
+          referenceIndex: index,
+          referenceCount: references.length,
+          sourceFormat: reference.sourceFormat,
+          providerFormat: "png",
+          width: reference.width,
+          height: reference.height,
+          byteLength: reference.bytes.byteLength,
+          mime: file.type,
+          extension: "png",
+          normalized: true,
+          model: args.model,
+          endpoint: "edits",
+          sdkMethod: "images.edit",
+        });
+        return file;
+      }),
+    );
+    const sdkBaseUrl = baseUrl.replace(/\/$/, "").endsWith("/v1") ? baseUrl.replace(/\/$/, "") : `${baseUrl.replace(/\/$/, "")}/v1`;
+    const client = new OpenAI({ apiKey, baseURL: sdkBaseUrl, timeout: timeoutMs, maxRetries: 0 });
+    return client.images.edit({
+      model: args.model,
+      image: files.length === 1 ? files[0] : files,
+      prompt: this.buildPrompt(args.input),
+      n: args.input.outputCount,
+      size: args.size as "1024x1024" | "1024x1536" | "1536x1024" | "auto",
+      quality: args.quality as "low" | "medium" | "high",
     });
+  }
+
+  private throwOpenAIEditError(error: unknown): never {
+    if (error instanceof APIError) {
+      const detail = error.error as Record<string, unknown> | undefined;
+      this.throwProviderRequestError(error.status ?? 0, {
+        message: error.message,
+        type: error.type ?? (typeof detail?.type === "string" ? detail.type : undefined),
+        code: error.code ?? (typeof detail?.code === "string" ? detail.code : undefined),
+        param: error.param ?? (typeof detail?.param === "string" ? detail.param : undefined),
+      });
+    }
+    logger.error("ai_provider.generation.request_failed", { provider: this.name, reason: error instanceof Error ? error.name : "unknown" });
+    throw error;
+  }
+
+  private throwProviderRequestError(status: number, errorDetail: OpenAIErrorDetail | null): never {
+    logger.error("ai_provider.generation.request_failed", {
+      provider: this.name,
+      status,
+      isAuthError: looksLikeAuthError(status),
+      errorType: errorDetail?.type ?? null,
+      errorCode: errorDetail?.code ?? null,
+      errorParam: errorDetail?.param ?? null,
+      errorMessage: errorDetail?.message ?? null,
+    });
+    if (status === 400 && errorDetail?.code === "invalid_image_file") {
+      throw new ProviderInputError(this.name, "OpenAI rejected reference image input");
+    }
+    throw new ProviderRequestError(this.name, status);
   }
 
   /**
@@ -464,11 +469,9 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
    * response header alone is not proof of what was fetched. In particular,
    * an expired/redirected signed URL can yield an HTML error body and a
    * generic/octet-stream response can contain a real JPEG. We validate
-   * the actual bytes first, use the detected type/filename rather than a
-   * misleading header, and only normalize decodeable non-standard image
-   * modes/formats to sRGB PNG. This preserves already-valid source bytes
-   * unchanged while preventing malformed multipart file parts from ever
-   * reaching OpenAI.
+   * the actual bytes first, then always make a temporary orientation-correct
+   * sRGB PNG provider copy. This removes JPEG/WebP profile, EXIF, and
+   * decoder ambiguity without changing the stored source asset.
    */
   private async fetchReferenceImage(url: string, timeoutMs: number, index: number): Promise<PreparedReferenceImage> {
     const response = await fetchWithTimeout(url, "fetching a reference image", timeoutMs);
@@ -522,34 +525,14 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new ProviderInputError(this.name, `reference image ${index + 1} is not a valid image file`);
     }
 
-    const metadataFormat = metadata.format as SupportedReferenceFormat | undefined;
-    const canForwardUnchanged =
-      metadataFormat !== undefined &&
-      metadataFormat in CONTENT_TYPE_FOR_FORMAT &&
-      detectedFormat === metadataFormat &&
-      (metadata.space === undefined || metadata.space === "srgb");
+    if (!metadata.width || !metadata.height) {
+      throw new ProviderInputError(this.name, `reference image ${index + 1} has invalid dimensions`);
+    }
 
-    let prepared: PreparedReferenceImage;
-    if (canForwardUnchanged) {
-      const format = metadataFormat as SupportedReferenceFormat;
-      prepared = {
-        bytes: sourceBytes,
-        contentType: CONTENT_TYPE_FOR_FORMAT[format],
-        extension: extensionForFormat(format),
-        detectedFormat,
-        normalized: false,
-      };
-    } else {
-      try {
-        const normalized = await sharp(Buffer.from(sourceBytes)).rotate().toColorspace("srgb").png().toBuffer();
-        prepared = {
-          bytes: new Uint8Array(normalized),
-          contentType: "image/png",
-          extension: "png",
-          detectedFormat,
-          normalized: true,
-        };
-      } catch {
+    let normalized: Buffer;
+    try {
+      normalized = await sharp(Buffer.from(sourceBytes)).rotate().toColorspace("srgb").png().toBuffer();
+    } catch {
         logger.error("ai_provider.generation.reference_invalid", {
           provider: this.name,
           referenceIndex: index,
@@ -561,9 +544,26 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
           normalized: false,
           redirected: response.redirected,
         });
-        throw new ProviderInputError(this.name, `reference image ${index + 1} cannot be prepared for editing`);
-      }
+      throw new ProviderInputError(this.name, `reference image ${index + 1} cannot be prepared for editing`);
     }
+    const providerBytes = new Uint8Array(normalized);
+    const providerMetadata = await sharp(normalized).metadata();
+    if (
+      providerBytes.length === 0 ||
+      providerBytes.length > MAX_REFERENCE_IMAGE_BYTES ||
+      detectSupportedReferenceFormat(providerBytes) !== "png" ||
+      providerMetadata.format !== "png" ||
+      !providerMetadata.width ||
+      !providerMetadata.height
+    ) {
+      throw new ProviderInputError(this.name, `reference image ${index + 1} cannot be normalized for editing`);
+    }
+    const prepared: PreparedReferenceImage = {
+      bytes: providerBytes,
+      sourceFormat: detectedFormat,
+      width: providerMetadata.width,
+      height: providerMetadata.height,
+    };
 
     logger.info("ai_provider.generation.reference_prepared", {
       provider: this.name,
@@ -571,16 +571,18 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       fetchStatus: response.status,
       contentType: rawContentType || null,
       byteLength: sourceBytes.length,
-      detectedFormat,
+      sourceFormat: detectedFormat,
       width: metadata.width ?? null,
       height: metadata.height ?? null,
       colorSpace: metadata.space ?? null,
       channels: metadata.channels ?? null,
       isProgressive: metadata.isProgressive ?? null,
       hasProfile: metadata.hasProfile ?? null,
-      extension: prepared.extension,
-      multipartContentType: prepared.contentType,
-      normalized: prepared.normalized,
+      providerFormat: "png",
+      providerByteLength: prepared.bytes.byteLength,
+      mime: "image/png",
+      extension: "png",
+      normalized: true,
       redirected: response.redirected,
     });
     return prepared;

@@ -169,7 +169,7 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(JSON.stringify(capturedBody)).not.toContain("sk-test-key");
   });
 
-  it("posts multipart/form-data to /v1/images/edits for an editing mode", async () => {
+  it("uses the official SDK's canonical single-file upload for an editing mode", async () => {
     let editUrl = "";
     let editInit: RequestInit | undefined;
     const reference = await validImageBytes("png");
@@ -191,20 +191,17 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(editInit?.body).toBeInstanceOf(FormData);
     const form = editInit!.body as FormData;
     expect(form.get("model")).toBe("gpt-image-2");
-    expect(form.get("image[]")).toBeInstanceOf(Blob);
-    expect(form.get("image")).toBeNull();
-    // Never a manually-set Content-Type — fetch must set its own
-    // multipart boundary, or OpenAI can't parse the body at all.
-    expect((editInit?.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
-
-    // Serialize with the same native Node Request/FormData implementation
-    // used by fetch: the wire body has OpenAI's documented image[] field,
-    // a generated multipart boundary, and the exact validated image bytes.
+    // This FormData is created by the official SDK, not application code.
+    const file = form.get("image") as File;
+    expect(file).toBeInstanceOf(Blob);
+    expect(file.type).toBe("image/png");
+    expect(file.name).toBe("reference-0.png");
+    // The SDK owns the multipart boundary and receives the exact normalized bytes.
     const outbound = new Request(editUrl, { method: "POST", headers: editInit?.headers, body: form });
     expect(outbound.headers.get("content-type")).toMatch(/^multipart\/form-data; boundary=/);
     const wire = Buffer.from(await outbound.arrayBuffer());
-    expect(wire.toString("latin1")).toContain('name="image[]"; filename="reference-0.png"');
-    expect(wire.includes(Buffer.from(reference))).toBe(true);
+    expect(wire.toString("latin1")).toContain('name="image"; filename="reference-0.png"');
+    expect(wire.includes(Buffer.from(await file.arrayBuffer()))).toBe(true);
   });
 
   it("uses the image[] field name for more than one reference image", async () => {
@@ -288,7 +285,7 @@ describe("OpenAIImageGenerationProvider", () => {
       ["image/webp", "webp"],
       ["image/jpeg", "jpg"],
       ["image/png", "png"],
-    ])("forwards the reference image's real fetched Content-Type (%s) as the multipart part's type/filename, never hardcoding image/png", async (contentType, expectedExtension) => {
+    ])("normalizes %s source bytes to the SDK's canonical PNG upload", async (contentType, expectedExtension) => {
       let form: FormData | undefined;
       const reference = await validImageBytes(expectedExtension === "jpg" ? "jpeg" : expectedExtension === "png" ? "png" : "webp");
       global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -304,9 +301,10 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product.webp", role: "product_original" }] }),
       );
 
-      const file = form!.get("image[]") as File;
-      expect(file.type).toBe(contentType);
-      expect(file.name).toBe(`reference-0.${expectedExtension}`);
+      const file = form!.get("image") as File;
+      expect(file.type).toBe("image/png");
+      expect(file.name).toBe("reference-0.png");
+      expect(new Uint8Array(await file.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     });
 
     it("detects a valid JPEG from its bytes when the fetch response has no Content-Type", async () => {
@@ -325,9 +323,9 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/product", role: "product_original" }] }),
       );
 
-      const file = form!.get("image[]") as File;
-      expect(file.type).toBe("image/jpeg");
-      expect(file.name).toBe("reference-0.jpg");
+      const file = form!.get("image") as File;
+      expect(file.type).toBe("image/png");
+      expect(file.name).toBe("reference-0.png");
     });
 
     it("uses the actual JPEG MIME type and filename when the declared response type is wrong", async () => {
@@ -346,9 +344,9 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/mismatched", role: "product_original" }] }),
       );
 
-      const file = form!.get("image[]") as File;
-      expect(file.type).toBe("image/jpeg");
-      expect(file.name).toBe("reference-0.jpg");
+      const file = form!.get("image") as File;
+      expect(file.type).toBe("image/png");
+      expect(file.name).toBe("reference-0.png");
     });
 
     it("normalizes a valid but non-sRGB JPEG to PNG before multipart upload", async () => {
@@ -372,7 +370,7 @@ describe("OpenAIImageGenerationProvider", () => {
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/cmyk.jpg", role: "product_original" }] }),
       );
 
-      const file = form!.get("image[]") as File;
+      const file = form!.get("image") as File;
       expect(file.type).toBe("image/png");
       expect(file.name).toBe("reference-0.png");
       expect(new Uint8Array(await file.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
