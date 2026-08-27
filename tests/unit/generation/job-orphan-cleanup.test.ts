@@ -124,6 +124,17 @@ describe("processGenerationJob — orphaned-storage cleanup", () => {
     expect(refundGenerationCredits).toHaveBeenCalledTimes(1);
   });
 
+  it("marks any deterministic OpenAI input error terminally failed and refunds its one reservation", async () => {
+    generateImage.mockRejectedValue(new ProviderInputError("openai", "OpenAI rejected deterministic image generation input"));
+
+    const { processGenerationJob } = await import("../../../services/generation/job.server");
+
+    await expect(processGenerationJob(fakeJob(), "fake-token")).rejects.toBeInstanceOf(UnrecoverableError);
+
+    expect(markFailed).toHaveBeenCalledTimes(1);
+    expect(refundGenerationCredits).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a transient provider failure retryable before the final attempt", async () => {
     const transientError = new ProviderRequestError("openai", 503);
     generateImage.mockRejectedValue(transientError);

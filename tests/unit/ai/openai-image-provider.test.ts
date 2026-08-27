@@ -191,7 +191,7 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(editInit?.body).toBeInstanceOf(FormData);
     const form = editInit!.body as FormData;
     expect(form.get("model")).toBe("gpt-image-2");
-    expect(form.get("input_fidelity")).toBe("high");
+    expect(form.get("input_fidelity")).toBeNull();
     // This FormData is created by the official SDK, not application code.
     const file = form.get("image") as File;
     expect(file).toBeInstanceOf(Blob);
@@ -458,6 +458,26 @@ describe("OpenAIImageGenerationProvider", () => {
     await expect(
       new OpenAIImageGenerationProvider().generateImage(
         baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/reference.jpg", role: "product_original" }] }),
+      ),
+    ).rejects.toBeInstanceOf(ProviderInputError);
+  });
+
+  it("classifies invalid_input_fidelity_model as deterministic provider input, not a retryable request failure", async () => {
+    const reference = await validImageBytes("png");
+    global.fetch = vi.fn(async (url: string) => {
+      if (url === "https://cdn.example.test/reference.png") {
+        return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
+      }
+      return new Response(
+        JSON.stringify({ error: { message: "unsupported parameter", type: "image_generation_user_error", code: "invalid_input_fidelity_model", param: "input_fidelity" } }),
+        { status: 400 },
+      );
+    }) as unknown as typeof fetch;
+
+    const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+    await expect(
+      new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/reference.png", role: "product_original" }] }),
       ),
     ).rejects.toBeInstanceOf(ProviderInputError);
   });
