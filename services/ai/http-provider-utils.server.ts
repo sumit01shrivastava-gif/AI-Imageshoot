@@ -47,6 +47,19 @@ export class ProviderResponseError extends Error {
   }
 }
 
+/** A request cannot succeed until the merchant's already-stored input is
+ * replaced or repaired (for example, a signed reference URL returned an
+ * HTML error document instead of image bytes). Unlike a timeout or 5xx,
+ * retrying the same BullMQ payload cannot change that input, so workers
+ * may safely mark it unrecoverable. The message deliberately contains no
+ * URL, image bytes, credentials, or provider response body. */
+export class ProviderInputError extends Error {
+  constructor(providerName: string, reason: string) {
+    super(`${providerName} could not use a reference image: ${reason}`);
+    this.name = "ProviderInputError";
+  }
+}
+
 /** `fetch` with a bounded timeout via `AbortController` — an aborted
  * request surfaces as `ProviderTimeoutError`, never a raw `AbortError`
  * (which reads as a merchant-initiated cancellation, not a timeout).

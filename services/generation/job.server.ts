@@ -24,7 +24,7 @@
  * `errorMessage`/FAILED are only written once the FINAL attempt fails —
  * see the catch block below.
  */
-import type { Processor } from "bullmq";
+import { UnrecoverableError, type Processor } from "bullmq";
 import { buildJobId } from "../../lib/queue/job-id";
 import { logger } from "../../lib/logging/logger.server";
 import { getConfiguredStorageProvider } from "../../lib/storage";
@@ -42,6 +42,7 @@ import { getConfiguredImageGenerationProvider } from "./provider.server";
 import { parseGenerationPlan, assertValidGenerateImageResult, InvalidGenerationResultError } from "./schema";
 import { recordIdentityValidation, type IdentityValidationResult } from "./identity-validation.server";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
+import { ProviderInputError } from "../ai/http-provider-utils.server";
 import type { GeneratedImageOutput } from "../ai/types";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
 import { settleGenerationCredits, refundGenerationCredits } from "../usage/entitlement.server";
@@ -377,7 +378,12 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     });
   } catch (error) {
     const durationMs = Date.now() - attemptStartedAt;
-    const isFinalAttempt = attempt >= totalAttempts;
+    // Invalid reference bytes are deterministic input failures. Retrying
+    // the exact same storage object only repeats the same provider 400;
+    // use BullMQ's explicit unrecoverable signal and perform terminal
+    // bookkeeping immediately.
+    const isNonRetryable = error instanceof ProviderInputError;
+    const isFinalAttempt = isNonRetryable || attempt >= totalAttempts;
 
     logger.error("generation.job.attempt_failed", {
       shop,
@@ -414,6 +420,6 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
 
     // Rethrow regardless — this is what tells BullMQ the attempt failed,
     // so it schedules the next retry (or gives up, if this was final).
-    throw error;
+    throw isNonRetryable ? new UnrecoverableError(error.message) : error;
   }
 };

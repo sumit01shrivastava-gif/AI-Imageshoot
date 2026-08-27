@@ -34,9 +34,10 @@
  * outside this file imports an OpenAI SDK or knows this vendor's wire
  * shape — every other module still only ever sees `ImageGenerationProvider`.
  */
+import sharp from "sharp";
 import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
-import { fetchWithTimeout, measureLatencyMs, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
+import { fetchWithTimeout, measureLatencyMs, ProviderInputError, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
 import { composeProviderPrompt } from "./prompt-composition";
 import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider } from "./types";
 
@@ -73,6 +74,59 @@ const EXTENSION_FOR_CONTENT_TYPE: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/webp": "webp",
 };
+
+const CONTENT_TYPE_FOR_FORMAT = {
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+} as const;
+
+type SupportedReferenceFormat = keyof typeof CONTENT_TYPE_FOR_FORMAT;
+
+const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
+
+function detectSupportedReferenceFormat(bytes: Uint8Array): SupportedReferenceFormat | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpeg";
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "png";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "webp";
+  }
+  return null;
+}
+
+function extensionForFormat(format: SupportedReferenceFormat): string {
+  return EXTENSION_FOR_CONTENT_TYPE[CONTENT_TYPE_FOR_FORMAT[format]];
+}
+
+interface PreparedReferenceImage {
+  bytes: Uint8Array;
+  contentType: (typeof CONTENT_TYPE_FOR_FORMAT)[SupportedReferenceFormat];
+  extension: string;
+  detectedFormat: SupportedReferenceFormat | null;
+  normalized: boolean;
+}
 
 function isEditMode(mode: string | undefined): boolean {
   return mode === "IMAGE_TO_IMAGE" || mode === "IMAGE_EDIT" || mode === "VARIATION";
@@ -358,9 +412,14 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     const fieldName = args.referenceUrls.length === 1 ? "image" : "image[]";
     let index = 0;
     for (const url of args.referenceUrls) {
-      const { bytes, contentType } = await this.fetchReferenceBytes(url, timeoutMs);
-      const extension = EXTENSION_FOR_CONTENT_TYPE[contentType] ?? "png";
-      form.append(fieldName, new Blob([bytes.buffer as ArrayBuffer], { type: contentType }), `reference-${index}.${extension}`);
+      const reference = await this.fetchReferenceImage(url, timeoutMs, index);
+      // Slice exactly the image view: a Uint8Array may otherwise expose
+      // unrelated bytes from a larger backing buffer as part of the Blob.
+      const body = reference.bytes.buffer.slice(
+        reference.bytes.byteOffset,
+        reference.bytes.byteOffset + reference.bytes.byteLength,
+      ) as ArrayBuffer;
+      form.append(fieldName, new Blob([body], { type: reference.contentType }), `reference-${index}.${reference.extension}`);
       index += 1;
     }
 
@@ -379,24 +438,122 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
    * the fetched bytes' real format, relying entirely on OpenAI's decoder
    * happening to sniff the real bytes rather than trusting the label —
    * fragile, and not guaranteed for every vendor/format combination).
-   * `gpt-image-*`'s `/v1/images/edits` documents support for PNG/JPEG/WebP
-   * reference images, so forwarding the real, fetched Content-Type (never
-   * a client-supplied one — this is our own signed storage URL's
-   * response) requires no format conversion for any of this app's
-   * supported upload formats — see services/creative-studio/reference-images.server.ts,
-   * which already preserves the merchant's real upload content-type
-   * into storage unchanged. Falls back to PNG only when the response
-   * genuinely didn't declare a recognized image content-type (never
-   * throws on that alone — a missing/odd header shouldn't block a
-   * generation that would otherwise succeed).
+   * `gpt-image-*` accepts PNG/JPEG/WebP reference images, but the storage
+   * response header alone is not proof of what was fetched. In particular,
+   * an expired/redirected signed URL can yield an HTML error body and a
+   * generic/octet-stream response can contain a real JPEG. We validate
+   * the actual bytes first, use the detected type/filename rather than a
+   * misleading header, and only normalize decodeable non-standard image
+   * modes/formats to sRGB PNG. This preserves already-valid source bytes
+   * unchanged while preventing malformed multipart file parts from ever
+   * reaching OpenAI.
    */
-  private async fetchReferenceBytes(url: string, timeoutMs: number): Promise<{ bytes: Uint8Array; contentType: string }> {
+  private async fetchReferenceImage(url: string, timeoutMs: number, index: number): Promise<PreparedReferenceImage> {
     const response = await fetchWithTimeout(url, "fetching a reference image", timeoutMs);
-    if (!response.ok) {
-      throw new ProviderResponseError(this.name, `failed to fetch a reference image (status ${response.status})`);
-    }
     const rawContentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-    const contentType = rawContentType in EXTENSION_FOR_CONTENT_TYPE ? rawContentType : "image/png";
-    return { bytes: new Uint8Array(await response.arrayBuffer()), contentType };
+    if (!response.ok) {
+      logger.error("ai_provider.generation.reference_invalid", {
+        provider: this.name,
+        referenceIndex: index,
+        fetchStatus: response.status,
+        contentType: rawContentType || null,
+        byteLength: 0,
+        detectedFormat: null,
+        extension: null,
+        normalized: false,
+        redirected: response.redirected,
+      });
+      throw new ProviderInputError(this.name, `reference image ${index + 1} could not be fetched (status ${response.status})`);
+    }
+    const sourceBytes = new Uint8Array(await response.arrayBuffer());
+    const detectedFormat = detectSupportedReferenceFormat(sourceBytes);
+    if (sourceBytes.length === 0 || sourceBytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+      logger.error("ai_provider.generation.reference_invalid", {
+        provider: this.name,
+        referenceIndex: index,
+        fetchStatus: response.status,
+        contentType: rawContentType || null,
+        byteLength: sourceBytes.length,
+        detectedFormat,
+        extension: null,
+        normalized: false,
+        redirected: response.redirected,
+      });
+      throw new ProviderInputError(this.name, `reference image ${index + 1} is ${sourceBytes.length === 0 ? "empty" : "too large"}`);
+    }
+
+    let metadata: Awaited<ReturnType<ReturnType<typeof sharp>["metadata"]>>;
+    try {
+      metadata = await sharp(Buffer.from(sourceBytes)).metadata();
+    } catch {
+      logger.error("ai_provider.generation.reference_invalid", {
+        provider: this.name,
+        referenceIndex: index,
+        fetchStatus: response.status,
+        contentType: rawContentType || null,
+        byteLength: sourceBytes.length,
+        detectedFormat,
+        extension: null,
+        normalized: false,
+        redirected: response.redirected,
+      });
+      throw new ProviderInputError(this.name, `reference image ${index + 1} is not a valid image file`);
+    }
+
+    const metadataFormat = metadata.format as SupportedReferenceFormat | undefined;
+    const canForwardUnchanged =
+      metadataFormat !== undefined &&
+      metadataFormat in CONTENT_TYPE_FOR_FORMAT &&
+      detectedFormat === metadataFormat &&
+      (metadata.space === undefined || metadata.space === "srgb");
+
+    let prepared: PreparedReferenceImage;
+    if (canForwardUnchanged) {
+      const format = metadataFormat as SupportedReferenceFormat;
+      prepared = {
+        bytes: sourceBytes,
+        contentType: CONTENT_TYPE_FOR_FORMAT[format],
+        extension: extensionForFormat(format),
+        detectedFormat,
+        normalized: false,
+      };
+    } else {
+      try {
+        const normalized = await sharp(Buffer.from(sourceBytes)).rotate().toColorspace("srgb").png().toBuffer();
+        prepared = {
+          bytes: new Uint8Array(normalized),
+          contentType: "image/png",
+          extension: "png",
+          detectedFormat,
+          normalized: true,
+        };
+      } catch {
+        logger.error("ai_provider.generation.reference_invalid", {
+          provider: this.name,
+          referenceIndex: index,
+          fetchStatus: response.status,
+          contentType: rawContentType || null,
+          byteLength: sourceBytes.length,
+          detectedFormat,
+          extension: null,
+          normalized: false,
+          redirected: response.redirected,
+        });
+        throw new ProviderInputError(this.name, `reference image ${index + 1} cannot be prepared for editing`);
+      }
+    }
+
+    logger.info("ai_provider.generation.reference_prepared", {
+      provider: this.name,
+      referenceIndex: index,
+      fetchStatus: response.status,
+      contentType: rawContentType || null,
+      byteLength: sourceBytes.length,
+      detectedFormat,
+      extension: prepared.extension,
+      normalized: prepared.normalized,
+      redirected: response.redirected,
+    });
+    return prepared;
   }
 }

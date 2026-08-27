@@ -4,13 +4,24 @@
  * CLAUDE.md "Never make a real AI API call from a test".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import { resetEnvCacheForTests } from "../../../lib/validation/env.server";
 import { logger } from "../../../lib/logging/logger.server";
 import { sizeForAspectRatio } from "../../../services/ai/openai-image-provider.server";
-import { ProviderRequestError, ProviderResponseError } from "../../../services/ai/http-provider-utils.server";
+import { ProviderInputError, ProviderRequestError, ProviderResponseError } from "../../../services/ai/http-provider-utils.server";
 import type { GenerateImageInput } from "../../../services/ai/types";
 
 const REAL_FETCH = global.fetch;
+
+async function validImageBytes(format: "jpeg" | "png" | "webp"): Promise<Uint8Array> {
+  const source = sharp({ create: { width: 2, height: 2, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 0.5 } } });
+  const data = format === "jpeg" ? await source.jpeg().toBuffer() : format === "webp" ? await source.webp().toBuffer() : await source.png().toBuffer();
+  return new Uint8Array(data);
+}
+
+function responseBody(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
 
 function baseInput(overrides: Partial<GenerateImageInput> = {}): GenerateImageInput {
   return {
@@ -161,9 +172,10 @@ describe("OpenAIImageGenerationProvider", () => {
   it("posts multipart/form-data to /v1/images/edits for an editing mode", async () => {
     let editUrl = "";
     let editInit: RequestInit | undefined;
+    const reference = await validImageBytes("png");
     global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://cdn.example.test/prior.png") {
-        return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
       }
       editUrl = url;
       editInit = init;
@@ -187,8 +199,9 @@ describe("OpenAIImageGenerationProvider", () => {
 
   it("uses the image[] field name for more than one reference image", async () => {
     let form: FormData | undefined;
+    const reference = await validImageBytes("png");
     global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.startsWith("https://cdn.example.test/")) return new Response(new Uint8Array([1]), { status: 200 });
+      if (url.startsWith("https://cdn.example.test/")) return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
       form = init!.body as FormData;
       return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
     }) as unknown as typeof fetch;
@@ -206,13 +219,16 @@ describe("OpenAIImageGenerationProvider", () => {
 
     expect(form!.getAll("image[]")).toHaveLength(2);
     expect(form!.get("image")).toBeNull();
+    expect((form!.getAll("image[]")[0] as File).name).toBe("reference-0.png");
+    expect((form!.getAll("image[]")[1] as File).name).toBe("reference-1.png");
   });
 
   it("falls back to sourceImages when an editing mode has no explicit referenceImages", async () => {
     const calledUrls: string[] = [];
+    const reference = await validImageBytes("png");
     global.fetch = vi.fn(async (url: string) => {
       calledUrls.push(url);
-      if (url === "https://cdn.example.test/source.png") return new Response(new Uint8Array([1]), { status: 200 });
+      if (url === "https://cdn.example.test/source.png") return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
       return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
     }) as unknown as typeof fetch;
 
@@ -227,9 +243,10 @@ describe("OpenAIImageGenerationProvider", () => {
   describe("PRODUCT FIDELITY quality-floor pass — reference images are sent whenever they exist, not gated on mode", () => {
     it("a TEXT_TO_IMAGE request (no mode set) with real sourceImages still posts to /v1/images/edits — the exact production-benchmark gap this fixes: a Shopify-context Creative Studio session's first turn, and every non-Creative-Studio generationType, previously never sent the real product photo at all", async () => {
       const calledUrls: string[] = [];
+      const reference = await validImageBytes("png");
       global.fetch = vi.fn(async (url: string) => {
         calledUrls.push(url);
-        if (url === "https://cdn.example.test/product.png") return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        if (url === "https://cdn.example.test/product.png") return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
         return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
       }) as unknown as typeof fetch;
 
@@ -263,9 +280,10 @@ describe("OpenAIImageGenerationProvider", () => {
       ["image/png", "png"],
     ])("forwards the reference image's real fetched Content-Type (%s) as the multipart part's type/filename, never hardcoding image/png", async (contentType, expectedExtension) => {
       let form: FormData | undefined;
+      const reference = await validImageBytes(expectedExtension === "jpg" ? "jpeg" : expectedExtension === "png" ? "png" : "webp");
       global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
         if (url === "https://cdn.example.test/product.webp") {
-          return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": contentType } });
+          return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": contentType } });
         }
         form = init!.body as FormData;
         return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
@@ -281,11 +299,12 @@ describe("OpenAIImageGenerationProvider", () => {
       expect(file.name).toBe(`reference-0.${expectedExtension}`);
     });
 
-    it("falls back to image/png when the fetch response has no recognizable Content-Type — never throws", async () => {
+    it("detects a valid JPEG from its bytes when the fetch response has no Content-Type", async () => {
       let form: FormData | undefined;
+      const reference = await validImageBytes("jpeg");
       global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
         if (url === "https://cdn.example.test/product") {
-          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+          return new Response(responseBody(reference), { status: 200 });
         }
         form = init!.body as FormData;
         return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
@@ -297,8 +316,78 @@ describe("OpenAIImageGenerationProvider", () => {
       );
 
       const file = form!.get("image") as File;
+      expect(file.type).toBe("image/jpeg");
+      expect(file.name).toBe("reference-0.jpg");
+    });
+
+    it("uses the actual JPEG MIME type and filename when the declared response type is wrong", async () => {
+      let form: FormData | undefined;
+      const reference = await validImageBytes("jpeg");
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://cdn.example.test/mismatched") {
+          return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
+        }
+        form = init!.body as FormData;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/mismatched", role: "product_original" }] }),
+      );
+
+      const file = form!.get("image") as File;
+      expect(file.type).toBe("image/jpeg");
+      expect(file.name).toBe("reference-0.jpg");
+    });
+
+    it("normalizes a valid but non-sRGB JPEG to PNG before multipart upload", async () => {
+      let form: FormData | undefined;
+      const cmykJpeg = new Uint8Array(
+        await sharp({ create: { width: 2, height: 2, channels: 3, background: { r: 20, g: 40, b: 60 } } })
+          .toColourspace("cmyk")
+          .jpeg()
+          .toBuffer(),
+      );
+      global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://cdn.example.test/cmyk.jpg") {
+          return new Response(responseBody(cmykJpeg), { status: 200, headers: { "Content-Type": "image/jpeg" } });
+        }
+        form = init!.body as FormData;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await new OpenAIImageGenerationProvider().generateImage(
+        baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/cmyk.jpg", role: "product_original" }] }),
+      );
+
+      const file = form!.get("image") as File;
       expect(file.type).toBe("image/png");
       expect(file.name).toBe("reference-0.png");
+      expect(new Uint8Array(await file.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    });
+
+    it.each([
+      ["an HTML response", new TextEncoder().encode("<html>expired signature</html>")],
+      ["an empty response", new Uint8Array()],
+    ])("fails locally for %s before making an OpenAI edit request", async (_label, reference) => {
+      let editRequests = 0;
+      global.fetch = vi.fn(async (url: string) => {
+        if (url === "https://cdn.example.test/invalid") {
+          return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
+        }
+        editRequests += 1;
+        return new Response(JSON.stringify({ data: [{ b64_json: "AA==" }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
+      await expect(
+        new OpenAIImageGenerationProvider().generateImage(
+          baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/invalid", role: "product_original" }] }),
+        ),
+      ).rejects.toBeInstanceOf(ProviderInputError);
+      expect(editRequests).toBe(0);
     });
   });
 
@@ -308,8 +397,9 @@ describe("OpenAIImageGenerationProvider", () => {
     resetEnvCacheForTests();
 
     let lastModel: unknown;
+    const reference = await validImageBytes("png");
     global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.startsWith("https://cdn.example.test/")) return new Response(new Uint8Array([1]), { status: 200 });
+      if (url.startsWith("https://cdn.example.test/")) return new Response(responseBody(reference), { status: 200, headers: { "Content-Type": "image/png" } });
       if (init?.body instanceof FormData) {
         lastModel = init.body.get("model");
       } else {
