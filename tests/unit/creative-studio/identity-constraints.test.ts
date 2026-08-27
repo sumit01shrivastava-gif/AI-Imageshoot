@@ -50,12 +50,13 @@ describe("buildIdentityConstraints", () => {
     expect(result.immutable).toContain("branding: visible, exact branding present");
   });
 
-  it("names the product and explicitly lists geometry/packaging/logos/labels/material/color as protected", () => {
+  it("locks the product while treating incidental packaging/source scene as creatively replaceable", () => {
     const result = buildIdentityConstraints(FULL_ANCHORS, "Studio Tote");
     expect(result.instruction).toContain("Studio Tote");
     expect(result.instruction).toMatch(/immutable subject/i);
     expect(result.instruction).toMatch(/shape and proportions/i);
-    expect(result.instruction).toMatch(/packaging/i);
+    expect(result.instruction).toMatch(/presentation box, display case, shipping packaging/i);
+    expect(result.instruction).toMatch(/replaceable scene context/i);
     expect(result.instruction).toMatch(/logos/i);
     expect(result.instruction).toMatch(/labels/i);
     expect(result.instruction).toMatch(/material/i);

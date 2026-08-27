@@ -189,6 +189,7 @@ export const CreativeStudioPlanSchema = z.object({
       // (the merchant's own explicit removals). `.default([])` — same
       // backward-compatibility reasoning as `inferredCreativeDecisions`.
       negativeCreativeDecisions: z.array(z.string()).default([]),
+      campaignSceneTransformation: z.boolean().default(false),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()

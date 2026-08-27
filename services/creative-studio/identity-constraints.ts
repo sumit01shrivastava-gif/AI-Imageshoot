@@ -63,7 +63,6 @@ export interface IdentityConstraints {
 const CATEGORY_ITEMS = [
   "its silhouette, shape and proportions",
   "its geometry and scale relative to a real object of this kind",
-  "its packaging and packaging structure",
   "any visible logos",
   "any visible labels, typography, or text printed on the product",
   "its exact material",
@@ -121,7 +120,8 @@ export function buildIdentityConstraints(
     `${subjectPhrase} is the immutable subject of this image and the source of truth for what it looks like — ` +
     `not creative inspiration — and must be preserved exactly as shown in the source image: do not redesign it, ` +
     `simplify it, substitute a visually similar object, invent missing components, or produce a "better looking" ` +
-    `version of it. Unless explicitly requested, do not alter ${remainingCategoryItems.join(", ")}.` +
+    `version of it. Unless explicitly requested, do not alter ${remainingCategoryItems.join(", ")}. ` +
+    `Treat any source presentation box, display case, shipping packaging, prop, hand, surface, room, and background as replaceable scene context — not part of the product — unless the catalog facts or merchant explicitly identify it as part of what is being sold. Do not add fictional branding, logos, slogans, labels, or decorative typography.` +
     (overriddenItems.length > 0
       ? ` The merchant has explicitly requested the following change${overriddenItems.length > 1 ? "s" : ""}, which ` +
         `${overriddenItems.length > 1 ? "are" : "is"} permitted: ${overriddenItems.join(", ")}. Every other aspect of the ` +

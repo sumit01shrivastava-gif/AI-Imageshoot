@@ -88,6 +88,35 @@ describe("buildCreativeBrief — Part P regression: the yoga/temple failure clas
 });
 
 describe("buildCreativeBrief — inferredCreativeDecisions (explicit vs. inferred)", () => {
+  it("requires a new product-derived campaign world for a broad fresh campaign request, not a prettier source scene", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CREATE_SOCIAL",
+        isEditTurn: false,
+        subjectPhrase: "the product",
+        style: ["exceptional luxury campaign"],
+      }),
+    );
+
+    expect(brief.campaignSceneTransformation).toBe(true);
+    expect(brief.inferredCreativeDecisions.join(" ")).toMatch(/newly conceived campaign world/i);
+    expect(brief.inferredCreativeDecisions.join(" ")).toMatch(/incidental source setting, packaging, display/i);
+  });
+
+  it("keeps an explicit source-scene preservation/edit request out of campaign-scene replacement", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CHANGE_LIGHTING",
+        isEditTurn: true,
+        scene: "the existing presentation box",
+        style: ["premium"],
+      }),
+    );
+
+    expect(brief.campaignSceneTransformation).toBe(false);
+    expect(brief.inferredCreativeDecisions.join(" ")).not.toMatch(/newly conceived campaign world/i);
+  });
+
   it("a requested pose/action change infers an anatomical-plausibility decision, kept separate from transformationRequirements", () => {
     const brief = buildCreativeBrief(baseInput({ action: "yoga" }));
     expect(brief.transformationRequirements).toEqual(["pose/action: yoga"]);

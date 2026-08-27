@@ -28,6 +28,13 @@ describe("CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION", () => {
   it("instructs reference-image identity-vs-transformation reasoning in general terms", () => {
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/identity/i);
     expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/not a command to preserve the entire original scene/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/presentation box, display case, shipping packaging/i);
+  });
+
+  it("requires a product-derived campaign proposition when broad creative freedom is given", () => {
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/broad creative freedom/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/deliberate campaign proposition/i);
+    expect(CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION).toMatch(/visible form language, materials, color, finish, category/i);
   });
 
   it("instructs contradiction handling via confidence, not silent guessing", () => {

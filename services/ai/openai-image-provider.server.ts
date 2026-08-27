@@ -424,6 +424,10 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       n: args.input.outputCount,
       size: args.size as "1024x1024" | "1024x1536" | "1536x1024" | "auto",
       quality: args.quality as "low" | "medium" | "high",
+      // GPT Image supports this specifically for reference-conditioned
+      // edits. It increases priority on the supplied product without
+      // constraining the separately-directed creative world.
+      input_fidelity: "high",
     });
   }
 

@@ -159,6 +159,9 @@ function synthesizeCreativePrompt(
    * `overallCreativeDirection`'s existing closing-sentence role.
    */
   creativeConcept: string | null,
+  /** Broad campaign work uses the reference only for product truth, not
+   * as the creative composition/default environment. */
+  campaignSceneTransformation: boolean,
   /** Compact, structured execution priorities. This remains separate
    * from the holistic direction so a real vendor's prose cannot
    * accidentally omit its own operational decisions before the final
@@ -204,10 +207,13 @@ function synthesizeCreativePrompt(
   // (the common case on the deterministic path) — never an empty/filler
   // sentence.
   const conceptClause = creativeConcept ? ` Creative concept: ${creativeConcept}.` : "";
+  const campaignClause = campaignSceneTransformation
+    ? " Campaign scene transformation is required: use the reference only for the physical product; actively discard incidental source-scene influence and create a new, product-derived commercial world rather than an enhanced version of the source photograph."
+    : "";
   const executionClause =
     inferredCreativeDecisions.length > 0 ? ` Execution priorities: ${inferredCreativeDecisions.slice(0, 3).join(" ")}` : "";
 
-  return `${identityInstruction}${referenceFidelity}${conceptClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}`;
+  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -354,6 +360,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     isEditTurn ? "the reference image provided" : null,
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
+    creativeBrief.campaignSceneTransformation,
     creativeBrief.inferredCreativeDecisions,
   );
 
@@ -601,6 +608,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     isEditTurn ? referenceNoun : null,
     creativeBrief.overallCreativeDirection,
     creativeBrief.creativeConcept,
+    creativeBrief.campaignSceneTransformation,
     creativeBrief.inferredCreativeDecisions,
   );
 

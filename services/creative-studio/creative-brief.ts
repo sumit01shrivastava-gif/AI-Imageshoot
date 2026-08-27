@@ -167,6 +167,8 @@ const FRESH_CREATIVE_INTENTS: ReadonlySet<CreativeIntentValue> = new Set([
   "ADD_MODEL",
 ]);
 
+const CAMPAIGN_INTENT_PATTERN = /\b(exceptional|campaign|advertising|cinematic|impactful|striking|creative|premium|luxury|hero)\b/i;
+
 export interface CreativeBrief {
   /** One sentence naming what this generation is FOR — e.g. "Produce an
    * aspirational lifestyle photograph that makes the product feel
@@ -226,6 +228,9 @@ export interface CreativeBrief {
    * `GenerationPlan.creativeDirection.negativeConstraints` — see
    * plan-builder.ts. */
   negativeCreativeDecisions: string[];
+  /** Whether this is a broad, fresh campaign request whose source scene
+   * must be discarded while product identity remains locked. */
+  campaignSceneTransformation: boolean;
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -310,6 +315,14 @@ export interface BuildCreativeBriefInput {
   externalNegativeCreativeDecisions?: string[] | null;
 }
 
+/** A product-first campaign creates a new world; a narrow edit or an
+ * explicitly requested scene does not. This is category-general and
+ * never relaxes the product lock. */
+function requiresCampaignSceneTransformation(input: BuildCreativeBriefInput): boolean {
+  if (input.isEditTurn || input.scene || !FRESH_CREATIVE_INTENTS.has(input.intent)) return false;
+  return input.style.some((style) => CAMPAIGN_INTENT_PATTERN.test(style)) || Boolean(input.externalCreativeConcept?.trim());
+}
+
 /**
  * The small, deterministic "what should a professional creative director
  * add here" rule table — see module doc comment's "Explicit vs.
@@ -322,6 +335,12 @@ export interface BuildCreativeBriefInput {
  */
 function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   const decisions: string[] = [];
+
+  if (requiresCampaignSceneTransformation(input)) {
+    decisions.push(
+      "Create a newly conceived campaign world from the product's own form, material, color, and commercial character; do not improve, recreate, or borrow the incidental source setting, packaging, display, props, lighting, or composition.",
+    );
+  }
 
   // A requested pose/action change: physical plausibility is a real,
   // recurring failure mode (the exact "yoga" worked example) — a pose
@@ -596,6 +615,7 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     inferredCreativeDecisions,
     creativeConcept,
     negativeCreativeDecisions,
+    campaignSceneTransformation: requiresCampaignSceneTransformation(input),
     overallCreativeDirection,
   };
 }

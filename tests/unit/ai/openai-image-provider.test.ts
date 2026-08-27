@@ -191,6 +191,7 @@ describe("OpenAIImageGenerationProvider", () => {
     expect(editInit?.body).toBeInstanceOf(FormData);
     const form = editInit!.body as FormData;
     expect(form.get("model")).toBe("gpt-image-2");
+    expect(form.get("input_fidelity")).toBe("high");
     // This FormData is created by the official SDK, not application code.
     const file = form.get("image") as File;
     expect(file).toBeInstanceOf(Blob);

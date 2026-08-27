@@ -86,21 +86,22 @@ describe("PRODUCT FIDELITY quality-floor pass — composeProductFidelityInstruct
 
   it("composeProductFidelityInstruction states the source-of-truth/creative-freedom boundary when a reference image exists", () => {
     const instruction = composeProductFidelityInstruction(true);
-    expect(instruction).toMatch(/REFERENCE PRODUCT = SOURCE OF TRUTH/);
+    expect(instruction).toMatch(/PRODUCT LOCK/);
     expect(instruction).toMatch(/not creative inspiration/i);
-    expect(instruction).toMatch(/Creative freedom applies to environment/i);
-    expect(instruction).toMatch(/never to product identity/i);
+    expect(instruction).toMatch(/display case, packaging, prop, hand, surface, room, or background/i);
+    expect(instruction).toMatch(/CREATIVE WORLD/i);
+    expect(instruction).toMatch(/inventing new branding, logos, slogans, labels, or decorative typography/i);
   });
 
   it("composeProviderPrompt includes the product-fidelity instruction, leading the prompt, whenever a real reference image exists", () => {
     const prompt = composeProviderPrompt(
       baseInput({ sourceImages: [{ mediaId: "m1", url: "https://cdn/1.png", altText: null, position: 0 }] }),
     );
-    expect(prompt.indexOf("REFERENCE PRODUCT = SOURCE OF TRUTH")).toBe(0);
+    expect(prompt.indexOf("PRODUCT LOCK")).toBe(0);
   });
 
   it("composeProviderPrompt omits the product-fidelity instruction entirely for a from-scratch request with no reference image", () => {
     const prompt = composeProviderPrompt(baseInput());
-    expect(prompt).not.toMatch(/REFERENCE PRODUCT = SOURCE OF TRUTH/);
+    expect(prompt).not.toMatch(/PRODUCT LOCK/);
   });
 });

@@ -90,12 +90,10 @@ export function composeProductGroundingPrefix(productFacts: Record<string, unkno
 export function composeProductFidelityInstruction(hasReferenceImage: boolean): string {
   if (!hasReferenceImage) return "";
   return (
-    "REFERENCE PRODUCT = SOURCE OF TRUTH: the attached reference image(s) show the exact physical product, " +
-    "not creative inspiration. Preserve exactly: silhouette, proportions, geometry, relative scale, colors, " +
-    "materials, finishes, textures, stones and decorative elements, patterns, logos, labels, typography, and " +
-    "packaging structure. Creative freedom applies to environment, background, lighting, camera, atmosphere, " +
-    "styling, model, and composition — never to product identity, structure, details, branding, colors/materials, " +
-    "or proportions. "
+    "PRODUCT LOCK: attached reference image(s) establish the exact physical product, not creative inspiration. " +
+    "Preserve its silhouette, proportions, geometry, scale, colors, materials, finishes, texture, components, logos, labels, and product typography. " +
+    "Do not infer that a box, display case, packaging, prop, hand, surface, room, or background is product identity merely because it appears in the source; preserve such scene context only when catalog facts or the merchant explicitly identify it as part of the sold product. " +
+    "CREATIVE WORLD: freely replace that source scene with a coherent campaign environment, composition, camera, lighting, atmosphere, and styling, while never redesigning the product or inventing new branding, logos, slogans, labels, or decorative typography unless explicitly requested. "
   );
 }
 
