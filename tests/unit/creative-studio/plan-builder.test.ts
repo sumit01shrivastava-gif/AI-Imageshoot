@@ -957,6 +957,35 @@ describe("structured campaign communication", () => {
   });
 });
 
+describe("campaign art-direction canvas", () => {
+  it("puts a full campaign canvas ahead of merchant details without weakening the product lock", async () => {
+    const parsedIntent = await llmIntent({
+      creativeConcept: "A precision-led campaign world built from the product's structured leather craftsmanship.",
+      campaignArtDirection: {
+        visualStory: "The product's craft creates a deliberate rhythm between tactile material and architectural depth.",
+        heroTreatment: "Use a three-quarter hero orientation with clear construction details and deliberate scale.",
+        canvasArchitecture: "Place the product off-centre as the primary hero; use layered foreground and background depth with open upper-left negative space.",
+        productEnvironmentRelationship: "Let the leather texture and supporting forms share the same crafted, structured visual language.",
+        materialLightingStrategy: "Use controlled directional highlights to reveal leather grain and hardware without glare.",
+      },
+    });
+    const plan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null, creativeSessionId: "session-1", rawInstruction: "Create an exceptional campaign" });
+    const prompt = plan.creativeDirection.prompt;
+    expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/shape and proportions/i);
+    expect(plan.creativeIntent!.creativeBrief!.campaignArtDirection.canvasArchitecture).toMatch(/off-centre/i);
+    expect(prompt.indexOf("VISUAL STORY:")).toBeGreaterThan(prompt.indexOf("SELECTED CAMPAIGN PROPOSITION:"));
+    expect(prompt).toContain("CANVAS ARCHITECTURE:");
+    expect(prompt).toContain("MERCHANT DIRECTION:");
+  });
+
+  it("keeps a narrow edit on the existing concise fallback rather than inventing a campaign canvas", async () => {
+    const parsedIntent = await llmIntent({ intent: "CHANGE_LIGHTING", campaignArtDirection: undefined });
+    const plan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: "https://example.com/previous.png", creativeSessionId: "session-1", rawInstruction: "Make it brighter" });
+    expect(plan.creativeIntent!.creativeBrief!.campaignArtDirection.visualStory).toBeNull();
+    expect(plan.creativeDirection.prompt).not.toContain("CANVAS ARCHITECTURE:");
+  });
+});
+
 describe("PRODUCT FIDELITY quality-floor pass — category-aware model interaction is consistent across both generation paths", () => {
   it("the Shopify (product-grounded) path infers the real product's category-aware interaction for ADD_MODEL", async () => {
     const parsedIntent = await llmIntent({ intent: "ADD_MODEL" });

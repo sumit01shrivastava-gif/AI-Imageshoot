@@ -83,6 +83,27 @@ export const DEFAULT_CAMPAIGN_COMMUNICATION: CampaignCommunication = {
   reservedTextArea: "NONE",
 };
 
+/** The selected campaign's execution plan. These are concise conclusions,
+ * not candidate reasoning or a transcript. They let prompt synthesis keep
+ * a campaign as one designed canvas rather than a product shot plus a list
+ * of disconnected photography adjectives. */
+export const CampaignArtDirectionSchema = z.object({
+  visualStory: z.string().min(1).max(420).nullable().default(null),
+  heroTreatment: z.string().min(1).max(280).nullable().default(null),
+  canvasArchitecture: z.string().min(1).max(360).nullable().default(null),
+  productEnvironmentRelationship: z.string().min(1).max(280).nullable().default(null),
+  materialLightingStrategy: z.string().min(1).max(320).nullable().default(null),
+});
+
+export type CampaignArtDirection = z.infer<typeof CampaignArtDirectionSchema>;
+export const DEFAULT_CAMPAIGN_ART_DIRECTION: CampaignArtDirection = {
+  visualStory: null,
+  heroTreatment: null,
+  canvasArchitecture: null,
+  productEnvironmentRelationship: null,
+  materialLightingStrategy: null,
+};
+
 /**
  * The structured result of interpreting one merchant message. Every
  * field the intent-parsing layer is allowed to influence — nothing here
@@ -317,6 +338,13 @@ export const ParsedIntentSchema = z.object({
   campaignCommunication: z.preprocess(
     (value) => value ?? DEFAULT_CAMPAIGN_COMMUNICATION,
     CampaignCommunicationSchema,
+  ),
+
+  /** The compact final art-direction plan for a broad campaign. Older
+   * parsers and narrow edits safely receive an empty object. */
+  campaignArtDirection: z.preprocess(
+    (value) => value ?? DEFAULT_CAMPAIGN_ART_DIRECTION,
+    CampaignArtDirectionSchema,
   ),
 });
 

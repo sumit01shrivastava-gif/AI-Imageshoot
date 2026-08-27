@@ -175,3 +175,12 @@ describe("parseParsedIntent — campaign communication", () => {
     expect(result.campaignCommunication.callouts).toEqual([]);
   });
 });
+
+describe("parseParsedIntent — campaign art direction", () => {
+  it("defaults older parser output to an empty, backward-compatible canvas plan", () => {
+    expect(parseParsedIntent(minimalValidRaw()).campaignArtDirection).toEqual({
+      visualStory: null, heroTreatment: null, canvasArchitecture: null,
+      productEnvironmentRelationship: null, materialLightingStrategy: null,
+    });
+  });
+});

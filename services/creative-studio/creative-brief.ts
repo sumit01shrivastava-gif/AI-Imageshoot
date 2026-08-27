@@ -121,7 +121,12 @@
  * merged.
  */
 import type { CreativeIntentValue } from "./types";
-import { DEFAULT_CAMPAIGN_COMMUNICATION, type CampaignCommunication } from "./intent-schema";
+import {
+  DEFAULT_CAMPAIGN_ART_DIRECTION,
+  DEFAULT_CAMPAIGN_COMMUNICATION,
+  type CampaignArtDirection,
+  type CampaignCommunication,
+} from "./intent-schema";
 import { resolveProductInteraction } from "../generation/product-interaction";
 
 /** Style/lighting keywords that indicate a moody/dramatic treatment was
@@ -235,6 +240,9 @@ export interface CreativeBrief {
   /** Approved campaign-copy decision, kept separate from the campaign
    * proposition so a visual world never implies that text is required. */
   campaignCommunication: CampaignCommunication;
+  /** Coherent visual-story and canvas conclusions selected by the same
+   * Creative Director pass; empty on older/narrow intents. */
+  campaignArtDirection: CampaignArtDirection;
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -318,6 +326,7 @@ export interface BuildCreativeBriefInput {
    * provider that chose not to supply any. */
   externalNegativeCreativeDecisions?: string[] | null;
   externalCampaignCommunication?: CampaignCommunication | null;
+  externalCampaignArtDirection?: CampaignArtDirection | null;
   /** Exact merchant/catalog strings eligible for factual campaign copy.
    * This is intentionally not visual inference or model-supplied data. */
   trustedCampaignFacts?: readonly string[];
@@ -645,6 +654,7 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     negativeCreativeDecisions,
     campaignSceneTransformation: requiresCampaignSceneTransformation(input),
     campaignCommunication,
+    campaignArtDirection: input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION,
     overallCreativeDirection,
   };
 }

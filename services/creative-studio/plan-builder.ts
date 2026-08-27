@@ -29,7 +29,7 @@ import { IdentityAnchorsSchema } from "../intelligence/schema";
 import { parseGenerationPlan, type GenerationPlan, type BrandStylePresetAttributes } from "../generation/schema";
 import { toBrandStyleContext, buildProductFactsContext } from "../generation/build-plan";
 import type { AspectRatioValue } from "../generation/types";
-import type { ParsedIntent, CampaignCommunication } from "./intent-schema";
+import type { ParsedIntent, CampaignArtDirection, CampaignCommunication } from "./intent-schema";
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
 import { buildIdentityConstraints, buildStandaloneIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
 import { buildCreativeBrief } from "./creative-brief";
@@ -163,6 +163,7 @@ function synthesizeCreativePrompt(
    * as the creative composition/default environment. */
   campaignSceneTransformation: boolean,
   campaignCommunication: CampaignCommunication,
+  campaignArtDirection: CampaignArtDirection,
   /** Compact, structured execution priorities. This remains separate
    * from the holistic direction so a real vendor's prose cannot
    * accidentally omit its own operational decisions before the final
@@ -210,6 +211,13 @@ function synthesizeCreativePrompt(
   // (the common case on the deterministic path) — never an empty/filler
   // sentence.
   const conceptClause = creativeConcept ? ` SELECTED CAMPAIGN PROPOSITION: ${creativeConcept}.` : "";
+  const artDirectionClauses = [
+    campaignArtDirection.visualStory ? `VISUAL STORY: ${campaignArtDirection.visualStory}.` : null,
+    campaignArtDirection.heroTreatment ? `HERO TREATMENT: ${campaignArtDirection.heroTreatment}.` : null,
+    campaignArtDirection.canvasArchitecture ? `CANVAS ARCHITECTURE: ${campaignArtDirection.canvasArchitecture}.` : null,
+    campaignArtDirection.productEnvironmentRelationship ? `PRODUCT-WORLD RELATIONSHIP: ${campaignArtDirection.productEnvironmentRelationship}.` : null,
+    campaignArtDirection.materialLightingStrategy ? `MATERIAL AND LIGHT: ${campaignArtDirection.materialLightingStrategy}.` : null,
+  ].filter((clause): clause is string => Boolean(clause));
   const campaignClause = campaignSceneTransformation
     ? " Campaign scene transformation is required: use the reference only for the physical product; actively discard incidental source-scene influence and create a new, product-derived commercial world rather than an enhanced version of the source photograph."
     : "";
@@ -222,7 +230,10 @@ function synthesizeCreativePrompt(
         ? ` CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only this minimal approved copy: headline “${campaignCommunication.headline ?? ""}”${campaignCommunication.supportingLine ? `; supporting line “${campaignCommunication.supportingLine}”` : ""}. Do not add any other text, brand, logo, claim, or badge.`
         : ` FACTUAL CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only the approved merchant-supplied copy: ${[campaignCommunication.headline, campaignCommunication.supportingLine, ...campaignCommunication.callouts].filter(Boolean).map((copy) => `“${copy}”`).join("; ")}. Do not add, rewrite, or elaborate factual claims, brands, logos, labels, or badges.`;
 
-  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause} ${parts.join(", ")}. ${overallCreativeDirection}${executionClause}${communicationClause}`;
+  const creativeDirection = artDirectionClauses.length > 0
+    ? ` ${artDirectionClauses.join(" ")}`
+    : ` ${overallCreativeDirection}`;
+  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause}${creativeDirection} MERCHANT DIRECTION: ${parts.join(", ")}.${executionClause}${communicationClause}`;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -359,6 +370,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
     externalCampaignCommunication: parsedIntent.campaignCommunication,
+    externalCampaignArtDirection: parsedIntent.campaignArtDirection,
     trustedCampaignFacts: [product.title, product.description ?? ""],
     category,
   });
@@ -373,6 +385,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     creativeBrief.creativeConcept,
     creativeBrief.campaignSceneTransformation,
     creativeBrief.campaignCommunication,
+    creativeBrief.campaignArtDirection,
     creativeBrief.inferredCreativeDecisions,
   );
 
@@ -605,6 +618,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     externalCreativeConcept: parsedIntent.creativeConcept,
     externalNegativeCreativeDecisions: parsedIntent.negativeCreativeDecisions,
     externalCampaignCommunication: parsedIntent.campaignCommunication,
+    externalCampaignArtDirection: parsedIntent.campaignArtDirection,
     // A standalone session's "category" is whatever real subject was
     // resolved (see `resolvedSubject` above) — `null` only when neither
     // this turn nor the session ever established one, which correctly
@@ -623,6 +637,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     creativeBrief.creativeConcept,
     creativeBrief.campaignSceneTransformation,
     creativeBrief.campaignCommunication,
+    creativeBrief.campaignArtDirection,
     creativeBrief.inferredCreativeDecisions,
   );
 

@@ -200,6 +200,15 @@ export const CreativeStudioPlanSchema = z.object({
           reservedTextArea: z.enum(["NONE", "TOP_LEFT", "TOP_RIGHT", "TOP_CENTER", "BOTTOM_LEFT", "BOTTOM_RIGHT", "BOTTOM_CENTER", "SIDE"]).default("NONE"),
         })
         .default({ mode: "VISUAL_ONLY", headline: null, supportingLine: null, callouts: [], provenance: "NONE", reservedTextArea: "NONE" }),
+      campaignArtDirection: z
+        .object({
+          visualStory: z.string().min(1).max(420).nullable().default(null),
+          heroTreatment: z.string().min(1).max(280).nullable().default(null),
+          canvasArchitecture: z.string().min(1).max(360).nullable().default(null),
+          productEnvironmentRelationship: z.string().min(1).max(280).nullable().default(null),
+          materialLightingStrategy: z.string().min(1).max(320).nullable().default(null),
+        })
+        .default({ visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null }),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()
