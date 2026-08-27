@@ -198,7 +198,9 @@ function synthesizeCreativePrompt(
   if (creative.materialOverride) parts.push(`${subject} rendered in ${creative.materialOverride}`);
 
   const referenceFidelity = referenceNoun
-    ? ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
+    ? campaignSceneTransformation
+      ? ` Use ${referenceNoun} as the exact physical-product source of truth; preserve the product, but do not preserve its source scene, presentation, composition, lighting, props, or atmosphere.`
+      : ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
     : "";
 
   // Concept-first: stated before the atomic clause list so the concept
@@ -206,7 +208,7 @@ function synthesizeCreativePrompt(
   // item appended after them. Omitted entirely when there is no concept
   // (the common case on the deterministic path) — never an empty/filler
   // sentence.
-  const conceptClause = creativeConcept ? ` Creative concept: ${creativeConcept}.` : "";
+  const conceptClause = creativeConcept ? ` SELECTED CAMPAIGN PROPOSITION: ${creativeConcept}.` : "";
   const campaignClause = campaignSceneTransformation
     ? " Campaign scene transformation is required: use the reference only for the physical product; actively discard incidental source-scene influence and create a new, product-derived commercial world rather than an enhanced version of the source photograph."
     : "";
