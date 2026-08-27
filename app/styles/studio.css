@@ -513,7 +513,7 @@
 .studio-conv {
   flex: 1;
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 0.72fr);
   min-height: 100vh;
   overflow: hidden;
 }
@@ -543,8 +543,9 @@
 }
 
 .studio-canvas-stage {
-  flex: 1;
-  min-height: 320px;
+  flex: 1 1 auto;
+  min-height: min(62vh, 680px);
+  aspect-ratio: 4 / 3;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -592,8 +593,36 @@
 .studio-canvas-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
+
+.studio-more-actions { margin-left: auto; position: relative; }
+.studio-more-actions summary {
+  cursor: pointer;
+  color: var(--studio-ink-subdued);
+  font-size: 12.5px;
+  padding: 8px 4px;
+  list-style: none;
+}
+.studio-more-actions summary::-webkit-details-marker { display: none; }
+.studio-more-actions summary::after { content: "⌄"; margin-left: 6px; color: var(--studio-ink-faint); }
+.studio-secondary-actions {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: min(360px, 78vw);
+  padding: 10px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-md);
+  background: var(--studio-surface-elevated);
+  box-shadow: var(--studio-shadow-md);
+}
+.studio-secondary-actions .studio-btn { padding: 7px 11px; font-size: 12px; }
 
 .studio-btn {
   display: inline-flex;
@@ -665,14 +694,14 @@
 .studio-transcript {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px;
+  padding: 22px 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .studio-msg {
-  max-width: 88%;
+  max-width: 84%;
   padding: 10px 14px;
   border-radius: 16px;
   font-size: 13.5px;
@@ -888,6 +917,7 @@
 @media (max-width: 860px) {
   .studio-conv { grid-template-columns: 1fr; }
   .studio-canvas { border-right: none; border-bottom: 1px solid var(--studio-border); min-height: 46vh; }
+  .studio-canvas-stage { min-height: min(58vh, 580px); }
 }
 
 @media (max-width: 760px) {
@@ -934,4 +964,7 @@
   .studio-composer-wrap { padding: 0 14px 18px; }
   .studio-conv { grid-template-columns: 1fr; }
   .studio-canvas { border-right: none; border-bottom: 1px solid var(--studio-border); min-height: 46vh; }
+  .studio-canvas-stage { min-height: min(54vh, 520px); }
+  .studio-more-actions { margin-left: 0; }
+  .studio-secondary-actions { right: auto; left: 0; }
 }

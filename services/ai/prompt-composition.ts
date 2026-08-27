@@ -124,7 +124,30 @@ export function hasReferenceImages(input: GenerateImageInput): boolean {
 export function composeProviderPrompt(input: GenerateImageInput): string {
   const negativeConstraints = input.creativeDirection.negativeConstraints ?? [];
   const fidelityInstruction = composeProductFidelityInstruction(hasReferenceImages(input));
-  const parts: string[] = [`${fidelityInstruction}${composeProductGroundingPrefix(input.productFacts)}${input.creativeDirection.prompt}`];
-  if (negativeConstraints.length > 0) parts.push(`Avoid: ${negativeConstraints.join(", ")}.`);
+  const parts: string[] = [];
+  if (fidelityInstruction) parts.push(fidelityInstruction.trim());
+  const grounding = composeProductGroundingPrefix(input.productFacts).trim();
+  if (grounding) parts.push(grounding);
+  // Creative Studio plans persist a rich identity instruction for
+  // traceability, while this provider prompt already carries the same
+  // source-of-truth policy above. Remove only those known leading
+  // identity paragraphs so the image model receives a compact hierarchy;
+  // the actual scene, interaction, and creative direction remain intact.
+  const direction = compactCreativeDirection(input.creativeDirection.prompt);
+  if (direction) parts.push(direction);
+  if (negativeConstraints.length > 0) parts.push(`CRITICAL AVOIDS — Avoid: ${negativeConstraints.slice(0, 6).join(", ")}.`);
   return parts.join(" ");
+}
+
+function compactCreativeDirection(prompt: string): string {
+  const patterns = [
+    /^.*?Every other aspect of the product must remain exactly as shown\.\s*/is,
+    /^.*?which take precedence over how they appear in the original image\.\s*/is,
+    /^.*?generate a new image based only on the instructions below\.\s*/is,
+  ];
+  for (const pattern of patterns) {
+    const compacted = prompt.replace(pattern, "").trim();
+    if (compacted !== prompt.trim()) return compacted;
+  }
+  return prompt.trim();
 }

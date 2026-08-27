@@ -612,7 +612,16 @@ export async function sendCreativeMessage(
  * `filterProtectedRemovals`) is declined, not silently no-op'd, so the
  * merchant sees why the next result still has it. */
 function assistantAcknowledgement(intent: ParsedIntent, blockedRemovals: string[]): string {
-  const base = intent.variationCount > 1 ? `Creating ${intent.variationCount} variations…` : "Creating your image…";
+  const base =
+    intent.intent === "ADD_MODEL" || intent.intent === "CHANGE_MODEL"
+      ? "Absolutely — I’ll keep the product intact and build the model interaction around it."
+      : intent.intent === "CREATE_LIFESTYLE" || intent.intent === "CREATE_MARKETPLACE" || intent.intent === "CREATE_SOCIAL" || intent.intent === "CREATE_BANNER"
+        ? "Absolutely — I’ll keep the product as the visual focus and build the campaign around it."
+        : intent.mode === "IMAGE_TO_IMAGE" || intent.mode === "IMAGE_EDIT" || intent.mode === "VARIATION"
+          ? "Got it — I’ll keep the product intact and refine the requested direction."
+          : intent.variationCount > 1
+            ? `I’ll create ${intent.variationCount} focused variations around your direction.`
+            : "I’ve got it — I’ll shape the image around your direction.";
   if (blockedRemovals.length === 0) return base;
   return `${base} Note: I can't remove ${blockedRemovals.join(", ")} — branding and logos are preserved to keep this an accurate product photo.`;
 }

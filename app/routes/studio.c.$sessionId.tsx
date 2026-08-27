@@ -46,9 +46,9 @@ const SUGGESTION_CHIPS = [
 ];
 
 function jobStatusPhrase(status: string, outputCount: number): string {
-  if (status === "PENDING" || status === "QUEUED") return "Understanding your direction…";
-  if (status === "PROCESSING") return outputCount > 1 ? `Creating ${outputCount} variations…` : "Creating your image…";
-  if (status === "SUCCEEDED") return "Your image is ready.";
+  if (status === "PENDING" || status === "QUEUED") return "Preparing the visual direction…";
+  if (status === "PROCESSING") return outputCount > 1 ? `Refining ${outputCount} variations…` : "Refining composition and light…";
+  if (status === "SUCCEEDED") return "Your campaign image is ready.";
   if (status === "FAILED") return "That request didn't work out.";
   return "";
 }
@@ -71,7 +71,29 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   return {
     session: detail.session,
     messages: detail.messages,
-    jobs: detail.jobs.map(withResultsSanitizedForClient),
+    // Generation plans contain internal Creative Director/provider
+    // prompts and must never be serialized into the browser loader data.
+    // The Studio needs only lifecycle metadata and sanitized results.
+    jobs: detail.jobs.map((job) => {
+      const sanitized = withResultsSanitizedForClient(job);
+      return {
+        id: sanitized.id,
+        type: sanitized.type,
+        status: sanitized.status,
+        errorMessage: sanitized.errorMessage,
+        retryCount: sanitized.retryCount,
+        providerName: sanitized.providerName,
+        startedAt: sanitized.startedAt,
+        completedAt: sanitized.completedAt,
+        durationMs: sanitized.durationMs,
+        batchId: sanitized.batchId,
+        creativeSessionId: sanitized.creativeSessionId,
+        createdAt: sanitized.createdAt,
+        updatedAt: sanitized.updatedAt,
+        results: sanitized.results,
+        product: sanitized.product,
+      };
+    }),
     entitlement: detail.entitlement,
     planName: plan.name,
   };
@@ -218,7 +240,7 @@ export default function StudioConversation() {
 
   const currentResult = latestJob?.results.find((r) => r.id === session.currentResultId) ?? latestJob?.results[latestJob.results.length - 1] ?? null;
 
-  function submitMessage(text: string, files: File[] = []) {
+function submitMessage(text: string, files: File[] = []) {
     const trimmed = text.trim();
     if ((trimmed.length === 0 && files.length === 0) || isSending) return;
     const formData = new FormData();
@@ -227,6 +249,10 @@ export default function StudioConversation() {
     files.forEach((file) => formData.append("images", file));
     setPendingMessage(trimmed || "Create a clean, professional product photo from this image.");
     messageFetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
+  }
+
+  function focusComposer() {
+    document.querySelector<HTMLTextAreaElement>(".studio-chat-composer textarea")?.focus();
   }
 
   return (
@@ -290,47 +316,18 @@ export default function StudioConversation() {
                 Download
               </a>
             )}
-            <button type="button" className="studio-btn" onClick={() => submitMessage("Give me another variation.")} disabled={isSending}>
-              Create variation
-            </button>
-            <button type="button" className="studio-btn" onClick={() => submitMessage("Regenerate this.")} disabled={isSending}>
-              Regenerate
-            </button>
-            <button
-              type="button"
-              className="studio-btn"
-              disabled={currentResult.reviewStatus === "APPROVED"}
-              onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "APPROVED" }, { method: "POST" })}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="studio-btn"
-              data-variant="danger"
-              disabled={currentResult.reviewStatus === "REJECTED"}
-              onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "REJECTED" }, { method: "POST" })}
-            >
-              Reject
-            </button>
-            {/* Distinct from Approve/Reject above (whether this result is
-                fit to use) — this is a reaction to the STYLE itself, the
-                platform's strongest personalization signal. See
-                services/creative-studio/personalization.server.ts. */}
-            <button
-              type="button"
-              className="studio-btn"
-              onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "positive" }, { method: "POST" })}
-            >
-              Love this style
-            </button>
-            <button
-              type="button"
-              className="studio-btn"
-              onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "negative" }, { method: "POST" })}
-            >
-              Not my style
-            </button>
+            <button type="button" className="studio-btn" onClick={focusComposer} disabled={isSending}>Edit / Continue</button>
+            <details className="studio-more-actions">
+              <summary>More actions</summary>
+              <div className="studio-secondary-actions">
+                <button type="button" className="studio-btn" onClick={() => submitMessage("Give me another variation.")} disabled={isSending}>Variation</button>
+                <button type="button" className="studio-btn" onClick={() => submitMessage("Regenerate this.")} disabled={isSending}>Regenerate</button>
+                <button type="button" className="studio-btn" disabled={currentResult.reviewStatus === "APPROVED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "APPROVED" }, { method: "POST" })}>Approve</button>
+                <button type="button" className="studio-btn" data-variant="danger" disabled={currentResult.reviewStatus === "REJECTED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "REJECTED" }, { method: "POST" })}>Reject</button>
+                <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "positive" }, { method: "POST" })}>Love this style</button>
+                <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "negative" }, { method: "POST" })}>Not my style</button>
+              </div>
+            </details>
           </div>
         )}
       </section>
