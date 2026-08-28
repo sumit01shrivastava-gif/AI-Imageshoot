@@ -19,6 +19,7 @@ const MESSAGE_SELECT = {
   role: true,
   content: true,
   intent: true,
+  attachments: true,
   generationJobId: true,
   createdAt: true,
 } satisfies Prisma.CreativeMessageSelect;
@@ -31,6 +32,7 @@ export interface CreateCreativeMessageInput {
   role: CreativeMessageRole;
   content: string;
   intent?: Record<string, unknown> | null;
+  attachments?: Array<{ url: string; contentType: string }> | null;
   generationJobId?: string | null;
 }
 
@@ -42,6 +44,7 @@ export async function createCreativeMessage(input: CreateCreativeMessageInput): 
       role: input.role,
       content: input.content,
       intent: (input.intent ?? undefined) as Prisma.InputJsonValue | undefined,
+      attachments: (input.attachments ?? undefined) as Prisma.InputJsonValue | undefined,
       generationJobId: input.generationJobId ?? null,
     },
     select: MESSAGE_SELECT,

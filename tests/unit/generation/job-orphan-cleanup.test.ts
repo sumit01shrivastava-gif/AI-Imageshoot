@@ -18,6 +18,7 @@ const markProcessing = vi.fn();
 const markSucceeded = vi.fn();
 const markFailed = vi.fn();
 const createResults = vi.fn();
+const mergeGenerationResultMetadata = vi.fn();
 
 vi.mock("../../../db/repositories/generation-job.repository", () => ({
   getGenerationJob: (...args: unknown[]) => getGenerationJob(...args),
@@ -25,6 +26,7 @@ vi.mock("../../../db/repositories/generation-job.repository", () => ({
   markSucceeded: (...args: unknown[]) => markSucceeded(...args),
   markFailed: (...args: unknown[]) => markFailed(...args),
   createResults: (...args: unknown[]) => createResults(...args),
+  mergeGenerationResultMetadata: (...args: unknown[]) => mergeGenerationResultMetadata(...args),
 }));
 
 const storageUpload = vi.fn();
@@ -44,6 +46,11 @@ const generateImage = vi.fn();
 
 vi.mock("../../../services/generation/provider.server", () => ({
   getConfiguredImageGenerationProvider: () => ({ name: "fake-provider", generateImage }),
+}));
+
+const evaluateQuality = vi.fn();
+vi.mock("../../../services/generation/quality-evaluator.server", () => ({
+  getConfiguredVisualQualityEvaluator: () => ({ name: "fake-quality", evaluate: (...args: unknown[]) => evaluateQuality(...args) }),
 }));
 
 // This is a unit test — recordUsageEvent would otherwise hit a real
@@ -97,6 +104,7 @@ beforeEach(() => {
   markSucceeded.mockReset().mockResolvedValue(undefined);
   markFailed.mockReset().mockResolvedValue(undefined);
   createResults.mockReset();
+  mergeGenerationResultMetadata.mockReset().mockResolvedValue(undefined);
   storageUpload.mockReset().mockImplementation(async ({ key }: { key: string }) => ({ key, size: 4 }));
   storageGetSignedUrl.mockReset().mockResolvedValue("https://signed.example.test/x");
   storageDelete.mockReset().mockResolvedValue(undefined);
@@ -108,6 +116,10 @@ beforeEach(() => {
       { data: new Uint8Array([1, 2, 3, 4]), contentType: "image/png" },
       { data: new Uint8Array([5, 6, 7, 8]), contentType: "image/png" },
     ],
+  });
+  evaluateQuality.mockReset().mockResolvedValue({
+    dimensions: { productFidelity: 9, briefAdherence: 9, creativeConcept: 9, artDirection: 9, photographyRealism: 9, composition: 9, commercialUsefulness: 9, designExecution: 9, physicalIntegrity: 9, channelSuitability: 9 },
+    criticalFailures: [], observations: ["ok"], correctionGuidance: [], confidence: 9,
   });
   warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 });
@@ -193,6 +205,48 @@ describe("processGenerationJob — orphaned-storage cleanup", () => {
 
     expect(storageDelete).not.toHaveBeenCalled();
     expect(markSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches each Quality Director result using the durable provider-output index, not an unstable result row order", async () => {
+    createResults.mockResolvedValue(undefined);
+    getGenerationJob
+      .mockReset()
+      .mockResolvedValueOnce({ status: "PROCESSING", plan: PLAN })
+      .mockResolvedValueOnce({ status: "PROCESSING", plan: PLAN, createdAt: new Date() })
+      .mockResolvedValueOnce({
+        status: "PROCESSING",
+        plan: PLAN,
+        results: [
+          { id: "result-second", metadata: { generationOutputIndex: 1 } },
+          { id: "result-first", metadata: { generationOutputIndex: 0 } },
+        ],
+      })
+      .mockResolvedValueOnce({ status: "PROCESSING", plan: PLAN, results: [] });
+    evaluateQuality
+      .mockResolvedValueOnce({
+        dimensions: { productFidelity: 8, briefAdherence: 9, creativeConcept: 9, artDirection: 9, photographyRealism: 9, composition: 9, commercialUsefulness: 9, designExecution: 9, physicalIntegrity: 9, channelSuitability: 9 },
+        criticalFailures: [], observations: ["first"], correctionGuidance: [], confidence: 9,
+      })
+      .mockResolvedValueOnce({
+        dimensions: { productFidelity: 9, briefAdherence: 9, creativeConcept: 9, artDirection: 9, photographyRealism: 9, composition: 9, commercialUsefulness: 9, designExecution: 9, physicalIntegrity: 9, channelSuitability: 9 },
+        criticalFailures: [], observations: ["second"], correctionGuidance: [], confidence: 9,
+      });
+
+    const { processGenerationJob } = await import("../../../services/generation/job.server");
+    await processGenerationJob(fakeJob(), "fake-token");
+
+    expect(mergeGenerationResultMetadata).toHaveBeenNthCalledWith(
+      1,
+      "orphan-test.myshopify.com",
+      "result-first",
+      expect.objectContaining({ qualityEvaluation: expect.objectContaining({ dimensions: expect.objectContaining({ productFidelity: 8 }) }) }),
+    );
+    expect(mergeGenerationResultMetadata).toHaveBeenNthCalledWith(
+      2,
+      "orphan-test.myshopify.com",
+      "result-second",
+      expect.objectContaining({ qualityEvaluation: expect.objectContaining({ dimensions: expect.objectContaining({ productFidelity: 9 }) }) }),
+    );
   });
 
   it("a cleanup failure is logged but never masks the original error", async () => {

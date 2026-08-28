@@ -92,10 +92,9 @@ export default function Landing() {
 
       <header className="landing-hero">
         <p className="landing-eyebrow">AI Imageshoot</p>
-        <h1>Create the image you have in mind.</h1>
+        <h1>Turn one product photo into campaign-ready creative.</h1>
         <p className="landing-hero-sub">
-          Describe a product shoot, upload a reference, or simply tell AI what you want. Imageshoot turns the direction into
-          production-ready creative.
+          Upload your product, describe the direction, and continue in natural language. Imageshoot creates a commercial visual world around the product you already sell.
         </p>
         <div className="landing-hero-actions">
           <Link to="/signup" className="landing-btn" data-variant="primary">
@@ -113,7 +112,7 @@ export default function Landing() {
       <section className="landing-section" aria-label="Example creative directions">
         <figure className="landing-hero-art">
           <img src="/ai-imageshoot-editorial-hero.png" alt="Editorial product photography featuring perfume, jewelry, and footwear" />
-          <figcaption>Commercial imagery, art-directed around the product.</figcaption>
+          <figcaption>Your product, directed as a complete campaign—not just placed on a new background.</figcaption>
         </figure>
         <div className="landing-gallery">
           {GALLERY_ITEMS.map((item) => (
@@ -128,8 +127,8 @@ export default function Landing() {
         <div className="landing-section-inner">
           <div className="landing-section-head" data-center="true">
             <p className="landing-section-eyebrow">How it works</p>
-            <h2>Describe it. Imageshoot creates it.</h2>
-            <p>No prompt-engineering, no design software. Just tell it what you want.</p>
+            <h2>Upload. Direct. Refine.</h2>
+            <p>No prompt engineering or design software. Just describe what should happen next.</p>
           </div>
           <div className="landing-feature-grid">
             {FEATURES.map((feature) => (
@@ -216,8 +215,8 @@ export default function Landing() {
       </section>
 
       <section className="landing-final">
-        <h2>Create the image you have in mind.</h2>
-        <p>No design software. No prompt engineering. Just describe it.</p>
+        <h2>Your product. A stronger point of view.</h2>
+        <p>Start from one reference image and keep refining until the creative feels right.</p>
         <div className="landing-hero-actions">
           <Link to="/signup" className="landing-btn" data-variant="primary">
             Start creating

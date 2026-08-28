@@ -183,7 +183,7 @@ describe("OpenAIImageGenerationProvider", () => {
     }) as unknown as typeof fetch;
 
     const { OpenAIImageGenerationProvider } = await import("../../../services/ai/openai-image-provider.server");
-    await new OpenAIImageGenerationProvider().generateImage(
+    const result = await new OpenAIImageGenerationProvider().generateImage(
       baseInput({ mode: "IMAGE_TO_IMAGE", referenceImages: [{ url: "https://cdn.example.test/prior.png", role: "previous_result" }] }),
     );
 
@@ -203,6 +203,9 @@ describe("OpenAIImageGenerationProvider", () => {
     const wire = Buffer.from(await outbound.arrayBuffer());
     expect(wire.toString("latin1")).toContain('name="image"; filename="reference-0.png"');
     expect(wire.includes(Buffer.from(await file.arrayBuffer()))).toBe(true);
+    expect(result.qualityReferenceImages).toHaveLength(1);
+    expect(result.qualityReferenceImages?.[0]).toMatchObject({ contentType: "image/png", role: "previous_result" });
+    expect(Buffer.from(result.qualityReferenceImages?.[0].data ?? [])).toEqual(Buffer.from(await file.arrayBuffer()));
   });
 
   it("uses the image[] field name for more than one reference image", async () => {

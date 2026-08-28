@@ -146,7 +146,7 @@ export default function StudioNewConversation() {
           <div className="studio-msg" data-role="ASSISTANT">I&rsquo;ve got it — your creative request has been received.</div>
         </div>
         <div className="studio-launching-stage">
-          <StudioGenerationLoading title="Starting your creative session…" activeStep={0} />
+          <StudioGenerationLoading title="Starting your creative session…" stage="PREPARING" />
         </div>
       </div>
     );

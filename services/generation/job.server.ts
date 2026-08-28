@@ -35,15 +35,18 @@ import {
   markSucceeded,
   markFailed,
   createResults,
+  mergeGenerationResultMetadata,
   type CreateResultInput,
 } from "../../db/repositories/generation-job.repository";
 import { buildGenerateImageInput } from "./build-input";
 import { getConfiguredImageGenerationProvider } from "./provider.server";
 import { parseGenerationPlan, assertValidGenerateImageResult, InvalidGenerationResultError } from "./schema";
 import { recordIdentityValidation, type IdentityValidationResult } from "./identity-validation.server";
+import { applyQualityPolicy, buildQualityEvaluationBrief, correctionPolicyFor, qualityProfileForPlan, type QualityEvaluation, type QualityServiceError } from "./quality-director";
+import { getConfiguredVisualQualityEvaluator } from "./quality-evaluator.server";
 import { UnconfiguredAIProviderError } from "../ai/unconfigured-provider";
 import { ProviderInputError } from "../ai/http-provider-utils.server";
-import type { GeneratedImageOutput } from "../ai/types";
+import type { GeneratedImageOutput, QualityReferenceImage } from "../ai/types";
 import { recordUsageEvent } from "../usage/usage-accounting.server";
 import { settleGenerationCredits, refundGenerationCredits } from "../usage/entitlement.server";
 import { setCurrentResult } from "../../db/repositories/creative-session.repository";
@@ -169,6 +172,7 @@ async function persistOutput(
   output: GeneratedImageOutput,
   providerName: string,
   identityValidation: IdentityValidationResult,
+  qualityEvaluation?: QualityEvaluation | QualityServiceError,
 ): Promise<CreateResultInput> {
   const format = formatFromContentType(output.contentType) ?? "bin";
   const key = `shops/${shop}/generations/${generationJobId}/${index}.${format}`;
@@ -188,8 +192,65 @@ async function persistOutput(
     // See identity-validation.server.ts — an honest, structured "not yet
     // possible" result, not a fake pass, merged alongside whatever the
     // provider itself returned as output-level metadata.
-    metadata: { ...(output.metadata ?? {}), identityValidation },
+    // `createMany` writes a batch with timestamps that may tie. Persist the
+    // provider-output position so the later non-critical Quality Director
+    // metadata merge remains associated with the exact durable image rather
+    // than relying on an incidental database row order.
+    metadata: { ...(output.metadata ?? {}), identityValidation, generationOutputIndex: index, ...(qualityEvaluation ? { qualityEvaluation } : {}) },
   };
+}
+
+function persistedGenerationOutputIndex(metadata: unknown): number | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).generationOutputIndex;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function qualityReferencesForPlan(plan: ReturnType<typeof parseGenerationPlan>): QualityReferenceImage[] {
+  const references: QualityReferenceImage[] = plan.sourceImages.map((image) => ({ url: image.url, role: "product_original" }));
+  for (const reference of plan.referenceImages) {
+    if (!references.some((existing) => existing.url === reference.url)) references.push(reference);
+  }
+  return references;
+}
+
+async function evaluateOutputQuality(
+  plan: ReturnType<typeof parseGenerationPlan>,
+  output: GeneratedImageOutput,
+  preparedReferences: QualityReferenceImage[] | undefined,
+): Promise<QualityEvaluation | QualityServiceError> {
+  const evaluator = getConfiguredVisualQualityEvaluator();
+  const startedAt = Date.now();
+  try {
+    const raw = await evaluator.evaluate({
+      generatedImage: { data: output.data, contentType: output.contentType },
+      references: preparedReferences && preparedReferences.length > 0 ? preparedReferences : qualityReferencesForPlan(plan),
+      qualityBrief: buildQualityEvaluationBrief(plan),
+    });
+    const qualityEvaluation = applyQualityPolicy(raw, qualityProfileForPlan(plan));
+    const correctionPolicy = correctionPolicyFor(qualityEvaluation);
+    logger.info("generation.quality_evaluation.completed", {
+      evaluator: evaluator.name,
+      verdict: qualityEvaluation.verdict,
+      overallScore: qualityEvaluation.overallScore,
+      qualityEvaluationMs: Date.now() - startedAt,
+      correctiveGenerationUsed: false,
+      automaticCorrectionAllowed: correctionPolicy.allowed,
+    });
+    return qualityEvaluation;
+  } catch (error) {
+    const serviceError: QualityServiceError = {
+      verdict: "QUALITY_SERVICE_ERROR",
+      service: evaluator.name,
+      reason: error instanceof Error ? error.message : "unknown quality evaluator error",
+    };
+    logger.warn("generation.quality_evaluation.failed", {
+      evaluator: evaluator.name,
+      qualityEvaluationMs: Date.now() - startedAt,
+      detail: serviceError.reason,
+    });
+    return serviceError;
+  }
 }
 
 export const processGenerationJob: Processor<GenerationJobPayload> = async (job) => {
@@ -259,6 +320,9 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     const identityValidation = plan.productFacts.identityAnchors
       ? recordIdentityValidation(plan.productFacts.identityAnchors)
       : { validated: false, reason: "no identity anchors present on this generation plan", identityAnchorsChecked: [] };
+    // Quality evaluation is deliberately outside the generation provider and
+    // cannot fail a successful image job. A service failure is persisted as
+    // distinct internal metadata, never misreported as an image-quality fail.
     // `allSettled`, not `all` — with more than one output, `all` would
     // reject as soon as ONE upload fails while the OTHERS may have
     // already succeeded and be sitting in storage; their storage keys
@@ -341,6 +405,32 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     }
     const resultPersistMs = Date.now() - persistStartedAt;
 
+    // Publish durable image results before the visual critic runs. With
+    // automatic correction disabled, waiting for a non-critical critic call
+    // only delays first render. The job stays PROCESSING while evaluation
+    // runs, and quality metadata is attached before terminal completion.
+    const persistedJob = await getGenerationJob(context, generationJobId);
+    const persistedResults = persistedJob?.results ?? [];
+    const persistedResultsByOutputIndex = new Map(
+      persistedResults.flatMap((stored) => {
+        const outputIndex = persistedGenerationOutputIndex(stored.metadata);
+        return outputIndex == null ? [] : [[outputIndex, stored] as const];
+      }),
+    );
+    const qualityEvaluations = await Promise.all(result.outputs.map((output) => evaluateOutputQuality(plan, output, result.qualityReferenceImages)));
+    const qualityMetadataWrites = await Promise.allSettled(qualityEvaluations.map((qualityEvaluation, outputIndex) => {
+      const stored = persistedResultsByOutputIndex.get(outputIndex);
+      if (!stored) {
+        logger.warn("generation.quality_evaluation.result_not_found", { shop, generationJobId, outputIndex });
+        return Promise.resolve();
+      }
+      return mergeGenerationResultMetadata(shop, stored.id, { qualityEvaluation });
+    }));
+    const failedQualityMetadataWrites = qualityMetadataWrites.filter((outcome) => outcome.status === "rejected").length;
+    if (failedQualityMetadataWrites > 0) {
+      logger.warn("generation.quality_evaluation.metadata_persist_failed", { shop, generationJobId, failedQualityMetadataWrites });
+    }
+
     const durationMs = Date.now() - attemptStartedAt;
     // Usage/credit bookkeeping runs BEFORE `markSucceeded` writes the
     // terminal status — deliberately, not after: `markSucceeded` is what
@@ -388,6 +478,7 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
       durationMs,
       providerGenerationMs,
       resultPersistMs,
+      generationTotalMs: jobRow.createdAt instanceof Date ? Math.max(0, Date.now() - jobRow.createdAt.getTime()) : null,
       workerOverheadMs: Math.max(0, durationMs - providerGenerationMs - resultPersistMs),
     });
   } catch (error) {

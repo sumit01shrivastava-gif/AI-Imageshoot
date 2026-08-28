@@ -209,6 +209,28 @@ export async function createResults(
   });
 }
 
+/** Attaches non-critical post-publication metadata (currently Quality
+ * Director evidence) without rewriting provider metadata recorded when the
+ * result was created. Results are scoped by both id and shop. */
+export async function mergeGenerationResultMetadata(
+  shop: string,
+  resultId: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const existing = await prisma.generationResult.findFirst({
+    where: { id: resultId, shop },
+    select: { metadata: true },
+  });
+  if (!existing) return;
+  const current = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+    ? existing.metadata as Record<string, unknown>
+    : {};
+  await prisma.generationResult.update({
+    where: { id: resultId },
+    data: { metadata: { ...current, ...metadata } as Prisma.InputJsonValue },
+  });
+}
+
 /** Loads one generation job (with its results), verifying shop ownership.
  * Returns `null` if not found for this shop. */
 export async function getGenerationJob(context: AuthContext, id: string): Promise<GenerationJobRow | null> {

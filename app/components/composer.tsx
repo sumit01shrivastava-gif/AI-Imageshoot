@@ -214,6 +214,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             )}
           </button>
         </div>
+        <p className="studio-composer-guidance" aria-hidden="true">Attach a reference, then describe the creative direction.</p>
       </div>
       {error && <p className="studio-composer-error">{error}</p>}
     </div>

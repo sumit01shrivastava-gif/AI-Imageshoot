@@ -31,8 +31,9 @@ import {
   GenerationResultNotFoundError,
 } from "../../services/creative-studio/session.server";
 import { getPlan } from "../../services/usage/entitlement.server";
-import { Composer, type ComposerHandle } from "../components/composer";
+import { Composer } from "../components/composer";
 import { StudioGenerationLoading } from "../components/studio-generation-loading";
+import { generationProgressStage, isGenerationActiveStage, type GenerationProgressStage } from "../../services/generation/progress";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
 const GENERIC_ERROR = "I couldn't complete that action. Please try again.";
@@ -45,11 +46,13 @@ const SUGGESTION_CHIPS = [
   "Use more premium lighting",
 ];
 
-function jobStatusPhrase(status: string, outputCount: number): string {
-  if (status === "PENDING" || status === "QUEUED") return "Preparing the visual direction…";
-  if (status === "PROCESSING") return outputCount > 1 ? `Refining ${outputCount} variations…` : "Refining composition and light…";
-  if (status === "SUCCEEDED") return "Your campaign image is ready.";
-  if (status === "FAILED") return "That request didn't work out.";
+function jobStatusPhrase(stage: GenerationProgressStage, outputCount: number): string {
+  if (stage === "PREPARING") return "Reading your direction…";
+  if (stage === "PLANNING" || stage === "QUEUED") return "Setting the creative direction…";
+  if (stage === "GENERATING") return outputCount > 1 ? `Creating ${outputCount} variations…` : "Creating your image…";
+  if (stage === "CHECKING_QUALITY") return "Checking the finished image…";
+  if (stage === "COMPLETED") return "Your campaign image is ready.";
+  if (stage === "FAILED") return "That request didn't work out.";
   return "";
 }
 
@@ -104,6 +107,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         createdAt: sanitized.createdAt,
         updatedAt: sanitized.updatedAt,
         results: sanitized.results,
+        progressStage: generationProgressStage(sanitized.status, sanitized.results.length),
         product: sanitized.product,
       };
     }),
@@ -217,12 +221,12 @@ export default function StudioConversation() {
   const selectFetcher = useFetcher<typeof action>();
   const reviewFetcher = useFetcher<typeof action>();
   const feedbackFetcher = useFetcher<typeof action>();
-  const composerRef = useRef<ComposerHandle>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const shouldFollowTranscriptRef = useRef(true);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
 
   const latestJob = jobs[0] ?? null;
-  const isInFlight = latestJob ? ["PENDING", "QUEUED", "PROCESSING"].includes(latestJob.status) : false;
+  const isInFlight = latestJob ? isGenerationActiveStage(latestJob.progressStage) : false;
 
   useEffect(() => {
     if (!isInFlight) return;
@@ -241,19 +245,19 @@ export default function StudioConversation() {
     (messageFetcher.data && !messageFetcher.data.ok && messageFetcher.data.error) ||
     null;
 
-  useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length]);
-
   const isSending = messageFetcher.state !== "idle";
   const optimisticMessage = isSending ? pendingMessage : null;
-  const isGenerating = isInFlight || Boolean(optimisticMessage);
   const insufficientCredits =
     messageFetcher.data && !messageFetcher.data.ok && "reason" in messageFetcher.data && messageFetcher.data.reason === "insufficient_credits";
 
-  const currentResult = latestJob?.results.find((r) => r.id === session.currentResultId) ?? latestJob?.results[latestJob.results.length - 1] ?? null;
+  // Keep a newly submitted turn visible, but never repeatedly pull a
+  // merchant away from earlier conversation history while they are reading.
+  useEffect(() => {
+    if (!shouldFollowTranscriptRef.current) return;
+    transcriptEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [messages.length, optimisticMessage, latestJob?.updatedAt]);
 
-function submitMessage(text: string, files: File[] = []) {
+  function submitMessage(text: string, files: File[] = []) {
     const trimmed = text.trim();
     if ((trimmed.length === 0 && files.length === 0) || isSending) return;
     const formData = new FormData();
@@ -270,81 +274,6 @@ function submitMessage(text: string, files: File[] = []) {
 
   return (
     <div className="studio-conv">
-      <section className="studio-canvas">
-        {latestJob?.status === "FAILED" && (
-          <div className="studio-banner" data-tone="critical">
-            <span>{latestJob.errorMessage ?? "Generation failed."}</span>
-          </div>
-        )}
-
-        {!currentResult ? (
-          <div className="studio-canvas-stage">
-            {isGenerating ? (
-              <StudioGenerationLoading
-                title={latestJob ? jobStatusPhrase(latestJob.status, latestJob.results.length || 1) : "Your creative request is underway…"}
-                activeStep={latestJob?.status === "PROCESSING" ? 2 : 0}
-              />
-            ) : (
-              <p className="studio-canvas-placeholder">Nothing generated yet — describe what you want below to get started.</p>
-            )}
-          </div>
-        ) : (
-          <div className="studio-canvas-stage">{currentResult.url && <img src={currentResult.url} alt="Current result" />}</div>
-        )}
-
-        {isInFlight && currentResult && (
-          <p className="studio-meta-row">{jobStatusPhrase(latestJob!.status, latestJob!.results.length || 1)}</p>
-        )}
-
-        {latestJob && latestJob.results.length > 1 && (
-          <div className="studio-versions">
-            {latestJob.results.map((result, index) => (
-              <button
-                key={result.id}
-                type="button"
-                className="studio-version-thumb"
-                data-selected={result.id === currentResult?.id}
-                aria-label={`Show version ${index + 1}${result.id === currentResult?.id ? " (currently shown)" : ""}`}
-                onClick={() => selectFetcher.submit({ intent: "select-result", resultId: result.id }, { method: "POST" })}
-              >
-                {result.url && <img src={result.url} alt="" />}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {currentResult && (
-          <div className="studio-canvas-actions">
-            <span className="studio-meta-row">
-              {currentResult.width && currentResult.height ? `${currentResult.width}×${currentResult.height}` : "—"}
-              <span
-                className="studio-badge"
-                data-tone={currentResult.reviewStatus === "APPROVED" ? "success" : currentResult.reviewStatus === "REJECTED" ? "error" : undefined}
-              >
-                {currentResult.reviewStatus === "APPROVED" ? "Approved" : currentResult.reviewStatus === "REJECTED" ? "Rejected" : "Not reviewed"}
-              </span>
-            </span>
-            {currentResult.url && (
-              <a className="studio-btn" data-variant="primary" href={currentResult.url} target="_blank" rel="noreferrer" download="creation.png">
-                Download
-              </a>
-            )}
-            <button type="button" className="studio-btn" onClick={focusComposer} disabled={isSending}>Edit / Continue</button>
-            <details className="studio-more-actions">
-              <summary>More actions</summary>
-              <div className="studio-secondary-actions">
-                <button type="button" className="studio-btn" onClick={() => submitMessage("Give me another variation.")} disabled={isSending}>Variation</button>
-                <button type="button" className="studio-btn" onClick={() => submitMessage("Regenerate this.")} disabled={isSending}>Regenerate</button>
-                <button type="button" className="studio-btn" disabled={currentResult.reviewStatus === "APPROVED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "APPROVED" }, { method: "POST" })}>Approve</button>
-                <button type="button" className="studio-btn" data-variant="danger" disabled={currentResult.reviewStatus === "REJECTED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: currentResult.id, decision: "REJECTED" }, { method: "POST" })}>Reject</button>
-                <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "positive" }, { method: "POST" })}>Love this style</button>
-                <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: currentResult.id, signal: "negative" }, { method: "POST" })}>Not my style</button>
-              </div>
-            </details>
-          </div>
-        )}
-      </section>
-
       <section className="studio-chat">
         <div className="studio-chat-header">
           <span
@@ -356,7 +285,13 @@ function submitMessage(text: string, files: File[] = []) {
           </span>
         </div>
 
-        <div className="studio-transcript">
+        <div
+          className="studio-transcript"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            shouldFollowTranscriptRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+          }}
+        >
           {messages.length === 0 && (
             <p className="studio-canvas-placeholder" style={{ padding: 0 }}>
               Every request keeps your reference image (if any) intact unless you ask otherwise.
@@ -378,17 +313,39 @@ function submitMessage(text: string, files: File[] = []) {
             </div>
             {message.role === "ASSISTANT" && message.generationJobId && (() => {
               const turnJob = jobs.find((job) => job.id === message.generationJobId);
-              const turnResult = turnJob?.results[turnJob.results.length - 1];
-              const active = turnJob && ["PENDING", "QUEUED", "PROCESSING"].includes(turnJob.status);
+              const turnResult = turnJob?.results.find((result) => result.id === session.currentResultId) ?? turnJob?.results[turnJob.results.length - 1];
+              const active = turnJob && isGenerationActiveStage(turnJob.progressStage);
               if (!turnJob) return null;
               return <>
                 <div className="studio-turn-generation">
-                  {active && <StudioGenerationLoading title={jobStatusPhrase(turnJob.status, turnJob.results.length || 1)} activeStep={turnJob.status === "PROCESSING" ? 2 : 1} />}
+                  {active && !turnResult?.url && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
                   {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
                   {turnResult?.url && <img className="studio-turn-result" src={turnResult.url} alt="Generated result" />}
+                  {active && turnResult?.url && (
+                    <div className="studio-result-quality-check" role="status" aria-live="polite">
+                      <span className="studio-dot-pulse" aria-hidden="true" />
+                      {jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)}
+                    </div>
+                  )}
                 </div>
                 {turnResult?.url && (
                   <div className="studio-turn-result-meta">
+                    {turnJob.results.length > 1 && (
+                      <div className="studio-turn-versions" aria-label="Available variations">
+                        {turnJob.results.map((result, index) => (
+                          <button
+                            key={result.id}
+                            type="button"
+                            className="studio-version-thumb"
+                            data-selected={result.id === turnResult.id}
+                            aria-label={`Show variation ${index + 1}${result.id === turnResult.id ? " (currently shown)" : ""}`}
+                            onClick={() => selectFetcher.submit({ intent: "select-result", resultId: result.id }, { method: "POST" })}
+                          >
+                            {result.url && <img src={result.url} alt="" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="studio-turn-result-actions">
                       <a className="studio-btn" data-variant="primary" href={turnResult.url} target="_blank" rel="noreferrer" download="creation.png">
                         Download
@@ -401,6 +358,8 @@ function submitMessage(text: string, files: File[] = []) {
                           <button type="button" className="studio-btn" onClick={() => submitMessage("Regenerate this.")} disabled={isSending}>Regenerate</button>
                           <button type="button" className="studio-btn" disabled={turnResult.reviewStatus === "APPROVED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: turnResult.id, decision: "APPROVED" }, { method: "POST" })}>Approve</button>
                           <button type="button" className="studio-btn" data-variant="danger" disabled={turnResult.reviewStatus === "REJECTED"} onClick={() => reviewFetcher.submit({ intent: "review", resultId: turnResult.id, decision: "REJECTED" }, { method: "POST" })}>Reject</button>
+                          <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: turnResult.id, signal: "positive" }, { method: "POST" })}>Love this style</button>
+                          <button type="button" className="studio-btn" onClick={() => feedbackFetcher.submit({ intent: "feedback", resultId: turnResult.id, signal: "negative" }, { method: "POST" })}>Not my style</button>
                         </div>
                       </details>
                     </div>
@@ -413,8 +372,9 @@ function submitMessage(text: string, files: File[] = []) {
           ))}
           {optimisticMessage && <div className="studio-msg studio-msg-pending" data-role="USER">{optimisticMessage}</div>}
           {optimisticMessage && (
-            <div className="studio-msg studio-msg-pending" data-role="ASSISTANT">
-              I&rsquo;ve got it — your creative direction is now in motion.
+            <div className="studio-optimistic-turn">
+              <div className="studio-msg studio-msg-pending" data-role="ASSISTANT">I&rsquo;ve got it — I&rsquo;m shaping this into your next creative direction.</div>
+              <div className="studio-turn-generation"><StudioGenerationLoading title="Starting your creative request…" stage="PREPARING" /></div>
             </div>
           )}
           {/* Must NOT disappear the moment a job finishes — SUCCEEDED
@@ -424,7 +384,7 @@ function submitMessage(text: string, files: File[] = []) {
           {(latestJob && latestJob.status !== "FAILED") && (
             <div className="studio-status-line" role="status" aria-live="polite">
               {isInFlight && <span className="studio-dot-pulse" aria-hidden="true" />}
-              {jobStatusPhrase(latestJob.status, latestJob.results.length || 1)}
+              {jobStatusPhrase(latestJob.progressStage, latestJob.results.length || 1)}
             </div>
           )}
           <div ref={transcriptEndRef} />
@@ -457,7 +417,7 @@ function submitMessage(text: string, files: File[] = []) {
               ))}
             </div>
           )}
-          <Composer ref={composerRef} disabled={isSending} busy={isSending} onSubmit={submitMessage} placeholder="Make the background darker…" />
+          <Composer disabled={isSending} busy={isSending} onSubmit={submitMessage} placeholder="Continue this creative…" />
         </div>
       </section>
     </div>

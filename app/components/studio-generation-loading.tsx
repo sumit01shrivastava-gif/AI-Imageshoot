@@ -7,31 +7,38 @@
  * framing over the same real, discrete GenerationStatus lifecycle
  * (PENDING/QUEUED/PROCESSING) every other generation surface tracks.
  */
-// Deliberately maps only the discrete job lifecycle exposed by the backend.
-// Do not rotate invented behind-the-scenes messages here: a calm static
-// explanation is more trustworthy than implying provider activity we cannot
-// observe directly.
-const STATUS_SUPPORTING_COPY = [
-  "Your request is queued and ready to begin.",
-  "ImageShoot is actively creating this result.",
-  "The result is being finalized for this conversation.",
-] as const;
+import { useEffect, useState } from "react";
+import { generationProgressPresentation, type ActiveGenerationProgressStage } from "./studio-generation-progress";
 
 export interface StudioGenerationLoadingProps {
-  title: string;
+  /** A concise stage heading supplied by the conversation turn. */
+  title?: string;
+  /** The real job stage. Never use a simulated percentage. */
+  stage?: ActiveGenerationProgressStage;
   activeStep?: 0 | 1 | 2;
 }
 
-export function StudioGenerationLoading({ title, activeStep = 1 }: StudioGenerationLoadingProps) {
+export function StudioGenerationLoading({ title, stage = "QUEUED", activeStep }: StudioGenerationLoadingProps) {
+  const presentation = generationProgressPresentation[stage];
+  const copy = presentation.copy;
+  const step = activeStep ?? presentation.step;
+  const [phraseIndex, setPhraseIndex] = useState(0);
+
+  useEffect(() => {
+    if (copy.length < 2) return;
+    const id = window.setInterval(() => setPhraseIndex((index) => (index + 1) % copy.length), 3200);
+    return () => window.clearInterval(id);
+  }, [copy]);
+
   return (
-    <div className="studio-generating" role="status" aria-live="polite">
-      <div className="studio-generating-orb" aria-hidden="true" />
-      <div className="studio-generating-title">{title}</div>
-      <p className="studio-generating-message">{STATUS_SUPPORTING_COPY[activeStep]}</p>
+    <div className="studio-generating" data-stage={stage} role="status" aria-live="polite">
+      <div className="studio-generating-mark" aria-hidden="true"><span /></div>
+      <div className="studio-generating-title">{title ?? presentation.title}</div>
+      <p className="studio-generating-message" key={`${stage}-${phraseIndex}`}>{copy[phraseIndex % copy.length]}</p>
       <div className="studio-generating-steps" aria-hidden="true">
-        <span className="studio-generating-step" data-active={activeStep >= 0}>Request received</span>
-        <span className="studio-generating-step" data-active={activeStep >= 1}>In progress</span>
-        <span className="studio-generating-step" data-active={activeStep >= 2}>Finalizing</span>
+        <span className="studio-generating-step" data-active={step >= 0}>Direction received</span>
+        <span className="studio-generating-step" data-active={step >= 1}>Image in progress</span>
+        <span className="studio-generating-step" data-active={step >= 2}>Final detail check</span>
       </div>
     </div>
   );

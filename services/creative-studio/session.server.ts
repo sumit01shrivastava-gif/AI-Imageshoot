@@ -290,25 +290,32 @@ export async function sendCreativeMessage(
   const session = await getCreativeSession(context, sessionId);
   if (!session) throw new CreativeSessionNotFoundError();
 
-  // Never call findProductForShop/getProductIntelligence (or anything
-  // Shopify-only) for a standalone (no Shopify product) session — see
-  // prisma/schema.prisma's CreativeSession.productId comment.
-  const product = session.productId ? await loadOwnedProduct(context, session.productId) : null;
-  const intelligence = product ? await getProductIntelligence(context, product.id) : null;
-
-  const [jobsRaw, messages] = await Promise.all([
-    listGenerationJobsForCreativeSession(context.shop, session.id),
-    listCreativeMessages(context.shop, session.id),
+  // Product lookup, compact session history, and a possible foreign starting
+  // image are independent reads. Run them together; Product Intelligence
+  // correctly remains after the owned product is known. This preserves one
+  // semantic planning pass while removing avoidable request serial time.
+  const contextLoadStartedAt = Date.now();
+  const [product, history, startingImageUrl] = await Promise.all([
+    session.productId ? loadOwnedProduct(context, session.productId) : Promise.resolve(null),
+    Promise.all([
+      listGenerationJobsForCreativeSession(context.shop, session.id),
+      listCreativeMessages(context.shop, session.id),
+    ]),
+    resolveSessionStartingImage(context.shop, session),
   ]);
+  const [jobsRaw, messages] = history;
   const jobs = await Promise.all(jobsRaw.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
   const creativeContext = buildSessionCreativeContext(session, jobs, messages);
+  const contextLoadMs = Date.now() - contextLoadStartedAt;
+  const intelligenceStartedAt = Date.now();
+  const intelligence = product ? await getProductIntelligence(context, product.id) : null;
+  const productIntelligenceMs = Date.now() - intelligenceStartedAt;
 
   // A session opened via "Continue editing" (Part 13) has no result of
   // its OWN yet on its first turn — its starting point is a foreign
   // result outside this session's own jobs (see `session.sourceResultId`).
   // Resolve that BEFORE parsing, since it changes how many "candidates"
   // genuinely exist to interpret a follow-up against.
-  const startingImageUrl = await resolveSessionStartingImage(context.shop, session);
   const effectiveCandidateCount = creativeContext.candidateResults.length > 0 ? creativeContext.candidateResults.length : startingImageUrl ? 1 : 0;
 
   // A standalone session has no ShopifyProductMedia to ground against —
@@ -345,6 +352,7 @@ export async function sendCreativeMessage(
   // always succeeds today (a real, non-AI default, not gated to tests).
   // Fully generic — intent parsing never depends on a Shopify product.
   const parser = getConfiguredIntentParser();
+  const intentParsingStartedAt = Date.now();
   const rawOutput = await parser.parseIntent({
     message: trimmed,
     creativeContext: creativeContext as unknown as Record<string, unknown>,
@@ -352,6 +360,7 @@ export async function sendCreativeMessage(
     referenceImageUrls: referenceImageUrlsForParsing,
   });
   const parsedIntent = parseParsedIntent(rawOutput);
+  const intentParseMs = Date.now() - intentParsingStartedAt;
 
   // Resolve an explicit "use the second one"-style reference against the
   // session's actual candidate results — see creative-context.ts's
@@ -489,6 +498,7 @@ export async function sendCreativeMessage(
   // plan-builder.ts's `buildStandaloneCreativeGenerationPlan` doc comment
   // for why this is "the same generation engine, two entry points," not a
   // second generation system.
+  const planBuildStartedAt = Date.now();
   const plan = product
     ? buildCreativeGenerationPlan({
         product,
@@ -500,6 +510,7 @@ export async function sendCreativeMessage(
         creativeSessionId: session.id,
         rawInstruction: trimmed,
         personalizedFields,
+        previousCampaignDNA: creativeContext.activeCampaignDNA,
       })
     : buildStandaloneCreativeGenerationPlan({
         parsedIntent: effectiveIntent,
@@ -514,7 +525,9 @@ export async function sendCreativeMessage(
         activeSubject: creativeContext.activeSubject,
         activeAction: creativeContext.activeAction,
         personalizedFields,
+        previousCampaignDNA: creativeContext.activeCampaignDNA,
       });
+  const planBuildMs = Date.now() - planBuildStartedAt;
 
   // Safe diagnostics: the resolved structural creative decisions for
   // this turn — never the raw message, the synthesized prompt text, or
@@ -568,6 +581,10 @@ export async function sendCreativeMessage(
     hasCreativeConcept: Boolean(brief?.creativeConcept),
     negativeCreativeDecisionCount: brief?.negativeCreativeDecisions.length ?? 0,
     planningMs: Date.now() - requestStartedAt,
+    contextLoadMs,
+    productIntelligenceMs,
+    intentParseMs,
+    planBuildMs,
   });
 
   const job = await createAndEnqueueGenerationJob(context, {

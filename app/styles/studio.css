@@ -460,6 +460,12 @@
 }
 
 .studio-composer textarea::placeholder { color: var(--studio-ink-faint); }
+.studio-composer-guidance {
+  margin: 7px 4px 1px 46px;
+  color: var(--studio-ink-faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
 
 .studio-composer-btn {
   display: flex;
@@ -510,7 +516,7 @@
 
 /* ---------- Conversation view ---------- */
 
-.studio-conv { flex: 1; min-height: 100dvh; }
+.studio-conv { flex: 1; min-height: 100dvh; min-width: 0; }
 
 .studio-launching {
   flex: 1;
@@ -1000,4 +1006,124 @@
   .studio-canvas-stage { min-height: min(54vh, 520px); }
   .studio-more-actions { margin-left: 0; }
   .studio-secondary-actions { right: auto; left: 0; }
+}
+
+/* ---------- Phase 5: conversation-first Studio refinements ---------- */
+
+.studio-chat-header {
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  padding: 18px 28px 12px;
+  border-bottom: 0;
+}
+
+.studio-credit-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--studio-border);
+  border-radius: var(--studio-radius-pill);
+  background: color-mix(in srgb, var(--studio-surface) 76%, transparent);
+}
+
+.studio-transcript {
+  width: min(100%, 1120px);
+  padding: 20px 28px 36px;
+  gap: 22px;
+  scroll-behavior: smooth;
+}
+
+.studio-turn { gap: 12px; }
+.studio-turn[data-role="USER"] { align-items: flex-end; }
+.studio-msg { max-width: min(82%, 42rem); padding: 11px 15px; font-size: 14px; line-height: 1.62; }
+.studio-msg[data-role="USER"] { box-shadow: var(--studio-shadow-sm); }
+.studio-msg[data-role="ASSISTANT"] { background: transparent; border: 0; padding: 0; border-radius: 0; color: var(--studio-ink-subdued); max-width: 44rem; }
+.studio-message-attachments { margin: 0 0 10px; gap: 9px; }
+.studio-message-attachment { width: 104px; height: 104px; border-radius: 12px; background: var(--studio-surface); transition: transform 150ms ease, border-color 150ms ease; }
+.studio-message-attachment:hover { transform: translateY(-1px); border-color: var(--studio-ink-subdued); }
+
+.studio-turn-generation {
+  position: relative;
+  width: min(100%, 960px);
+  min-height: 280px;
+  aspect-ratio: 4 / 3;
+  border-radius: 18px;
+  background: radial-gradient(ellipse at 50% 30%, color-mix(in srgb, var(--studio-surface-elevated) 92%, #25252a), var(--studio-surface));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .16);
+}
+.studio-turn-generation:has(.studio-turn-result) { background: #060607; }
+.studio-turn-result { object-fit: contain; transition: opacity 240ms ease; }
+.studio-turn-result-meta { width: min(100%, 960px); }
+.studio-turn-result-actions { padding: 3px 0 0; }
+.studio-result-confirmation { max-width: 42rem; }
+.studio-turn-versions { display: flex; gap: 7px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: thin; }
+.studio-version-thumb { width: 48px; height: 48px; border-radius: 9px; }
+
+.studio-result-quality-check {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: var(--studio-radius-pill);
+  background: rgba(10, 10, 11, .72);
+  color: rgba(255,255,255,.86);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+}
+
+.studio-optimistic-turn { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: 100%; }
+.studio-optimistic-turn .studio-turn-generation { animation: studio-enter .24s ease-out both; }
+
+.studio-chat-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  padding: 14px max(28px, calc((100vw - 1120px) / 2 + 28px)) calc(18px + env(safe-area-inset-bottom));
+  border-top: 1px solid color-mix(in srgb, var(--studio-border) 78%, transparent);
+  background: color-mix(in srgb, var(--studio-bg) 90%, transparent);
+  backdrop-filter: blur(18px);
+}
+.studio-chat-composer > :not(.studio-example-row) { width: min(100%, 760px); margin: 0 auto; }
+.studio-example-row { width: min(100%, 760px); margin-left: auto; margin-right: auto; overflow-x: auto; flex-wrap: nowrap; padding: 0 0 8px; scrollbar-width: none; }
+.studio-example-row::-webkit-scrollbar { display: none; }
+.studio-example-chip { flex: 0 0 auto; }
+
+.studio-generating-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid var(--studio-border-strong); border-radius: 50%; background: color-mix(in srgb, var(--studio-surface-elevated) 92%, transparent); }
+.studio-generating-mark span { width: 14px; height: 14px; border-radius: 50%; background: var(--studio-ink); box-shadow: 0 0 0 7px color-mix(in srgb, var(--studio-ink) 8%, transparent); animation: studio-breathe 2.1s ease-in-out infinite; }
+@keyframes studio-breathe { 0%, 100% { opacity: .6; transform: scale(.9); } 50% { opacity: 1; transform: scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-generating-mark span, .studio-generating-message, .studio-msg-pending, .studio-launching, .studio-optimistic-turn .studio-turn-generation { animation: none; }
+}
+
+@media (max-width: 760px) {
+  .studio-chat { min-height: 100dvh; }
+  .studio-chat-header { padding: 10px 16px 8px; }
+  .studio-transcript { width: 100%; padding: 14px 14px 26px; gap: 18px; overflow-x: clip; }
+  .studio-msg { max-width: 100%; font-size: 14px; }
+  .studio-msg[data-role="USER"] { max-width: min(100%, 34rem); }
+  .studio-message-attachment { width: clamp(66px, 22vw, 88px); height: clamp(66px, 22vw, 88px); }
+  .studio-turn-generation { width: 100%; min-height: 0; aspect-ratio: 1 / 1; border-radius: var(--studio-radius-md); }
+  .studio-turn-result-meta { width: 100%; }
+  .studio-turn-result-actions { gap: 7px; }
+  .studio-btn { min-height: 40px; }
+  .studio-result-confirmation { font-size: 12.5px; }
+  .studio-chat-composer { padding: 10px 14px calc(12px + env(safe-area-inset-bottom)); }
+  .studio-chat-composer > :not(.studio-example-row), .studio-example-row { width: 100%; }
+  .studio-example-row { margin-bottom: 0 !important; }
+  .studio-secondary-actions { position: fixed; left: 14px; right: 14px; bottom: calc(72px + env(safe-area-inset-bottom)); width: auto; max-width: none; }
+  .studio-result-quality-check { font-size: 11.5px; }
+}
+
+@media (max-width: 390px) {
+  .studio-credit-pill { font-size: 11.5px; }
+  .studio-generating { padding: 24px 16px; gap: 11px; }
+  .studio-turn-result-actions .studio-btn { padding: 8px 11px; font-size: 12.5px; }
+  .studio-composer-guidance { margin-left: 42px; font-size: 10.5px; }
 }

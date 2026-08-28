@@ -240,11 +240,71 @@ export interface GenerateImageResult {
   /** Raw provider response, kept only for the caller to store for
    * debugging — never trusted or parsed beyond `outputs` above. */
   raw?: unknown;
+  /** Ephemeral, worker-lifetime canonical references that a post-generation
+   * evaluator may reuse. Never persisted as result metadata or sent to a
+   * browser. Providers omit this when they did not prepare references. */
+  qualityReferenceImages?: QualityReferenceImage[];
 }
 
 export interface ImageGenerationProvider {
   readonly name: string;
   generateImage(input: GenerateImageInput): Promise<GenerateImageResult>;
+}
+
+// ---------------------------------------------------------------------------
+// VisualQualityEvaluator — post-generation image assessment.
+//
+// Kept separate from ImageGenerationProvider: generation and criticism have
+// different cost, failure, and model-selection characteristics. The
+// generation domain owns the deterministic policy applied to this evidence;
+// providers only return constrained visual observations.
+// ---------------------------------------------------------------------------
+
+export interface QualityReferenceImage {
+  url?: string;
+  data?: Uint8Array;
+  contentType?: string;
+  role: "product_original" | "previous_result" | "style_reference";
+}
+
+export interface VisualQualityEvaluationInput {
+  generatedImage: { data: Uint8Array; contentType: string };
+  references: QualityReferenceImage[];
+  /** Compact resolved brief only. Never the raw conversation or provider prompt. */
+  qualityBrief: Record<string, unknown>;
+}
+
+export type VisualQualityDimension =
+  | "productFidelity"
+  | "briefAdherence"
+  | "creativeConcept"
+  | "artDirection"
+  | "photographyRealism"
+  | "composition"
+  | "commercialUsefulness"
+  | "designExecution"
+  | "physicalIntegrity"
+  | "channelSuitability";
+
+export type VisualQualityCriticalFailure =
+  | "PRODUCT_MISMATCH"
+  | "BRIEF_CONTRADICTION"
+  | "PHYSICAL_INTEGRITY_FAILURE"
+  | "FORMAT_FAILURE"
+  | "INVENTED_BRANDING_OR_TEXT";
+
+export interface VisualQualityEvaluationRaw {
+  dimensions: Record<VisualQualityDimension, number>;
+  criticalFailures: VisualQualityCriticalFailure[];
+  observations: string[];
+  correctionGuidance: string[];
+  confidence: number;
+  evaluatorMetadata?: Record<string, unknown>;
+}
+
+export interface VisualQualityEvaluator {
+  readonly name: string;
+  evaluate(input: VisualQualityEvaluationInput): Promise<VisualQualityEvaluationRaw>;
 }
 
 // ---------------------------------------------------------------------------

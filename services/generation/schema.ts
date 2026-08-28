@@ -21,6 +21,93 @@ export const OutputFormatSchema = z.enum(OUTPUT_FORMATS);
 export const GenerationQualitySchema = z.enum(GENERATION_QUALITIES);
 export const AspectRatioSchema = z.enum(ASPECT_RATIOS);
 
+/**
+ * Provider-neutral creative-production decisions produced by Creative
+ * Studio. Kept here as a lower-level schema (rather than importing the
+ * higher-level Creative Studio types) so persisted GenerationJob plans
+ * remain independently parseable by the worker. Nullable/defaulted for
+ * plans created before the blueprint contract existed.
+ */
+const CreativeBlueprintSchema = z.object({
+  brief: z.object({
+    deliverableClass: z.enum(["ECOMMERCE_PRODUCT_IMAGE", "SOCIAL_CAMPAIGN_CREATIVE", "WEBSITE_BANNER", "LIFESTYLE_PRODUCT_PHOTOGRAPH", "PRODUCT_ON_MODEL", "PRODUCT_EDIT", "CAMPAIGN_VARIATION", "PREMIUM_PRODUCT_PHOTOGRAPH"]),
+    transformationFreedom: z.enum(["NONE", "LIMITED", "HIGH"]),
+    expectedFinish: z.enum(["PRODUCT_PHOTOGRAPH", "FINISHED_CAMPAIGN_ASSET", "EDITED_RESULT"]),
+    executionMode: z.enum(["NEW_CREATION", "CONTINUATION", "LOCAL_EDIT", "FORMAT_ADAPTATION"]).default("NEW_CREATION"),
+    continuation: z.boolean(),
+  }),
+  productTruth: z.object({
+    identitySource: z.enum(["REFERENCE_AND_PRODUCT_INTELLIGENCE", "REFERENCE_ONLY", "PRODUCT_INTELLIGENCE"]),
+    sourceScenePolicy: z.enum(["PRESERVE_REQUESTED", "REPLACEABLE", "DISCARD_FOR_CAMPAIGN"]),
+    categoryFocus: z.array(z.string()),
+  }),
+  commercialStrategy: z.object({
+    objective: z.enum(["ECOMMERCE_CLARITY", "PRODUCT_DESIRE", "BRAND_COMMUNICATION", "LIFESTYLE_RELEVANCE", "REFINEMENT"]),
+    channel: z.enum(["ECOMMERCE", "SOCIAL", "WEB", "GENERAL"]),
+    visualIntensity: z.enum(["RESTRAINED", "ELEVATED", "HIGH"]),
+    compositionalPriority: z.enum(["INSPECTABILITY", "SCROLL_STOP", "COPY_SAFE_HIERARCHY", "CONTEXTUAL_RELEVANCE"]).default("INSPECTABILITY"),
+  }),
+  creativeDirection: z.object({
+    concept: z.string().min(1).nullable(),
+    conceptSource: z.enum(["SEMANTIC_PLANNING", "CAMPAIGN_DNA", "RESTRAINED_FALLBACK"]).default("RESTRAINED_FALLBACK"),
+    campaignSceneTransformation: z.boolean(),
+    experimentation: z.enum(["CONTROLLED", "HIGH"]),
+  }),
+  artDirection: z.object({
+    visualStory: z.string().min(1).max(420).nullable(),
+    heroTreatment: z.string().min(1).max(280).nullable(),
+    canvasArchitecture: z.string().min(1).max(360).nullable(),
+    productEnvironmentRelationship: z.string().min(1).max(280).nullable(),
+    materialLightingStrategy: z.string().min(1).max(320).nullable(),
+  }),
+  photographyDirection: z.object({
+    category: z.string().min(1).nullable(),
+    detailPriorities: z.array(z.string()),
+    realismPriorities: z.array(z.string()),
+    framingPriority: z.enum(["PRODUCT_INSPECTION", "PRODUCT_IN_WORLD", "MOBILE_HIERARCHY", "WIDE_LAYOUT"]).default("PRODUCT_INSPECTION"),
+  }),
+  designDirection: z.object({
+    assetKind: z.preprocess(
+      (value) => value === "DESIGNED_COMMUNICATION" ? "FINISHED_DESIGNED_ASSET" : value,
+      z.enum(["PHOTOGRAPHY_ONLY", "PHOTOGRAPHY_WITH_DESIGN_SPACE", "FINISHED_DESIGNED_ASSET"]),
+    ),
+    communication: z.object({
+      mode: z.enum(["VISUAL_ONLY", "MINIMAL_CAMPAIGN_COPY", "FACTUAL_CALLOUTS"]),
+      headline: z.string().min(1).max(90).nullable(),
+      supportingLine: z.string().min(1).max(140).nullable(),
+      callouts: z.array(z.string().min(1).max(80)).max(3),
+      provenance: z.enum(["NONE", "EVOCATIVE", "USER_EXPLICIT", "TRUSTED_CATALOG"]),
+      reservedTextArea: z.enum(["NONE", "TOP_LEFT", "TOP_RIGHT", "TOP_CENTER", "BOTTOM_LEFT", "BOTTOM_RIGHT", "BOTTOM_CENTER", "SIDE"]),
+    }),
+    requiresFutureDeterministicCompositing: z.boolean(),
+  }),
+  generationDirection: z.object({
+    providerBriefOrder: z.array(z.enum(["PRODUCT_LOCK", "DELIVERABLE", "CAMPAIGN_CONCEPT", "SCENE_FREEDOM", "ART_DIRECTION", "PHOTOGRAPHY", "DESIGN_SPACE", "CRITICAL_AVOIDS"])),
+  }),
+  qualityIntent: z.object({
+    profile: z.enum(["ECOMMERCE", "CAMPAIGN", "MODEL_INTERACTION", "EDIT"]),
+    priorityDimensions: z.array(z.string()),
+  }),
+  conversationIntent: z.object({
+    acknowledgementFocus: z.enum(["PRODUCT_FIDELITY", "CAMPAIGN_TRANSFORMATION", "EDIT_CONTINUITY"]),
+    suggestContinuation: z.boolean(),
+  }),
+  campaignDNA: z.object({
+    shouldCarryForward: z.boolean(),
+    carryForwardFields: z.array(z.enum(["CONCEPT", "ART_DIRECTION", "PHOTOGRAPHY", "DESIGN_DIRECTION"])),
+    governingConcept: z.string().min(1).nullable().default(null),
+    artDirection: z.object({
+      visualStory: z.string().min(1).max(420).nullable(),
+      heroTreatment: z.string().min(1).max(280).nullable(),
+      canvasArchitecture: z.string().min(1).max(360).nullable(),
+      productEnvironmentRelationship: z.string().min(1).max(280).nullable(),
+      materialLightingStrategy: z.string().min(1).max(320).nullable(),
+    }).default({ visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null }),
+    photographyCharacter: z.array(z.string()).default([]),
+    designAssetKind: z.enum(["PHOTOGRAPHY_ONLY", "PHOTOGRAPHY_WITH_DESIGN_SPACE", "FINISHED_DESIGNED_ASSET"]).default("PHOTOGRAPHY_ONLY"),
+  }),
+});
+
 /** Mirrors `services/ai/types.ts`'s `BrandStyleContext` — see
  * docs/generation.md "Brand style". Every field optional: nothing
  * constructs a real one yet (see docs/product-intelligence.md "Brand
@@ -209,6 +296,8 @@ export const CreativeStudioPlanSchema = z.object({
           materialLightingStrategy: z.string().min(1).max(320).nullable().default(null),
         })
         .default({ visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null }),
+      /** Canonical cross-director contract; null only for older JSON plans. */
+      creativeBlueprint: CreativeBlueprintSchema.nullable().default(null),
       overallCreativeDirection: z.string().min(1),
     })
     .nullable()

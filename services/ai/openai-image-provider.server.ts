@@ -40,7 +40,7 @@ import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderInputError, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
 import { composeProviderPrompt } from "./prompt-composition";
-import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider } from "./types";
+import type { GenerateImageInput, GenerateImageResult, GeneratedImageOutput, ImageGenerationProvider, QualityReferenceImage } from "./types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com";
 /**
@@ -277,12 +277,14 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
 
     let parsed: unknown;
     let latencyMs: number;
+    let qualityReferenceImages: QualityReferenceImage[] | undefined;
     if (usingReferenceImages) {
       try {
         const measured = await measureLatencyMs(() =>
           this.callEdits(baseUrl, env.AI_PROVIDER_API_KEY!, timeoutMs, { model, input, referenceUrls, size, quality }),
         );
-        parsed = measured.result;
+        parsed = measured.result.response;
+        qualityReferenceImages = measured.result.qualityReferenceImages;
         latencyMs = measured.latencyMs;
       } catch (error) {
         this.throwOpenAIEditError(error);
@@ -336,7 +338,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
 
     logger.info("ai_provider.generation.completed", { provider: this.name, outputCount: outputs.length, latencyMs });
 
-    return { outputs, raw: { model, created: parsed.created } };
+    return { outputs, raw: { model, created: parsed.created }, qualityReferenceImages };
   }
 
   /** Every real image this request has to ground against — explicit
@@ -390,7 +392,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     apiKey: string,
     timeoutMs: number,
     args: { model: string; input: GenerateImageInput; referenceUrls: string[]; size: string; quality: string },
-  ): Promise<OpenAIImagesResponse> {
+  ): Promise<{ response: OpenAIImagesResponse; qualityReferenceImages: QualityReferenceImage[] }> {
     const referencePreparationStartedAt = Date.now();
     const references = await Promise.all(args.referenceUrls.map((url, index) => this.fetchReferenceImage(url, timeoutMs, index)));
     const files = await Promise.all(
@@ -439,7 +441,18 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       referencePrepareMs,
       providerGenerationMs: Date.now() - providerRequestStartedAt,
     });
-    return response;
+    return {
+      response,
+      // Reuse only inside the same worker attempt: these are the exact
+      // validated, orientation-correct sRGB PNG bytes that reached the SDK.
+      // This avoids an immediate duplicate signed-URL fetch for quality
+      // evaluation without introducing any cross-job image cache.
+      qualityReferenceImages: references.map((reference, index) => ({
+        data: reference.bytes,
+        contentType: "image/png",
+        role: args.input.referenceImages?.[index]?.role ?? "product_original",
+      })),
+    };
   }
 
   private throwOpenAIEditError(error: unknown): never {

@@ -1292,6 +1292,11 @@ model CreativeMessage {
   // docs/creative-studio.md "No arbitrary prompts".
   intent Json?
 
+  // Persisted, display-safe references attached to this exact USER turn.
+  // The original bytes remain in the existing storage provider; this is
+  // only compact metadata needed to restore conversation history.
+  attachments Json?
+
   // Soft reference to the GenerationJob this message triggered (a USER
   // message that requested generation) or reports on (an ASSISTANT
   // message once the job resolves) — null for a plain conversational

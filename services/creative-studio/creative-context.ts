@@ -17,6 +17,8 @@
  */
 import type { CreativeStudioPlan } from "../generation/schema";
 
+export type CampaignDNA = NonNullable<NonNullable<CreativeStudioPlan["creativeBrief"]>["creativeBlueprint"]>["campaignDNA"];
+
 export interface CreativeCandidateResult {
   id: string;
   /** 1-indexed position within the latest generation job's outputs —
@@ -62,6 +64,9 @@ export interface CreativeContext {
   /** Same carry-forward reasoning as `activeCamera`/`activeColorDirection`
    * — see intent-schema.ts's `depthOfField` doc comment. */
   activeDepthOfField: string | null;
+  /** Compact direction continuity derived from the selected result's
+   * persisted blueprint. Older plans correctly return null. */
+  activeCampaignDNA: CampaignDNA | null;
 
   /** Bounded (see `buildCreativeContext`'s `maxPreviousInstructions`),
    * most-recent-last — light continuity for the parser/assistant replies,
@@ -114,6 +119,7 @@ export function buildCreativeContext(input: BuildCreativeContextInput): Creative
     activeCamera: creative?.camera ?? null,
     activeColorDirection: creative?.colorDirection ?? null,
     activeDepthOfField: creative?.depthOfField ?? null,
+    activeCampaignDNA: input.currentResultCreativeIntent?.creativeBrief?.creativeBlueprint?.campaignDNA ?? null,
 
     previousInstructions: input.recentInstructions.slice(-max),
 

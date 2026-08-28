@@ -123,6 +123,10 @@ const envSchema = z.object({
   // AI_IMAGE_EDIT_MODEL. Falls back to AI_PROVIDER_MODEL, then to that
   // provider file's own hardcoded default, when unset.
   AI_PROVIDER_INTENT_MODEL: z.string().optional(),
+  // Optional vision/structured-output critic model used after an image is
+  // generated. It remains distinct from the image model and falls back to
+  // the evaluator's known compatible vision/structured-output default.
+  AI_PROVIDER_QUALITY_MODEL: z.string().optional(),
   // Per-request timeout, in milliseconds, for
   // production-image-generation-provider.server.ts's outbound calls.
   // Optional — defaults to that file's own DEFAULT_REQUEST_TIMEOUT_MS

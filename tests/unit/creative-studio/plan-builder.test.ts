@@ -15,6 +15,7 @@ import {
   ProductNotAnalyzedError,
 } from "../../../services/creative-studio/plan-builder";
 import { parseParsedIntent } from "../../../services/creative-studio/intent-schema";
+import { parseGenerationPlan } from "../../../services/generation/schema";
 import type { ProductDetail } from "../../../db/repositories/shopify-product.repository";
 import type { ProductIntelligenceRow } from "../../../db/repositories/product-intelligence.repository";
 
@@ -121,6 +122,51 @@ describe("buildCreativeGenerationPlan", () => {
     // The synthesized prompt always includes the identity instruction —
     // never just the creative direction alone (Part 4).
     expect(plan.creativeDirection.prompt).toContain(plan.creativeIntent!.identityConstraints.instruction);
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint).toMatchObject({
+      brief: { deliverableClass: "LIFESTYLE_PRODUCT_PHOTOGRAPH" },
+      productTruth: { identitySource: "REFERENCE_AND_PRODUCT_INTELLIGENCE" },
+    });
+  });
+
+  it("parses a persisted pre-blueprint Creative Studio plan safely", async () => {
+    const parsedIntent = await intent("Put my product in a premium lifestyle scene");
+    const currentPlan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-legacy",
+      rawInstruction: "Put my product in a premium lifestyle scene",
+    });
+    const legacyPlan = structuredClone(currentPlan) as Record<string, unknown>;
+    const creativeIntent = legacyPlan.creativeIntent as { creativeBrief: Record<string, unknown> };
+    delete creativeIntent.creativeBrief.creativeBlueprint;
+
+    const parsed = parseGenerationPlan(legacyPlan);
+    expect(parsed.creativeIntent!.creativeBrief!.creativeBlueprint).toBeNull();
+  });
+
+  it("upgrades a Phase 1 persisted blueprint safely when the orchestration fields are absent", async () => {
+    const parsedIntent = await intent("Create a social media creative");
+    const currentPlan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: null, creativeSessionId: "session-phase-1", rawInstruction: "Create a social media creative" });
+    const phaseOne = structuredClone(currentPlan) as Record<string, unknown>;
+    const blueprint = (phaseOne.creativeIntent as { creativeBrief: { creativeBlueprint: Record<string, unknown> } }).creativeBrief.creativeBlueprint;
+    delete (blueprint.brief as Record<string, unknown>).executionMode;
+    delete (blueprint.commercialStrategy as Record<string, unknown>).compositionalPriority;
+    delete (blueprint.creativeDirection as Record<string, unknown>).conceptSource;
+    delete (blueprint.photographyDirection as Record<string, unknown>).framingPriority;
+    const design = blueprint.designDirection as Record<string, unknown>;
+    design.assetKind = "DESIGNED_COMMUNICATION";
+    const dna = blueprint.campaignDNA as Record<string, unknown>;
+    delete dna.governingConcept;
+    delete dna.artDirection;
+    delete dna.photographyCharacter;
+    delete dna.designAssetKind;
+
+    const parsed = parseGenerationPlan(phaseOne);
+    expect(parsed.creativeIntent!.creativeBrief!.creativeBlueprint!.designDirection.assetKind).toBe("FINISHED_DESIGNED_ASSET");
+    expect(parsed.creativeIntent!.creativeBrief!.creativeBlueprint!.brief.executionMode).toBe("NEW_CREATION");
   });
 
   it("leads the synthesized prompt with the identity instruction, before the creative direction (Part 5's hierarchy)", async () => {

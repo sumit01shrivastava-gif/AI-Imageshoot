@@ -33,6 +33,7 @@ import type { ParsedIntent, CampaignArtDirection, CampaignCommunication } from "
 import type { CreativeIntentValue, GenerationModeValue } from "./types";
 import { buildIdentityConstraints, buildStandaloneIdentityConstraints, filterProtectedRemovals } from "./identity-constraints";
 import { buildCreativeBrief } from "./creative-brief";
+import { compileProviderExecutionBrief, type CreativeBlueprint, type PreviousCampaignDNA } from "./creative-blueprint";
 
 export class ProductNotAnalyzedError extends Error {
   constructor() {
@@ -164,11 +165,16 @@ function synthesizeCreativePrompt(
   campaignSceneTransformation: boolean,
   campaignCommunication: CampaignCommunication,
   campaignArtDirection: CampaignArtDirection,
+  /** The blueprint owns semantic prompt ordering. This lets the persisted
+   * Generation Director contract control inclusion without creating a
+   * duplicate, parallel provider prompt. */
+  blueprint: CreativeBlueprint,
   /** Compact, structured execution priorities. This remains separate
    * from the holistic direction so a real vendor's prose cannot
    * accidentally omit its own operational decisions before the final
    * provider prompt is assembled. */
   inferredCreativeDecisions: string[],
+  negativeCreativeDecisions: string[],
 ): string {
   const subject = subjectPhrase;
   const parts = [INTENT_FRAMING[intent](subject)];
@@ -210,30 +216,26 @@ function synthesizeCreativePrompt(
   // item appended after them. Omitted entirely when there is no concept
   // (the common case on the deterministic path) — never an empty/filler
   // sentence.
-  const conceptClause = creativeConcept ? ` SELECTED CAMPAIGN PROPOSITION: ${creativeConcept}.` : "";
-  const artDirectionClauses = [
-    campaignArtDirection.visualStory ? `VISUAL STORY: ${campaignArtDirection.visualStory}.` : null,
-    campaignArtDirection.heroTreatment ? `HERO TREATMENT: ${campaignArtDirection.heroTreatment}.` : null,
-    campaignArtDirection.canvasArchitecture ? `CANVAS ARCHITECTURE: ${campaignArtDirection.canvasArchitecture}.` : null,
-    campaignArtDirection.productEnvironmentRelationship ? `PRODUCT-WORLD RELATIONSHIP: ${campaignArtDirection.productEnvironmentRelationship}.` : null,
-    campaignArtDirection.materialLightingStrategy ? `MATERIAL AND LIGHT: ${campaignArtDirection.materialLightingStrategy}.` : null,
-  ].filter((clause): clause is string => Boolean(clause));
-  const campaignClause = campaignSceneTransformation
-    ? " Campaign scene transformation is required: use the reference only for the physical product; actively discard incidental source-scene influence and create a new, product-derived commercial world rather than an enhanced version of the source photograph."
-    : "";
+  // Campaign/art/design conclusions are compiled from the resolved
+  // Blueprint below. Keep only explicit execution priorities here; passing
+  // every legacy clause through would duplicate the same instruction.
   const executionClause =
     inferredCreativeDecisions.length > 0 ? ` Execution priorities: ${inferredCreativeDecisions.slice(0, 3).join(" ")}` : "";
-  const communicationClause =
-    campaignCommunication.mode === "VISUAL_ONLY"
-      ? " Keep the result visual-first: do not add campaign copy, invented branding, logos, labels, slogans, or decorative typography."
-      : campaignCommunication.mode === "MINIMAL_CAMPAIGN_COPY"
-        ? ` CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only this minimal approved copy: headline “${campaignCommunication.headline ?? ""}”${campaignCommunication.supportingLine ? `; supporting line “${campaignCommunication.supportingLine}”` : ""}. Do not add any other text, brand, logo, claim, or badge.`
-        : ` FACTUAL CAMPAIGN COMMUNICATION: reserve ${campaignCommunication.reservedTextArea.toLowerCase().replace(/_/g, " ")} as clean, legible negative space and include only the approved merchant-supplied copy: ${[campaignCommunication.headline, campaignCommunication.supportingLine, ...campaignCommunication.callouts].filter(Boolean).map((copy) => `“${copy}”`).join("; ")}. Do not add, rewrite, or elaborate factual claims, brands, logos, labels, or badges.`;
 
-  const creativeDirection = artDirectionClauses.length > 0
-    ? ` ${artDirectionClauses.join(" ")}`
-    : ` ${overallCreativeDirection}`;
-  return `${identityInstruction}${referenceFidelity}${conceptClause}${campaignClause}${creativeDirection} MERCHANT DIRECTION: ${parts.join(", ")}.${executionClause}${communicationClause}`;
+  // The old clause inputs are first normalized into the Blueprint, then the
+  // Generation Director compiles the provider-facing brief. This temporary
+  // local composition keeps explicit intent details while avoiding metadata
+  // leakage and repeated product-lock prose.
+  const primaryTask = [INTENT_FRAMING[intent](subject), ...parts.slice(1)].join(", ");
+  const compiled = compileProviderExecutionBrief({
+    blueprint,
+    primaryTask,
+    identityInstruction,
+    referenceInstruction: referenceFidelity.trim() || null,
+    explicitDirection: [overallCreativeDirection, executionClause.trim()].filter(Boolean),
+    negativeConstraints: negativeCreativeDecisions,
+  });
+  return compiled;
 }
 
 export interface BuildCreativeGenerationPlanInput {
@@ -267,6 +269,7 @@ export interface BuildCreativeGenerationPlanInput {
    * concept — see personalization.server.ts) or when nothing was
    * personalized this turn. */
   personalizedFields?: readonly string[];
+  previousCampaignDNA?: PreviousCampaignDNA | null;
 }
 
 /**
@@ -288,6 +291,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     creativeSessionId,
     rawInstruction,
     personalizedFields,
+    previousCampaignDNA,
   } = input;
 
   const requestedIds = new Set(sourceMediaIds.length > 0 ? sourceMediaIds : product.media.map((m) => m.id));
@@ -349,6 +353,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
 
   const creativeBrief = buildCreativeBrief({
     intent: parsedIntent.intent,
+    mode: parsedIntent.mode,
     subjectPhrase: `the ${category}`,
     action: creative.action,
     scene: creative.scene,
@@ -373,6 +378,7 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     externalCampaignArtDirection: parsedIntent.campaignArtDirection,
     trustedCampaignFacts: [product.title, product.description ?? ""],
     category,
+    previousCampaignDNA,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -386,7 +392,9 @@ export function buildCreativeGenerationPlan(input: BuildCreativeGenerationPlanIn
     creativeBrief.campaignSceneTransformation,
     creativeBrief.campaignCommunication,
     creativeBrief.campaignArtDirection,
+    creativeBrief.creativeBlueprint,
     creativeBrief.inferredCreativeDecisions,
+    creativeBrief.negativeCreativeDecisions,
   );
 
   const referenceImages = isEditTurn ? [{ url: previousResultUrl!, role: "previous_result" as const }] : [];
@@ -482,6 +490,7 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
    * `BuildCreativeGenerationPlanInput.personalizedFields`'s identical
    * doc comment. */
   personalizedFields?: readonly string[];
+  previousCampaignDNA?: PreviousCampaignDNA | null;
 }
 
 /**
@@ -525,7 +534,7 @@ export interface BuildStandaloneCreativeGenerationPlanInput {
  *     clause.
  */
 export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCreativeGenerationPlanInput): GenerationPlan {
-  const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction, personalizedFields } = input;
+  const { parsedIntent, uploadedReferenceImageUrls, previousResultUrl, creativeSessionId, rawInstruction, personalizedFields, previousCampaignDNA } = input;
 
   // This turn's own extracted subject wins; a follow-up that doesn't
   // restate one ("make it brighter") falls back to whatever this
@@ -592,6 +601,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
 
   const creativeBrief = buildCreativeBrief({
     intent: parsedIntent.intent,
+    mode: parsedIntent.mode,
     subjectPhrase,
     action: creative.action,
     scene: creative.scene,
@@ -625,6 +635,7 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     // falls back to `resolveProductInteraction`'s generic default rather
     // than guessing.
     category: resolvedSubject,
+    previousCampaignDNA,
   });
 
   const prompt = synthesizeCreativePrompt(
@@ -638,7 +649,9 @@ export function buildStandaloneCreativeGenerationPlan(input: BuildStandaloneCrea
     creativeBrief.campaignSceneTransformation,
     creativeBrief.campaignCommunication,
     creativeBrief.campaignArtDirection,
+    creativeBrief.creativeBlueprint,
     creativeBrief.inferredCreativeDecisions,
+    creativeBrief.negativeCreativeDecisions,
   );
 
   // Ground-truth reference for the actual PROVIDER call —

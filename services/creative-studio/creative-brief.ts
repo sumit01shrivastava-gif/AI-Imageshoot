@@ -120,7 +120,7 @@
  * Director's own judgment about what to exclude, and the two are never
  * merged.
  */
-import type { CreativeIntentValue } from "./types";
+import type { CreativeIntentValue, GenerationModeValue } from "./types";
 import {
   DEFAULT_CAMPAIGN_ART_DIRECTION,
   DEFAULT_CAMPAIGN_COMMUNICATION,
@@ -128,6 +128,7 @@ import {
   type CampaignCommunication,
 } from "./intent-schema";
 import { resolveProductInteraction } from "../generation/product-interaction";
+import { buildCreativeBlueprint, type CreativeBlueprint, type PreviousCampaignDNA } from "./creative-blueprint";
 
 /** Style/lighting keywords that indicate a moody/dramatic treatment was
  * asked for — used only to decide whether to add a shadow-control
@@ -243,6 +244,9 @@ export interface CreativeBrief {
   /** Coherent visual-story and canvas conclusions selected by the same
    * Creative Director pass; empty on older/narrow intents. */
   campaignArtDirection: CampaignArtDirection;
+  /** Canonical cross-director decision state. This is structured internal
+   * context, not another provider prompt or a chain-of-thought transcript. */
+  creativeBlueprint: CreativeBlueprint;
   /** The one coherent, holistic sentence — see module doc comment. */
   overallCreativeDirection: string;
 }
@@ -271,6 +275,9 @@ const INTENT_OBJECTIVE: Record<CreativeIntentValue, string> = {
 
 export interface BuildCreativeBriefInput {
   intent: CreativeIntentValue;
+  /** The resolved generation mode, preserved in the blueprint so future
+   * directors can distinguish a fresh concept from a continuity turn. */
+  mode?: GenerationModeValue;
   /** Fully-formed subject phrase, e.g. "the Handbags" or "a pair of
    * sneakers" — see plan-builder.ts's `synthesizeCreativePrompt` doc
    * comment for why callers build this themselves. */
@@ -330,6 +337,7 @@ export interface BuildCreativeBriefInput {
   /** Exact merchant/catalog strings eligible for factual campaign copy.
    * This is intentionally not visual inference or model-supplied data. */
   trustedCampaignFacts?: readonly string[];
+  previousCampaignDNA?: PreviousCampaignDNA | null;
 }
 
 /** A product-first campaign creates a new world; a narrow edit or an
@@ -651,6 +659,22 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
       ? input.externalCreativeDirection.trim()
       : composeOverallCreativeDirection(input, transformations, personalizationApplied, inferredCreativeDecisions);
 
+  const campaignSceneTransformation = requiresCampaignSceneTransformation(input);
+  const campaignArtDirection = input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION;
+  const creativeBlueprint = buildCreativeBlueprint({
+    intent: input.intent,
+    mode: input.mode ?? "TEXT_TO_IMAGE",
+    category: input.category ?? null,
+    hasProductIntelligence: input.preservationRequirements.length > 0,
+    isEditTurn: input.isEditTurn,
+    campaignSceneTransformation,
+    creativeConcept,
+    campaignArtDirection,
+    campaignCommunication,
+    previousCampaignDNA: input.previousCampaignDNA,
+    hasExplicitCreativeDirection: Boolean(input.scene || input.style.length || input.lighting || input.composition || input.camera || input.colorDirection || creativeConcept),
+  });
+
   return {
     creativeObjective: INTENT_OBJECTIVE[input.intent],
     subjectTreatment: input.action ? `natural, in the middle of ${input.action}, not stiffly posed` : null,
@@ -661,9 +685,10 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     inferredCreativeDecisions,
     creativeConcept,
     negativeCreativeDecisions,
-    campaignSceneTransformation: requiresCampaignSceneTransformation(input),
+    campaignSceneTransformation,
     campaignCommunication,
-    campaignArtDirection: input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION,
+    campaignArtDirection,
+    creativeBlueprint,
     overallCreativeDirection,
   };
 }
