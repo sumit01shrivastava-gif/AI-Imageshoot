@@ -405,6 +405,20 @@ export const processGenerationJob: Processor<GenerationJobPayload> = async (job)
     }
     const resultPersistMs = Date.now() - persistStartedAt;
 
+    // This is the result-first boundary: the image is durable, queryable,
+    // and may be rendered by the Studio before any Quality Director work.
+    // Keep it distinct from terminal completion so production can measure
+    // provider completion versus the first moment a result is available.
+    logger.info("generation.result_available", {
+      shop,
+      generationJobId,
+      outputCount: storedResults.length,
+      providerGenerationMs,
+      storagePersistMs: resultPersistMs,
+      resultAvailableMs: Date.now() - attemptStartedAt,
+      generationTotalMs: jobRow.createdAt instanceof Date ? Math.max(0, Date.now() - jobRow.createdAt.getTime()) : null,
+    });
+
     // Publish durable image results before the visual critic runs. With
     // automatic correction disabled, waiting for a non-critical critic call
     // only delays first render. The job stays PROCESSING while evaluation

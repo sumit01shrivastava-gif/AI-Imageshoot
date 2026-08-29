@@ -10,8 +10,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { randomUUID } from "node:crypto";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
 import { TenantMismatchError } from "../../lib/auth";
 import { withResultsSanitizedForClient } from "../../lib/storage";
@@ -33,7 +32,7 @@ import {
 import { getPlan } from "../../services/usage/entitlement.server";
 import { Composer } from "../components/composer";
 import { StudioGenerationLoading } from "../components/studio-generation-loading";
-import { generationProgressStage, isGenerationActiveStage, type GenerationProgressStage } from "../../services/generation/progress";
+import { generationProgressStage, hasActiveGeneration, isGenerationActiveStage, isResultRenderable, type GenerationProgressStage } from "../../services/generation/progress";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
 const GENERIC_ERROR = "I couldn't complete that action. Please try again.";
@@ -226,7 +225,7 @@ export default function StudioConversation() {
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
 
   const latestJob = jobs[0] ?? null;
-  const isInFlight = latestJob ? isGenerationActiveStage(latestJob.progressStage) : false;
+  const isInFlight = hasActiveGeneration(jobs);
 
   useEffect(() => {
     if (!isInFlight) return;
@@ -249,6 +248,14 @@ export default function StudioConversation() {
   const optimisticMessage = isSending ? pendingMessage : null;
   const insufficientCredits =
     messageFetcher.data && !messageFetcher.data.ok && "reason" in messageFetcher.data && messageFetcher.data.reason === "insufficient_credits";
+
+  useEffect(() => {
+    const generationJobId = messageFetcher.data && messageFetcher.data.ok && "generationJobId" in messageFetcher.data ? messageFetcher.data.generationJobId : null;
+    if (messageFetcher.state !== "idle" || typeof generationJobId !== "string") return;
+    // Fetcher actions normally revalidate, but request a prompt first poll
+    // so a durable result cannot wait behind unrelated navigation work.
+    revalidator.revalidate();
+  }, [messageFetcher.data, messageFetcher.state, revalidator]);
 
   // Keep a newly submitted turn visible, but never repeatedly pull a
   // merchant away from earlier conversation history while they are reading.
@@ -318,7 +325,7 @@ export default function StudioConversation() {
               if (!turnJob) return null;
               return <>
                 <div className="studio-turn-generation">
-                  {active && !turnResult?.url && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
+                  {active && !isResultRenderable(turnJob.results.length) && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
                   {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
                   {turnResult?.url && <img className="studio-turn-result" src={turnResult.url} alt="Generated result" />}
                   {active && turnResult?.url && (

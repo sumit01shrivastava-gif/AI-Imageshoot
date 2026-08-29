@@ -15,13 +15,11 @@ export interface StudioGenerationLoadingProps {
   title?: string;
   /** The real job stage. Never use a simulated percentage. */
   stage?: ActiveGenerationProgressStage;
-  activeStep?: 0 | 1 | 2;
 }
 
-export function StudioGenerationLoading({ title, stage = "QUEUED", activeStep }: StudioGenerationLoadingProps) {
+export function StudioGenerationLoading({ title, stage = "QUEUED" }: StudioGenerationLoadingProps) {
   const presentation = generationProgressPresentation[stage];
   const copy = presentation.copy;
-  const step = activeStep ?? presentation.step;
   const [phraseIndex, setPhraseIndex] = useState(0);
 
   useEffect(() => {
@@ -35,11 +33,6 @@ export function StudioGenerationLoading({ title, stage = "QUEUED", activeStep }:
       <div className="studio-generating-mark" aria-hidden="true"><span /></div>
       <div className="studio-generating-title">{title ?? presentation.title}</div>
       <p className="studio-generating-message" key={`${stage}-${phraseIndex}`}>{copy[phraseIndex % copy.length]}</p>
-      <div className="studio-generating-steps" aria-hidden="true">
-        <span className="studio-generating-step" data-active={step >= 0}>Direction received</span>
-        <span className="studio-generating-step" data-active={step >= 1}>Image in progress</span>
-        <span className="studio-generating-step" data-active={step >= 2}>Final detail check</span>
-      </div>
     </div>
   );
 }
