@@ -13,6 +13,14 @@ import type { VisualQualityEvaluationInput, VisualQualityEvaluationRaw, VisualQu
 import { VisualQualityEvaluationRawSchema } from "../generation/quality-director";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
+/**
+ * The Quality Director uses OpenAI's Responses API, not the image-edit API.
+ * `AI_PROVIDER_BASE_URL` may legitimately point at an image-only proxy for
+ * generation, but such a proxy need not implement `/v1/responses`. Keep this
+ * transport pinned to OpenAI's official Responses origin instead of sharing
+ * the image provider's optional override.
+ */
+const OFFICIAL_RESPONSES_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 25_000;
 const MAX_REFERENCE_BYTES = 12 * 1024 * 1024;
 
@@ -22,6 +30,13 @@ const MAX_REFERENCE_BYTES = 12 * 1024 * 1024;
  * different compatible vision/structured-output model explicitly. */
 export function resolveQualityEvaluationModel(env: { AI_PROVIDER_QUALITY_MODEL?: string }): string {
   return env.AI_PROVIDER_QUALITY_MODEL || DEFAULT_MODEL;
+}
+
+export function resolveQualityEvaluationBaseUrl(env: { AI_PROVIDER_BASE_URL?: string }): string {
+  // Deliberately read the shared override so this non-sharing boundary is
+  // explicit and regression-tested rather than accidental.
+  void env.AI_PROVIDER_BASE_URL;
+  return OFFICIAL_RESPONSES_BASE_URL;
 }
 
 function dataUrl(bytes: Uint8Array, contentType: string): string {
@@ -65,18 +80,26 @@ export class OpenAIVisualQualityEvaluator implements VisualQualityEvaluator {
     if (!env.AI_PROVIDER_API_KEY) throw new Error("OpenAI visual quality evaluation requires AI_PROVIDER_API_KEY.");
     const timeoutMs = env.AI_PROVIDER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS;
     const model = resolveQualityEvaluationModel(env);
+    const baseURL = resolveQualityEvaluationBaseUrl(env);
     const referenceImages = await Promise.all(input.references.slice(0, 3).map((reference) => {
       if (reference.data && reference.contentType) return Promise.resolve({ data: reference.data, contentType: reference.contentType });
       if (!reference.url) throw new ProviderResponseError(this.name, "reference image had no accessible bytes or URL");
       return loadReference(reference.url, timeoutMs);
     }));
-    const client = new OpenAI({ apiKey: env.AI_PROVIDER_API_KEY, baseURL: env.AI_PROVIDER_BASE_URL || undefined, timeout: timeoutMs, maxRetries: 0 });
+    const client = new OpenAI({ apiKey: env.AI_PROVIDER_API_KEY, baseURL, timeout: timeoutMs, maxRetries: 0 });
     const content = [
       { type: "input_text" as const, text: `Evaluate the generated image against this compact creative brief. Inspect pixels, not prompt compliance alone. Source reference images identify the physical product, not incidental source scenery. Return concise evidence only.\n${JSON.stringify(input.qualityBrief)}` },
       { type: "input_image" as const, image_url: dataUrl(input.generatedImage.data, input.generatedImage.contentType), detail: "high" as const },
       ...referenceImages.map((image) => ({ type: "input_image" as const, image_url: dataUrl(image.data, image.contentType), detail: "high" as const })),
     ];
-    logger.info("ai_provider.quality_evaluation.request", { provider: this.name, model, referenceImageCount: referenceImages.length });
+    logger.info("ai_provider.quality_evaluation.request", {
+      provider: this.name,
+      model,
+      referenceImageCount: referenceImages.length,
+      endpoint: "/v1/responses",
+      baseUrlHost: new URL(baseURL).host,
+      baseUrlPath: new URL(baseURL).pathname,
+    });
     const { result: response, latencyMs } = await measureLatencyMs(() => client.responses.create({
       model,
       input: [{ role: "user", content }],
