@@ -149,6 +149,12 @@ export interface CreativeSessionDetail {
   jobs: GenerationJobRow[];
   creativeContext: CreativeContext;
   entitlement: EntitlementCheck;
+  /** Safe loader observability only — no prompt, URL, or attachment data. */
+  telemetry: {
+    resultSigningMs: number;
+    resultSigningCount: number;
+    historicalResultCount: number;
+  };
 }
 
 /** Everything the Creative Studio route's loader needs in one call —
@@ -167,11 +173,47 @@ export async function getCreativeSessionDetail(context: AuthContext, sessionId: 
     checkGenerationEntitlement(context, 1),
   ]);
 
+  const resultSigningStartedAt = Date.now();
+  const historicalResultCount = jobsRaw.reduce((count, job) => count + job.results.length, 0);
   const jobs = await Promise.all(jobsRaw.map(async (job) => ({ ...job, results: await resignResultUrls(job.results) })));
+  const resultSigningMs = Date.now() - resultSigningStartedAt;
 
   const creativeContext = buildSessionCreativeContext(session, jobs, messages);
 
-  return { session, messages, jobs, creativeContext, entitlement };
+  return {
+    session,
+    messages,
+    jobs,
+    creativeContext,
+    entitlement,
+    telemetry: {
+      resultSigningMs,
+      resultSigningCount: historicalResultCount,
+      historicalResultCount,
+    },
+  };
+}
+
+/**
+ * Validates a browser timing event without calling `getCreativeSessionDetail`.
+ * The latter deliberately fresh-signs every historical result for rendering;
+ * using it merely to validate telemetry would make the telemetry endpoint
+ * itself distort the loader/revalidation timing it is meant to measure.
+ */
+export async function canRecordCreativeStudioTelemetry(
+  context: AuthContext,
+  sessionId: string,
+  generationJobId?: string | null,
+  resultId?: string | null,
+): Promise<boolean> {
+  const session = await getCreativeSession(context, sessionId);
+  if (!session) return false;
+  if (!generationJobId) return true;
+
+  const jobs = await listGenerationJobsForCreativeSession(context.shop, session.id);
+  const job = jobs.find((candidate) => candidate.id === generationJobId);
+  if (!job) return false;
+  return !resultId || job.results.some((result) => result.id === resultId);
 }
 
 function buildSessionCreativeContext(

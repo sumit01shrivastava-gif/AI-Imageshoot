@@ -15,7 +15,7 @@
  * `uploadReferenceImages`, which stores them through the existing
  * StorageProvider abstraction — no parallel storage system.
  */
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 export const MAX_ATTACHMENTS = 4;
 export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8MB
@@ -34,6 +34,12 @@ export interface ComposerProps {
    * so the draft survives a slow response. */
   busy?: boolean;
   onSubmit: (message: string, files: File[], submittedAt: number) => void;
+  /**
+   * Lets a conversation keep browser-owned preview URLs alive in its
+   * optimistic turn after submission. The caller takes ownership of those
+   * URLs and must revoke them after persisted reconciliation or unmount.
+   */
+  onSubmitWithAttachments?: (message: string, attachments: ComposerAttachment[], submittedAt: number) => void;
 }
 
 /** Imperative handle so a parent can fill the draft from a suggestion
@@ -48,13 +54,28 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ placeholder, disabled, busy, onSubmit }, ref) {
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({ placeholder, disabled, busy, onSubmit, onSubmitWithAttachments }, ref) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const ownedAttachmentsRef = useRef<ComposerAttachment[]>([]);
+
+  function updateAttachments(updater: (current: ComposerAttachment[]) => ComposerAttachment[]) {
+    setAttachments((current) => {
+      const next = updater(current);
+      ownedAttachmentsRef.current = next;
+      return next;
+    });
+  }
+
+  useEffect(() => () => {
+    // Pre-submit previews remain Composer-owned. Post-submit previews are
+    // explicitly transferred to the optimistic conversation turn below.
+    ownedAttachmentsRef.current.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl));
+  }, []);
 
   useImperativeHandle(ref, () => ({
     fill(text: string) {
@@ -84,12 +105,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       accepted.push({ file, previewUrl: URL.createObjectURL(file) });
     }
 
-    if (accepted.length > 0) setAttachments((prev) => [...prev, ...accepted]);
+    if (accepted.length > 0) updateAttachments((current) => [...current, ...accepted]);
     setError(firstError);
   }
 
   function removeAttachment(index: number) {
-    setAttachments((prev) => {
+    updateAttachments((prev) => {
       const next = [...prev];
       const [removed] = next.splice(index, 1);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
@@ -104,9 +125,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setError("Describe what you want, or attach an image to start from.");
       return;
     }
-    onSubmit(trimmed, attachments.map((a) => a.file), Date.now());
+    const submittedAt = Date.now();
+    if (onSubmitWithAttachments) {
+      // Transfer ownership of preview URLs to the optimistic conversation
+      // turn. Clearing Composer state must not revoke them first.
+      onSubmitWithAttachments(trimmed, attachments, submittedAt);
+      ownedAttachmentsRef.current = [];
+    } else {
+      onSubmit(trimmed, attachments.map((a) => a.file), submittedAt);
+      attachments.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl));
+    }
     setDraft("");
-    attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
     setError(null);
   }

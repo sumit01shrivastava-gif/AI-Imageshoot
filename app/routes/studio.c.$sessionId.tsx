@@ -8,7 +8,7 @@
  * (a standalone session has no Shopify product to publish to — see
  * CreativeSessionRow.product's schema comment).
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { randomUUID } from "node:crypto";
 import { useFetcher, useLoaderData, useRevalidator, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
@@ -17,6 +17,7 @@ import { withResultsSanitizedForClient } from "../../lib/storage";
 import { logger } from "../../lib/logging/logger.server";
 import {
   getCreativeSessionDetail,
+  canRecordCreativeStudioTelemetry,
   sendCreativeMessage,
   selectCreativeResult,
   reviewCreativeResult,
@@ -30,10 +31,11 @@ import {
   GenerationResultNotFoundError,
 } from "../../services/creative-studio/session.server";
 import { getPlan } from "../../services/usage/entitlement.server";
-import { Composer } from "../components/composer";
+import { Composer, type ComposerAttachment } from "../components/composer";
 import { StudioGenerationLoading } from "../components/studio-generation-loading";
 import { StudioResultImage } from "../components/studio-result-image";
-import { markStudioGenerationSubmitted } from "../components/studio-ttfvi";
+import { isStudioLatencyEvent, type StudioLatencyEvent } from "../components/studio-ttfvi";
+import { isPendingStudioTurnReconciled, releaseOptimisticAttachments, type PendingStudioTurn } from "../components/studio-optimistic-turn";
 import { generationProgressStage, hasActiveGeneration, isGenerationActiveStage, isResultRenderable, type GenerationProgressStage } from "../../services/generation/progress";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
@@ -65,9 +67,11 @@ function renderMessageContent(content: string) {
 }
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
+  const loaderStartedAt = Date.now();
   const { context } = await requireWorkspaceContext(request);
 
   let detail: Awaited<ReturnType<typeof getCreativeSessionDetail>>;
+  const planPromise = getPlan(context.shop);
   try {
     detail = await getCreativeSessionDetail(context, params.sessionId!);
   } catch (error) {
@@ -77,7 +81,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw error;
   }
 
-  const plan = await getPlan(context.shop);
+  const plan = await planPromise;
 
   return {
     session: detail.session,
@@ -108,6 +112,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }),
     entitlement: detail.entitlement,
     planName: plan.name,
+    telemetry: { ...detail.telemetry, loaderDurationMs: Date.now() - loaderStartedAt },
   };
 };
 
@@ -154,39 +159,46 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
-  if (intent === "record-ttfvi") {
+  if (intent === "record-studio-latency") {
+    const event = formData.get("event");
     const generationJobId = formData.get("generationJobId");
     const resultId = formData.get("resultId");
-    const resultDetectedAt = Number(formData.get("resultDetectedAt"));
-    const imageLoadStartedAt = Number(formData.get("imageLoadStartedAt"));
-    const imageRenderedAt = Number(formData.get("imageRenderedAt"));
-    const userSubmitAt = formData.has("userSubmitAt") ? Number(formData.get("userSubmitAt")) : null;
-    const timings = [resultDetectedAt, imageLoadStartedAt, imageRenderedAt];
+    const occurredAt = Number(formData.get("occurredAt"));
+    const submittedAt = formData.has("submittedAt") ? Number(formData.get("submittedAt")) : null;
+    const attachmentCount = formData.has("attachmentCount") ? Number(formData.get("attachmentCount")) : null;
+    const resultCount = formData.has("resultCount") ? Number(formData.get("resultCount")) : null;
+    const loaderDurationMs = formData.has("loaderDurationMs") ? Number(formData.get("loaderDurationMs")) : null;
+    const resultSigningMs = formData.has("resultSigningMs") ? Number(formData.get("resultSigningMs")) : null;
+    const resultSigningCount = formData.has("resultSigningCount") ? Number(formData.get("resultSigningCount")) : null;
+    const resourceDurationMs = formData.has("resourceDurationMs") ? Number(formData.get("resourceDurationMs")) : null;
+    const values = [occurredAt, submittedAt, attachmentCount, resultCount, loaderDurationMs, resultSigningMs, resultSigningCount, resourceDurationMs];
     if (
-      typeof generationJobId !== "string" ||
-      typeof resultId !== "string" ||
-      timings.some((value) => !Number.isFinite(value) || value <= 0)
+      typeof event !== "string" || !isStudioLatencyEvent(event) || !Number.isFinite(occurredAt) || occurredAt <= 0 ||
+      values.some((value) => value !== null && (!Number.isFinite(value) || value < 0)) ||
+      (generationJobId !== null && typeof generationJobId !== "string") ||
+      (resultId !== null && typeof resultId !== "string")
     ) return { ok: false as const, error: GENERIC_ERROR };
-    if (userSubmitAt !== null && (!Number.isFinite(userSubmitAt) || userSubmitAt <= 0)) return { ok: false as const, error: GENERIC_ERROR };
 
-    const detail = await getCreativeSessionDetail(context, sessionId);
-    const belongsToSession = detail.jobs.some((job) =>
-      job.id === generationJobId && job.results.some((result) => result.id === resultId),
+    const belongsToSession = await canRecordCreativeStudioTelemetry(
+      context,
+      sessionId,
+      typeof generationJobId === "string" ? generationJobId : null,
+      typeof resultId === "string" ? resultId : null,
     );
     if (!belongsToSession) return { ok: false as const, error: GENERIC_ERROR };
 
-    // This is observability only. The browser event is intentionally
-    // best-effort and cannot affect generation, result rendering or billing.
-    logger.info("studio.ttfvi.image_rendered", {
-      workspaceId,
-      userId,
-      sessionId,
-      generationJobId,
-      resultId,
-      resultDetectedAt,
-      imageLoadStartedAt,
-      imageRenderedAt,
-      ...(userSubmitAt !== null ? { userSubmitAt, timeToFirstVisibleImageMs: imageRenderedAt - userSubmitAt } : {}),
+    // Best-effort observability only: never a prompt, URL, filename or image.
+    logger.info("studio.latency", {
+      workspaceId, userId, sessionId, event, occurredAt,
+      ...(typeof generationJobId === "string" ? { generationJobId } : {}),
+      ...(typeof resultId === "string" ? { resultId } : {}),
+      ...(submittedAt !== null ? { submittedAt, elapsedSinceSubmitMs: occurredAt - submittedAt } : {}),
+      ...(attachmentCount !== null ? { attachmentCount } : {}),
+      ...(resultCount !== null ? { resultCount } : {}),
+      ...(loaderDurationMs !== null ? { loaderDurationMs } : {}),
+      ...(resultSigningMs !== null ? { resultSigningMs } : {}),
+      ...(resultSigningCount !== null ? { resultSigningCount } : {}),
+      ...(resourceDurationMs !== null ? { resourceDurationMs } : {}),
     });
     return { ok: true as const };
   }
@@ -247,7 +259,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function StudioConversation() {
-  const { session, messages, jobs, entitlement, planName } = useLoaderData<typeof loader>();
+  const { session, messages, jobs, entitlement, planName, telemetry } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const messageFetcher = useFetcher<typeof action>();
   const selectFetcher = useFetcher<typeof action>();
@@ -255,11 +267,58 @@ export default function StudioConversation() {
   const feedbackFetcher = useFetcher<typeof action>();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowTranscriptRef = useRef(true);
-  const pendingSubmissionStartedAtRef = useRef<number | null>(null);
-  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const pendingTurnRef = useRef<PendingStudioTurn | null>(null);
+  // Local to this mounted conversation: preserves a genuine client submit
+  // timestamp after optimistic attachment URLs have been released.
+  const submitTimesByJobRef = useRef(new Map<string, number>());
+  const [pendingTurn, setPendingTurn] = useState<PendingStudioTurn | null>(null);
+  const latencyEmittedRef = useRef(new Set<string>());
 
   const latestJob = jobs[0] ?? null;
   const isInFlight = hasActiveGeneration(jobs);
+  const optimisticTurnReconciled = isPendingStudioTurnReconciled(pendingTurn, messages);
+
+  const emitLatency = useCallback((
+    event: StudioLatencyEvent,
+    generationJobId?: string | null,
+    resultId?: string | null,
+    metadata: Record<string, number> = {},
+    occurredAt = Date.now(),
+  ) => {
+    const key = `${event}:${generationJobId ?? "turn"}:${resultId ?? ""}`;
+    if (latencyEmittedRef.current.has(key)) return;
+    latencyEmittedRef.current.add(key);
+    const body = new FormData();
+    body.set("intent", "record-studio-latency");
+    body.set("event", event);
+    body.set("occurredAt", String(occurredAt));
+    if (generationJobId) body.set("generationJobId", generationJobId);
+    if (resultId) body.set("resultId", resultId);
+    const submittedAt = generationJobId
+      ? submitTimesByJobRef.current.get(generationJobId)
+      : pendingTurnRef.current?.submittedAt;
+    if (submittedAt) body.set("submittedAt", String(submittedAt));
+    for (const [name, value] of Object.entries(metadata)) body.set(name, String(value));
+    void fetch(window.location.pathname, { method: "POST", body, credentials: "same-origin", keepalive: true });
+  }, []);
+
+  const markOptimisticVisible = useCallback((field: "optimisticVisibleAt" | "referencePreviewVisibleAt") => {
+    const current = pendingTurnRef.current;
+    if (!current || current[field]) return;
+    const occurredAt = Date.now();
+    const next = { ...current, [field]: occurredAt };
+    pendingTurnRef.current = next;
+    setPendingTurn(next);
+    if (next.generationJobId) {
+      emitLatency(
+        field === "optimisticVisibleAt" ? "OPTIMISTIC_TURN_VISIBLE" : "REFERENCE_PREVIEW_VISIBLE",
+        next.generationJobId,
+        null,
+        { attachmentCount: next.attachments.length },
+        occurredAt,
+      );
+    }
+  }, [emitLatency]);
 
   useEffect(() => {
     if (!isInFlight) return;
@@ -279,38 +338,92 @@ export default function StudioConversation() {
     null;
 
   const isSending = messageFetcher.state !== "idle";
-  const optimisticMessage = isSending ? pendingMessage : null;
+  const optimisticTurn = pendingTurn && !optimisticTurnReconciled ? pendingTurn : null;
   const insufficientCredits =
     messageFetcher.data && !messageFetcher.data.ok && "reason" in messageFetcher.data && messageFetcher.data.reason === "insufficient_credits";
 
   useEffect(() => {
     const generationJobId = messageFetcher.data && messageFetcher.data.ok && "generationJobId" in messageFetcher.data ? messageFetcher.data.generationJobId : null;
     if (messageFetcher.state !== "idle" || typeof generationJobId !== "string") return;
-    if (pendingSubmissionStartedAtRef.current) {
-      markStudioGenerationSubmitted(generationJobId, pendingSubmissionStartedAtRef.current);
-      pendingSubmissionStartedAtRef.current = null;
+    if (pendingTurnRef.current && !pendingTurnRef.current.generationJobId) {
+      const next = { ...pendingTurnRef.current, generationJobId };
+      pendingTurnRef.current = next;
+      submitTimesByJobRef.current.set(generationJobId, next.submittedAt);
+      setPendingTurn(next);
+      emitLatency("USER_SUBMITTED", generationJobId, null, { attachmentCount: next.attachments.length }, next.submittedAt);
+      if (next.optimisticVisibleAt) {
+        emitLatency("OPTIMISTIC_TURN_VISIBLE", generationJobId, null, { attachmentCount: next.attachments.length }, next.optimisticVisibleAt);
+      }
+      if (next.referencePreviewVisibleAt) {
+        emitLatency("REFERENCE_PREVIEW_VISIBLE", generationJobId, null, { attachmentCount: next.attachments.length }, next.referencePreviewVisibleAt);
+      }
     }
     // Fetcher actions normally revalidate, but request a prompt first poll
     // so a durable result cannot wait behind unrelated navigation work.
     revalidator.revalidate();
-  }, [messageFetcher.data, messageFetcher.state, revalidator]);
+  }, [emitLatency, messageFetcher.data, messageFetcher.state, revalidator]);
+
+  useEffect(() => {
+    if (!pendingTurn || !optimisticTurnReconciled) return;
+    const jobId = pendingTurn.generationJobId;
+    if (jobId) emitLatency("PERSISTED_TURN_VISIBLE", jobId, null, { attachmentCount: pendingTurn.attachments.length });
+    releaseOptimisticAttachments(pendingTurn.attachments);
+    pendingTurnRef.current = null;
+  }, [emitLatency, optimisticTurnReconciled, pendingTurn]);
+
+
+  useEffect(() => {
+    emitLatency("LOADER_COMPLETED", null, null, {
+      loaderDurationMs: telemetry.loaderDurationMs,
+      resultSigningMs: telemetry.resultSigningMs,
+      resultSigningCount: telemetry.resultSigningCount,
+      resultCount: telemetry.historicalResultCount,
+    });
+  }, [emitLatency, telemetry.historicalResultCount, telemetry.loaderDurationMs, telemetry.resultSigningCount, telemetry.resultSigningMs]);
+
+  useEffect(() => {
+    for (const job of jobs) {
+      if (job.progressStage === "COMPLETED" && job.results.length > 0) {
+        emitLatency("QUALITY_TERMINAL_OBSERVED", job.id, job.results[0]?.id, { resultCount: job.results.length });
+      }
+    }
+  }, [emitLatency, jobs]);
+
+  useEffect(() => () => {
+    if (pendingTurnRef.current) releaseOptimisticAttachments(pendingTurnRef.current.attachments);
+  }, []);
+
+  useEffect(() => {
+    if (optimisticTurn) markOptimisticVisible("optimisticVisibleAt");
+  }, [markOptimisticVisible, optimisticTurn]);
 
   // Keep a newly submitted turn visible, but never repeatedly pull a
   // merchant away from earlier conversation history while they are reading.
   useEffect(() => {
     if (!shouldFollowTranscriptRef.current) return;
     transcriptEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [messages.length, optimisticMessage, latestJob?.updatedAt]);
+  }, [messages.length, optimisticTurn?.id, latestJob?.updatedAt]);
 
   function submitMessage(text: string, files: File[] = [], submittedAt = 0) {
+    submitMessageWithAttachments(text, files.map((file) => ({ file, previewUrl: "" })), submittedAt);
+  }
+
+  function submitMessageWithAttachments(text: string, attachments: ComposerAttachment[] = [], submittedAt = 0) {
     const trimmed = text.trim();
-    if ((trimmed.length === 0 && files.length === 0) || isSending) return;
+    if ((trimmed.length === 0 && attachments.length === 0) || isSending) return;
     const formData = new FormData();
     formData.set("intent", "send-message");
     formData.set("message", trimmed);
-    files.forEach((file) => formData.append("images", file));
-    setPendingMessage(trimmed || "Create a clean, professional product photo from this image.");
-    pendingSubmissionStartedAtRef.current = submittedAt > 0 ? submittedAt : null;
+    attachments.forEach(({ file }) => formData.append("images", file));
+    if (pendingTurnRef.current) releaseOptimisticAttachments(pendingTurnRef.current.attachments);
+    const nextPendingTurn: PendingStudioTurn = {
+      id: globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random()}`,
+      content: trimmed || "Create a clean, professional product photo from this image.",
+      attachments,
+      submittedAt: submittedAt > 0 ? submittedAt : Date.now(),
+    };
+    pendingTurnRef.current = nextPendingTurn;
+    setPendingTurn(nextPendingTurn);
     messageFetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
   }
 
@@ -366,7 +479,17 @@ export default function StudioConversation() {
                 <div className="studio-turn-generation">
                   {active && !isResultRenderable(turnJob.results.length) && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
                   {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
-                  {turnResult?.url && <StudioResultImage jobId={turnJob.id} resultId={turnResult.id} url={turnResult.url} />}
+                  {turnResult?.url && (
+                    <StudioResultImage
+                      jobId={turnJob.id}
+                      resultId={turnResult.id}
+                      url={turnResult.url}
+                      onTelemetry={(event, metadata) => emitLatency(event, turnJob.id, turnResult.id, {
+                        resultCount: turnJob.results.length,
+                        ...metadata,
+                      })}
+                    />
+                  )}
                   {active && turnResult?.url && (
                     <div className="studio-result-quality-check" role="status" aria-live="polite">
                       <span className="studio-dot-pulse" aria-hidden="true" />
@@ -416,9 +539,24 @@ export default function StudioConversation() {
             })()}
             </div>
           ))}
-          {optimisticMessage && <div className="studio-msg studio-msg-pending" data-role="USER">{optimisticMessage}</div>}
-          {optimisticMessage && (
+          {optimisticTurn && (
             <div className="studio-optimistic-turn">
+              <div className="studio-msg studio-msg-pending" data-role="USER">
+                {optimisticTurn.attachments.length > 0 && (
+                  <div className="studio-message-attachments">
+                    {optimisticTurn.attachments.map((attachment) => (
+                      <div key={attachment.previewUrl} className="studio-message-attachment">
+                        <img
+                          src={attachment.previewUrl}
+                          alt="Reference attached to this request"
+                          onLoad={() => markOptimisticVisible("referencePreviewVisibleAt")}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="studio-message-content">{renderMessageContent(optimisticTurn.content)}</div>
+              </div>
               <div className="studio-msg studio-msg-pending" data-role="ASSISTANT">I&rsquo;ve got it — I&rsquo;m shaping this into your next creative direction.</div>
               <div className="studio-turn-generation"><StudioGenerationLoading title="Starting your creative request…" stage="PREPARING" /></div>
             </div>
@@ -453,7 +591,7 @@ export default function StudioConversation() {
               ))}
             </div>
           )}
-          <Composer disabled={isSending} busy={isSending} onSubmit={submitMessage} placeholder="Continue this creative…" />
+          <Composer disabled={isSending} busy={isSending} onSubmit={submitMessage} onSubmitWithAttachments={submitMessageWithAttachments} placeholder="Continue this creative…" />
         </div>
       </section>
     </div>

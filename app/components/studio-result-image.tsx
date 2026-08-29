@@ -1,57 +1,59 @@
 /**
- * A result image is deliberately responsible for its own first-visible
- * telemetry.  The image remains a normal `<img>` so browser decoding,
- * caching and progressive rendering are never delayed by analytics.
+ * A result image owns only browser-side observation. Rendering remains a
+ * normal `<img>`; telemetry is best effort and can never delay a result.
  */
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { studioLatencyEventKey, type StudioLatencyEvent } from "./studio-ttfvi";
+
 export interface StudioResultImageProps {
   jobId: string;
   resultId: string;
   url: string;
   alt?: string;
+  onTelemetry?: (event: StudioLatencyEvent, metadata?: Record<string, number>) => void;
 }
 
-function telemetryKey(jobId: string, resultId: string) {
-  return `ai-imageshoot:ttfvi:${jobId}:${resultId}`;
-}
+export function StudioResultImage({ jobId, resultId, url, alt = "Generated result", onTelemetry }: StudioResultImageProps) {
+  const emittedEventsRef = useRef(new Set<StudioLatencyEvent>());
 
-export function StudioResultImage({ jobId, resultId, url, alt = "Generated result" }: StudioResultImageProps) {
-  function reportVisible(event: { currentTarget: HTMLImageElement }) {
-    // An image can dispatch `load` again when React remounts it after a
-    // revalidation. Session storage makes this a single browser event per
-    // durable result without putting any prompt, URL or image data in storage.
-    const key = telemetryKey(jobId, resultId);
+  const emit = useCallback((event: StudioLatencyEvent, metadata?: Record<string, number>) => {
+    if (emittedEventsRef.current.has(event)) return;
+    const key = studioLatencyEventKey(event, jobId, resultId);
     try {
       if (window.sessionStorage.getItem(key)) return;
       window.sessionStorage.setItem(key, "1");
     } catch {
-      // Privacy-restricted browsers can deny session storage. Rendering must
-      // stay completely independent of telemetry in that case.
-      return;
+      // Privacy-restricted browsers can deny storage. The mounted-image ref
+      // still prevents duplicates, and rendering stays independent of this.
     }
+    emittedEventsRef.current.add(event);
+    onTelemetry?.(event, metadata);
+  }, [jobId, onTelemetry, resultId]);
 
-    const renderedAt = Date.now();
-    const submittedAt = getStudioGenerationSubmittedAt(jobId);
+  // React has committed a durable result. This is intentionally separate
+  // from loading the actual asset below.
+  useEffect(() => {
+    emit("RESULT_DETECTED");
+  }, [emit]);
+
+  // The request may begin once the image is committed. It remains observable
+  // for cached and cross-origin images where Resource Timing is unavailable.
+  useLayoutEffect(() => {
+    emit("IMAGE_LOAD_START");
+  }, [emit]);
+
+  function reportLoaded(event: { currentTarget: HTMLImageElement }) {
+    emit("IMAGE_LOADED");
     const performanceEntry = Array.from(performance.getEntriesByName(event.currentTarget.currentSrc))
       .reverse()
       .find((entry) => entry.entryType === "resource");
-    const imageLoadStartedAt = performanceEntry
-      ? Math.round(performance.timeOrigin + performanceEntry.startTime)
-      : renderedAt;
-
-    const body = new FormData();
-    body.set("intent", "record-ttfvi");
-    body.set("generationJobId", jobId);
-    body.set("resultId", resultId);
-    // Detection and load start are recorded separately even when browser
-    // cache coalesces them into the same instant. The server never receives
-    // the image URL, prompt, attachment or any provider metadata here.
-    body.set("resultDetectedAt", String(imageLoadStartedAt));
-    body.set("imageLoadStartedAt", String(imageLoadStartedAt));
-    body.set("imageRenderedAt", String(renderedAt));
-    if (submittedAt) body.set("userSubmitAt", String(submittedAt));
-    void fetch(window.location.pathname, { method: "POST", body, credentials: "same-origin", keepalive: true });
+    const resourceDurationMs = performanceEntry ? Math.round(performanceEntry.duration) : undefined;
+    // Decode followed by a paint frame is a safe approximation of first
+    // visible pixels without blocking the browser's image pipeline.
+    void event.currentTarget.decode().catch(() => undefined).finally(() => {
+      requestAnimationFrame(() => emit("IMAGE_RENDERED", resourceDurationMs ? { resourceDurationMs } : undefined));
+    });
   }
 
-  return <img className="studio-turn-result" src={url} alt={alt} onLoad={reportVisible} />;
+  return <img className="studio-turn-result" src={url} alt={alt} onLoad={reportLoaded} />;
 }
-import { getStudioGenerationSubmittedAt } from "./studio-ttfvi";
