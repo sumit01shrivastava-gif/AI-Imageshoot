@@ -32,18 +32,14 @@ import {
 import { getPlan } from "../../services/usage/entitlement.server";
 import { Composer } from "../components/composer";
 import { StudioGenerationLoading } from "../components/studio-generation-loading";
+import { StudioResultImage } from "../components/studio-result-image";
+import { markStudioGenerationSubmitted } from "../components/studio-ttfvi";
 import { generationProgressStage, hasActiveGeneration, isGenerationActiveStage, isResultRenderable, type GenerationProgressStage } from "../../services/generation/progress";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
 const GENERIC_ERROR = "I couldn't complete that action. Please try again.";
 
-const SUGGESTION_CHIPS = [
-  "Make the background darker",
-  "Make it feel more cinematic",
-  "Change this to 4:5",
-  "Give me another variation",
-  "Use more premium lighting",
-];
+const SUGGESTION_CHIPS = ["Change the scene", "Try a variation", "Change the format"];
 
 function jobStatusPhrase(stage: GenerationProgressStage, outputCount: number): string {
   if (stage === "PREPARING") return "Reading your direction…";
@@ -158,6 +154,43 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "record-ttfvi") {
+    const generationJobId = formData.get("generationJobId");
+    const resultId = formData.get("resultId");
+    const resultDetectedAt = Number(formData.get("resultDetectedAt"));
+    const imageLoadStartedAt = Number(formData.get("imageLoadStartedAt"));
+    const imageRenderedAt = Number(formData.get("imageRenderedAt"));
+    const userSubmitAt = formData.has("userSubmitAt") ? Number(formData.get("userSubmitAt")) : null;
+    const timings = [resultDetectedAt, imageLoadStartedAt, imageRenderedAt];
+    if (
+      typeof generationJobId !== "string" ||
+      typeof resultId !== "string" ||
+      timings.some((value) => !Number.isFinite(value) || value <= 0)
+    ) return { ok: false as const, error: GENERIC_ERROR };
+    if (userSubmitAt !== null && (!Number.isFinite(userSubmitAt) || userSubmitAt <= 0)) return { ok: false as const, error: GENERIC_ERROR };
+
+    const detail = await getCreativeSessionDetail(context, sessionId);
+    const belongsToSession = detail.jobs.some((job) =>
+      job.id === generationJobId && job.results.some((result) => result.id === resultId),
+    );
+    if (!belongsToSession) return { ok: false as const, error: GENERIC_ERROR };
+
+    // This is observability only. The browser event is intentionally
+    // best-effort and cannot affect generation, result rendering or billing.
+    logger.info("studio.ttfvi.image_rendered", {
+      workspaceId,
+      userId,
+      sessionId,
+      generationJobId,
+      resultId,
+      resultDetectedAt,
+      imageLoadStartedAt,
+      imageRenderedAt,
+      ...(userSubmitAt !== null ? { userSubmitAt, timeToFirstVisibleImageMs: imageRenderedAt - userSubmitAt } : {}),
+    });
+    return { ok: true as const };
+  }
+
   if (intent === "select-result") {
     const resultId = formData.get("resultId");
     if (typeof resultId !== "string") {
@@ -222,6 +255,7 @@ export default function StudioConversation() {
   const feedbackFetcher = useFetcher<typeof action>();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowTranscriptRef = useRef(true);
+  const pendingSubmissionStartedAtRef = useRef<number | null>(null);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
 
   const latestJob = jobs[0] ?? null;
@@ -252,6 +286,10 @@ export default function StudioConversation() {
   useEffect(() => {
     const generationJobId = messageFetcher.data && messageFetcher.data.ok && "generationJobId" in messageFetcher.data ? messageFetcher.data.generationJobId : null;
     if (messageFetcher.state !== "idle" || typeof generationJobId !== "string") return;
+    if (pendingSubmissionStartedAtRef.current) {
+      markStudioGenerationSubmitted(generationJobId, pendingSubmissionStartedAtRef.current);
+      pendingSubmissionStartedAtRef.current = null;
+    }
     // Fetcher actions normally revalidate, but request a prompt first poll
     // so a durable result cannot wait behind unrelated navigation work.
     revalidator.revalidate();
@@ -264,7 +302,7 @@ export default function StudioConversation() {
     transcriptEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [messages.length, optimisticMessage, latestJob?.updatedAt]);
 
-  function submitMessage(text: string, files: File[] = []) {
+  function submitMessage(text: string, files: File[] = [], submittedAt = 0) {
     const trimmed = text.trim();
     if ((trimmed.length === 0 && files.length === 0) || isSending) return;
     const formData = new FormData();
@@ -272,6 +310,7 @@ export default function StudioConversation() {
     formData.set("message", trimmed);
     files.forEach((file) => formData.append("images", file));
     setPendingMessage(trimmed || "Create a clean, professional product photo from this image.");
+    pendingSubmissionStartedAtRef.current = submittedAt > 0 ? submittedAt : null;
     messageFetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
   }
 
@@ -327,7 +366,7 @@ export default function StudioConversation() {
                 <div className="studio-turn-generation">
                   {active && !isResultRenderable(turnJob.results.length) && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
                   {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
-                  {turnResult?.url && <img className="studio-turn-result" src={turnResult.url} alt="Generated result" />}
+                  {turnResult?.url && <StudioResultImage jobId={turnJob.id} resultId={turnResult.id} url={turnResult.url} />}
                   {active && turnResult?.url && (
                     <div className="studio-result-quality-check" role="status" aria-live="polite">
                       <span className="studio-dot-pulse" aria-hidden="true" />
@@ -384,16 +423,6 @@ export default function StudioConversation() {
               <div className="studio-turn-generation"><StudioGenerationLoading title="Starting your creative request…" stage="PREPARING" /></div>
             </div>
           )}
-          {/* Must NOT disappear the moment a job finishes — SUCCEEDED
-              gets its own confirmation line here too, not just while
-              in flight (FAILED already has its own, more specific
-              banner above). */}
-          {(latestJob && latestJob.status !== "FAILED") && (
-            <div className="studio-status-line" role="status" aria-live="polite">
-              {isInFlight && <span className="studio-dot-pulse" aria-hidden="true" />}
-              {jobStatusPhrase(latestJob.progressStage, latestJob.results.length || 1)}
-            </div>
-          )}
           <div ref={transcriptEndRef} />
         </div>
 
@@ -410,7 +439,7 @@ export default function StudioConversation() {
 
         <div className="studio-chat-composer">
           {messages.length > 0 && (
-            <div className="studio-example-row" style={{ marginBottom: "10px", justifyContent: "flex-start" }}>
+            <div className="studio-follow-up-suggestions" aria-label="Conversation suggestions">
               {SUGGESTION_CHIPS.map((chip) => (
                 <button
                   key={chip}

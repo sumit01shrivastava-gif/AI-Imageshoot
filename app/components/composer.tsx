@@ -33,7 +33,7 @@ export interface ComposerProps {
    * button and shows it as busy without touching the text/attachments,
    * so the draft survives a slow response. */
   busy?: boolean;
-  onSubmit: (message: string, files: File[]) => void;
+  onSubmit: (message: string, files: File[], submittedAt: number) => void;
 }
 
 /** Imperative handle so a parent can fill the draft from a suggestion
@@ -104,7 +104,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setError("Describe what you want, or attach an image to start from.");
       return;
     }
-    onSubmit(trimmed, attachments.map((a) => a.file));
+    onSubmit(trimmed, attachments.map((a) => a.file), Date.now());
     setDraft("");
     attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);

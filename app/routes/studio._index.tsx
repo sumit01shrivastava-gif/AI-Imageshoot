@@ -30,10 +30,10 @@ import { StudioGenerationLoading } from "../components/studio-generation-loading
 const GENERIC_ERROR = "I couldn't start this creation. Please try again.";
 
 const EXAMPLE_PROMPTS = [
-  "Create a premium product campaign image for this shoe.",
-  "Turn this product photo into a luxury studio advertisement.",
-  "Create a 4:5 Instagram campaign image using this product.",
-  "Create a website hero banner for this collection.",
+  "Campaign creative",
+  "Ecommerce product shot",
+  "Lifestyle scene",
+  "Social media creative",
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -155,7 +155,7 @@ export default function StudioNewConversation() {
   return (
     <div className="studio-hero">
       <h1 className="studio-hero-heading">What do you want to create?</h1>
-      <p className="studio-hero-sub">Describe the image you want, or attach a photo — AI Imageshoot handles the rest.</p>
+      <p className="studio-hero-sub">Attach a product, describe the direction, and build from there.</p>
 
       <div className="studio-example-row">
         {EXAMPLE_PROMPTS.map((prompt) => (
@@ -168,7 +168,7 @@ export default function StudioNewConversation() {
       <div className="studio-composer-wrap">
         <Composer ref={composerRef} disabled={isSending} busy={isSending} onSubmit={handleSubmit} />
         {error && <p className="studio-composer-error">{error}</p>}
-        <p className="studio-composer-hint">Every conversation is saved, and every version stays available.</p>
+        <p className="studio-composer-hint">Your references and every version stay with this conversation.</p>
       </div>
     </div>
   );
