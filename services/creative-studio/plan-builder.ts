@@ -211,28 +211,39 @@ function synthesizeCreativePrompt(
       : ` Use ${referenceNoun} as the exact starting point for this edit — preserve everything about its current rendering except what is explicitly requested below.`
     : "";
 
-  // Concept-first: stated before the atomic clause list so the concept
-  // reads as the idea the following decisions serve, not as one more
-  // item appended after them. Omitted entirely when there is no concept
-  // (the common case on the deterministic path) — never an empty/filler
-  // sentence.
-  // Campaign/art/design conclusions are compiled from the resolved
-  // Blueprint below. Keep only explicit execution priorities here; passing
-  // every legacy clause through would duplicate the same instruction.
-  const executionClause =
-    inferredCreativeDecisions.length > 0 ? ` Execution priorities: ${inferredCreativeDecisions.slice(0, 3).join(" ")}` : "";
-
+  // `inferredCreativeDecisions` are deliberately NOT re-added as their own
+  // separate clause here (a real, confirmed compiler bug this fixes): the
+  // resolved `overallCreativeDirection` already expresses them — as its
+  // own closing clause when deterministically composed
+  // (`composeOverallCreativeDirection`), or folded into a real vendor's
+  // own prose (see that field's own "never spliced into a real vendor's
+  // own prose" rule) — so adding them again produced a literal duplicate
+  // of the same two sentences inside "EXECUTION PRIORITIES:". Each
+  // semantic instruction now reaches the provider exactly once.
+  //
   // The old clause inputs are first normalized into the Blueprint, then the
   // Generation Director compiles the provider-facing brief. This temporary
   // local composition keeps explicit intent details while avoiding metadata
   // leakage and repeated product-lock prose.
-  const primaryTask = [INTENT_FRAMING[intent](subject), ...parts.slice(1)].join(", ");
+  //
+  // `primaryTask` is `null` — not the bare, templated intent-framing
+  // sentence — when the atomic clause list has nothing beyond that
+  // framing (e.g. a bare "create a social media creative for this
+  // product" with no further creative specifics): the compiled brief's
+  // DELIVERABLE/campaign-proposition/visual-mechanism sections already
+  // establish the request; restating "Eye-catching, social-media-ready
+  // product photography of X" as "MERCHANT DIRECTION" adds no
+  // information, only length (a real, confirmed compiler defect this
+  // fixes). Genuine merchant direction (an explicit scene, style,
+  // lighting, ... — anything in `parts.slice(1)`) is still always
+  // preserved verbatim.
+  const primaryTask = parts.length > 1 ? [INTENT_FRAMING[intent](subject), ...parts.slice(1)].join(", ") : null;
   const compiled = compileProviderExecutionBrief({
     blueprint,
     primaryTask,
     identityInstruction,
     referenceInstruction: referenceFidelity.trim() || null,
-    explicitDirection: [overallCreativeDirection, executionClause.trim()].filter(Boolean),
+    explicitDirection: [overallCreativeDirection].filter(Boolean),
     negativeConstraints: negativeCreativeDecisions,
   });
   return compiled;

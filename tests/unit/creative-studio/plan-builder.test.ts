@@ -874,7 +874,7 @@ describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", 
     expect(plan.creativeIntent!.creativeBrief!.negativeCreativeDecisions).toEqual(["generic studio backdrop", "unnecessary decorative props"]);
   });
 
-  it("keeps structured execution priorities in the provider prompt even when a real provider supplies its own overall direction", async () => {
+  it("never re-splices inferredCreativeDecisions as a separate clause when a real provider supplies its own overall direction (compiler dedup fix, quality-floor pass)", async () => {
     const parsedIntent = await llmIntent({
       overallCreativeDirection: "A concise vendor-authored campaign direction.",
       inferredCreativeDecisions: ["Keep the product as the immediate visual hero with deliberate negative space."],
@@ -889,7 +889,18 @@ describe("Phase 1 — creativeConcept and negativeCreativeDecisions threading", 
       rawInstruction: "Create a lifestyle image",
     });
     expect(plan.creativeDirection.prompt).toContain("A concise vendor-authored campaign direction.");
-    expect(plan.creativeDirection.prompt).toContain("Execution priorities: Keep the product as the immediate visual hero with deliberate negative space.");
+    // A real vendor's own prose is assumed to already fold in its own
+    // reasoning — see synthesizeCreativePrompt's own "never spliced into
+    // a real vendor's own prose" rule. Previously this list was ALSO
+    // independently re-added as its own "Execution priorities: ..."
+    // clause, producing a real, confirmed duplicate inside the compiled
+    // brief. It is still computed/persisted on the brief itself
+    // (traceability) — just never spliced into the final provider text
+    // a second time.
+    expect(plan.creativeDirection.prompt).not.toContain("Execution priorities: Keep the product as the immediate visual hero");
+    expect(plan.creativeIntent!.creativeBrief!.inferredCreativeDecisions).toContain(
+      "Keep the product as the immediate visual hero with deliberate negative space.",
+    );
   });
 
   it("falls back to the one deterministic negative-decision rule (subject dominance) for a fresh creative intent when no provider decisions are supplied", async () => {
@@ -1019,8 +1030,8 @@ describe("campaign art-direction canvas", () => {
     const prompt = plan.creativeDirection.prompt;
     expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/shape and proportions/i);
     expect(plan.creativeIntent!.creativeBrief!.campaignArtDirection.canvasArchitecture).toMatch(/off-centre/i);
-    expect(prompt.indexOf("VISUAL STORY:")).toBeGreaterThan(prompt.indexOf("SELECTED CAMPAIGN PROPOSITION:"));
-    expect(prompt).toContain("CANVAS ARCHITECTURE:");
+    expect(prompt.indexOf("ART DIRECTION:")).toBeGreaterThan(prompt.indexOf("SELECTED CAMPAIGN PROPOSITION:"));
+    expect(prompt).toContain("CANVAS HIERARCHY:");
     expect(prompt).toContain("MERCHANT DIRECTION:");
   });
 
@@ -1028,7 +1039,7 @@ describe("campaign art-direction canvas", () => {
     const parsedIntent = await llmIntent({ intent: "CHANGE_LIGHTING", campaignArtDirection: undefined });
     const plan = buildCreativeGenerationPlan({ product: product(), intelligence: intelligence(), sourceMediaIds: [], parsedIntent, previousResultUrl: "https://example.com/previous.png", creativeSessionId: "session-1", rawInstruction: "Make it brighter" });
     expect(plan.creativeIntent!.creativeBrief!.campaignArtDirection.visualStory).toBeNull();
-    expect(plan.creativeDirection.prompt).not.toContain("CANVAS ARCHITECTURE:");
+    expect(plan.creativeDirection.prompt).not.toContain("CANVAS HIERARCHY:");
   });
 });
 
@@ -1109,6 +1120,12 @@ describe("Reference execution strategy", () => {
         canvasArchitecture: "Place the cap off-centre with generous negative space for a social crop.",
         productEnvironmentRelationship: "The rooftop's geometry echoes the cap's own brim curve.",
         materialLightingStrategy: "Use bright, directional light that reveals the cap's stitching and fabric texture.",
+        // Campaign Concept Contract (quality-floor pass) — a real vendor
+        // is expected to supply these alongside the concept itself; see
+        // creative-brief.ts's `hasSubstantiveCampaignConcept`.
+        visualMechanism: "The brim's own curve is extended by the rooftop's edge, so the shadow it casts becomes the shot's structuring line.",
+        productRole: "The cap is the single graphic anchor the whole rooftop composition is built around.",
+        scrollStopDevice: "The oversized, architectural treatment of an everyday cap's brim is the immediate visual hook.",
       },
     });
     // Reuses this file's own `product()`/`intelligence()` fixtures — the
@@ -1144,14 +1161,30 @@ describe("Reference execution strategy", () => {
     // campaign proposition
     expect(brief).toContain("SELECTED CAMPAIGN PROPOSITION:");
     expect(brief).toMatch(/architectural sunshade/i);
-    // visual mechanism / canvas hierarchy (art direction)
-    expect(brief).toContain("VISUAL STORY:");
-    expect(brief).toContain("CANVAS ARCHITECTURE:");
+    // visual mechanism / product role / canvas hierarchy (Campaign Concept Contract)
+    expect(brief).toContain("VISUAL MECHANISM:");
+    expect(brief).toContain("PRODUCT ROLE:");
+    expect(brief).toContain("CANVAS HIERARCHY:");
+    expect(brief).toContain("ART DIRECTION:");
 
     // Must NOT contain contradictory precision-edit semantics.
     expect(brief).not.toMatch(/exact starting point for this edit/i);
     expect(brief).not.toMatch(/preserve (everything about its )?current rendering/i);
     expect(brief).not.toMatch(/preserve existing composition/i);
+
+    // Compiler bloat fixes (quality-floor pass, second round):
+    // 1) no duplicated EXECUTION PRIORITIES — the same inferred-decision
+    //    sentence must never appear twice.
+    const executionPrioritiesOccurrences = brief.split("Keep the product visually dominant").length - 1;
+    expect(executionPrioritiesOccurrences).toBeLessThanOrEqual(1);
+    // 2) no meaningless MERCHANT DIRECTION filler — this request has no
+    //    creative specifics beyond the bare intent, so the generic
+    //    templated intent-framing sentence must not be restated as if it
+    //    were merchant direction.
+    expect(brief).not.toContain("MERCHANT DIRECTION:");
+    // 3) the concept is a real, specific mechanism — never satisfied by
+    //    generic adjectives alone.
+    expect(brief).not.toMatch(/SELECTED CAMPAIGN PROPOSITION: (energetic|vibrant|premium|dramatic|cinematic) (red |)environment/i);
   });
 
   it("A. reference + 'remove the background' → PRECISION_EDIT", async () => {
@@ -1237,6 +1270,79 @@ describe("Reference execution strategy", () => {
       rawInstruction: "create a banner",
     });
     expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("F2. CREATE_BANNER with a product reference also gets the guaranteed Campaign Concept Contract (concept + visual mechanism + product role), never an empty campaign", async () => {
+    const parsedIntent = await intent("Create a banner", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create a banner",
+    });
+    const brief = plan.creativeIntent!.creativeBrief!;
+    expect(brief.creativeConcept).not.toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).not.toBeNull();
+    expect(brief.campaignArtDirection.productRole).not.toBeNull();
+    expect(plan.creativeDirection.negativeConstraints.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("5. heuristic-parser fallback still creates a safe, product-derived campaign concept end-to-end — the architectural guarantee this whole pass exists for", async () => {
+    // Uses the REAL heuristic parser (via `intent()`) — never supplies
+    // creativeConcept/campaignArtDirection itself — matching the exact
+    // production failure mode: the primary LLM parser unavailable/
+    // fallen back, yet the campaign still must not reach the provider
+    // empty.
+    const parsedIntent = await intent("Create a social media creative for this product", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a social media creative for this product",
+    });
+    const brief = plan.creativeIntent!.creativeBrief!;
+    expect(brief.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+    expect(brief.creativeConcept).not.toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).not.toBeNull();
+    expect(brief.campaignArtDirection.productRole).not.toBeNull();
+    expect(brief.creativeBlueprint!.creativeDirection.conceptSource).toBe("PRODUCT_DERIVED_FLOOR");
+    // Built from this file's own `product()` fixture's real anchors
+    // (category Handbags, material Leather, ...) — never a fabricated
+    // claim (performance, waterproofing, brand heritage, ...).
+    expect(brief.creativeConcept).not.toMatch(/waterproof|performance|heritage|endorsement|patented/i);
+    // The compiled provider brief itself carries the guaranteed concept —
+    // not just the intermediate CreativeBrief object.
+    expect(plan.creativeDirection.prompt).toContain("SELECTED CAMPAIGN PROPOSITION:");
+    expect(plan.creativeDirection.prompt).toContain("VISUAL MECHANISM:");
+    expect(plan.creativeDirection.prompt).toContain("PRODUCT ROLE:");
+  });
+
+  it("6. never invents unknown product facts in the deterministic floor — a product with only a category known still gets an honest, non-fabricated concept", async () => {
+    const sparseIntelligence = intelligence({
+      identityAnchors: {
+        category: "Widget", shape: null, material: null, primaryColor: null,
+        constructionDetails: [], distinctiveHardware: [], brandingVisible: false, brandingDescription: null,
+      },
+    });
+    const parsedIntent = await intent("Create a social media creative for this product", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: sparseIntelligence,
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "Create a social media creative for this product",
+    });
+    const brief = plan.creativeIntent!.creativeBrief!;
+    expect(brief.creativeConcept).not.toBeNull();
+    expect(brief.creativeConcept).not.toMatch(/waterproof|premium quality|award-winning|patented|clinically|guaranteed|certified/i);
   });
 
   it("G. campaign + 'make it vertical' → retains campaign semantics (does not downgrade to PRECISION_EDIT just because the generated image is now the reference)", async () => {

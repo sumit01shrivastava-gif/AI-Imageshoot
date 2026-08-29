@@ -47,7 +47,7 @@ export type CreativeBlueprint = {
   brief: { deliverableClass: DeliverableClass; transformationFreedom: "NONE" | "LIMITED" | "HIGH"; expectedFinish: "PRODUCT_PHOTOGRAPH" | "FINISHED_CAMPAIGN_ASSET" | "EDITED_RESULT"; executionMode: "NEW_CREATION" | "CONTINUATION" | "LOCAL_EDIT" | "FORMAT_ADAPTATION"; continuation: boolean };
   productTruth: { identitySource: "REFERENCE_AND_PRODUCT_INTELLIGENCE" | "REFERENCE_ONLY" | "PRODUCT_INTELLIGENCE"; sourceScenePolicy: "PRESERVE_REQUESTED" | "REPLACEABLE" | "DISCARD_FOR_CAMPAIGN"; categoryFocus: string[] };
   commercialStrategy: { objective: "ECOMMERCE_CLARITY" | "PRODUCT_DESIRE" | "BRAND_COMMUNICATION" | "LIFESTYLE_RELEVANCE" | "REFINEMENT"; channel: "ECOMMERCE" | "SOCIAL" | "WEB" | "GENERAL"; visualIntensity: "RESTRAINED" | "ELEVATED" | "HIGH"; compositionalPriority: "INSPECTABILITY" | "SCROLL_STOP" | "COPY_SAFE_HIERARCHY" | "CONTEXTUAL_RELEVANCE" };
-  creativeDirection: { concept: string | null; conceptSource: "SEMANTIC_PLANNING" | "CAMPAIGN_DNA" | "RESTRAINED_FALLBACK"; campaignSceneTransformation: boolean; experimentation: "CONTROLLED" | "HIGH" };
+  creativeDirection: { concept: string | null; conceptSource: "SEMANTIC_PLANNING" | "CAMPAIGN_DNA" | "RESTRAINED_FALLBACK" | "PRODUCT_DERIVED_FLOOR"; campaignSceneTransformation: boolean; experimentation: "CONTROLLED" | "HIGH" };
   artDirection: CampaignArtDirection;
   photographyDirection: { category: string | null; detailPriorities: string[]; realismPriorities: string[]; framingPriority: "PRODUCT_INSPECTION" | "PRODUCT_IN_WORLD" | "MOBILE_HIERARCHY" | "WIDE_LAYOUT" };
   designDirection: { assetKind: DesignAssetKind; communication: CampaignCommunication; requiresFutureDeterministicCompositing: boolean };
@@ -139,7 +139,15 @@ function isCampaignFormatAdaptation(intent: CreativeIntentValue, isEditTurn: boo
 }
 
 export interface BuildCreativeBlueprintInput {
-  intent: CreativeIntentValue; mode: GenerationModeValue; category: string | null; hasProductIntelligence: boolean; isEditTurn: boolean; referenceExecutionStrategy: ReferenceExecutionStrategy; creativeConcept: string | null; campaignArtDirection: CampaignArtDirection; campaignCommunication: CampaignCommunication; previousCampaignDNA?: PreviousCampaignDNA | null; hasExplicitCreativeDirection?: boolean;
+  intent: CreativeIntentValue; mode: GenerationModeValue; category: string | null; hasProductIntelligence: boolean; isEditTurn: boolean; referenceExecutionStrategy: ReferenceExecutionStrategy; creativeConcept: string | null;
+  /** Whether `creativeConcept` came from real semantic planning (a
+   * vendor's own reasoning) or from `creative-brief.ts`'s deterministic
+   * Campaign Concept Contract floor (`buildProductDerivedCampaignConcept`)
+   * — see that file's own doc comment. Defaults to `"SEMANTIC_PLANNING"`
+   * for backward compatibility with any caller built before this field
+   * existed (e.g. a unit test constructing this input directly). */
+  creativeConceptProvenance?: "SEMANTIC_PLANNING" | "PRODUCT_DERIVED_FLOOR";
+  campaignArtDirection: CampaignArtDirection; campaignCommunication: CampaignCommunication; previousCampaignDNA?: PreviousCampaignDNA | null; hasExplicitCreativeDirection?: boolean;
 }
 
 function classifyDeliverable(intent: CreativeIntentValue, isEditTurn: boolean): DeliverableClass {
@@ -164,9 +172,19 @@ function hasArtDirection(art: CampaignArtDirection) { return Object.values(art).
 function resolveArtDirection(input: BuildCreativeBlueprintInput, campaign: boolean, ecommerce: boolean): CampaignArtDirection {
   if (hasArtDirection(input.campaignArtDirection)) return input.campaignArtDirection;
   if (input.previousCampaignDNA?.shouldCarryForward && !input.hasExplicitCreativeDirection) return input.previousCampaignDNA.artDirection;
-  if (ecommerce) return { visualStory: "A clear, accurate product presentation.", heroTreatment: "Keep the product fully inspectable with restrained hierarchy.", canvasArchitecture: "Use a clean field with no competing props or copy.", productEnvironmentRelationship: "The environment supports product readability rather than becoming a concept.", materialLightingStrategy: "Use even, truthful light that preserves material color, edges, and labels." };
-  if (campaign) return { visualStory: "Build one product-derived commercial world rather than decorating the source photograph.", heroTreatment: "Keep the product unmistakable while giving the campaign world meaningful visual territory.", canvasArchitecture: "Use deliberate hierarchy, depth, and negative space appropriate to the deliverable.", productEnvironmentRelationship: "Make the surroundings express the product's material, form, and commercial character.", materialLightingStrategy: "Use controlled, physically plausible light that reveals the product's defining materials." };
-  return { visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null };
+  if (ecommerce) return { visualStory: "A clear, accurate product presentation.", heroTreatment: "Keep the product fully inspectable with restrained hierarchy.", canvasArchitecture: "Use a clean field with no competing props or copy.", productEnvironmentRelationship: "The environment supports product readability rather than becoming a concept.", materialLightingStrategy: "Use even, truthful light that preserves material color, edges, and labels.", visualMechanism: null, productRole: null, scrollStopDevice: null };
+  // Reached only when NEITHER a real vendor NOR creative-brief.ts's own
+  // deterministic product-derived construction (buildProductDerivedCampaignConcept
+  // — see that file's "Campaign Concept Contract" section) supplied
+  // anything — i.e. genuinely never, for a real CAMPAIGN_CREATIVE
+  // request, since that construction always fires when
+  // `referenceExecutionStrategy === "CAMPAIGN_CREATIVE"` and nothing
+  // substantive was supplied. Kept as an honest last-resort default
+  // (never a substitute for the real Campaign Concept Contract), not
+  // upgraded to fake a product-specific mechanism this function has no
+  // product facts to build one from.
+  if (campaign) return { visualStory: "Build one product-derived commercial world rather than decorating the source photograph.", heroTreatment: "Keep the product unmistakable while giving the campaign world meaningful visual territory.", canvasArchitecture: "Use deliberate hierarchy, depth, and negative space appropriate to the deliverable.", productEnvironmentRelationship: "Make the surroundings express the product's material, form, and commercial character.", materialLightingStrategy: "Use controlled, physically plausible light that reveals the product's defining materials.", visualMechanism: null, productRole: null, scrollStopDevice: null };
+  return { visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null, visualMechanism: null, productRole: null, scrollStopDevice: null };
 }
 function resolveDesignAsset(deliverable: DeliverableClass, communication: CampaignCommunication): DesignAssetKind {
   if (communication.mode !== "VISUAL_ONLY") return "FINISHED_DESIGNED_ASSET";
@@ -225,7 +243,16 @@ export function buildCreativeBlueprint(input: BuildCreativeBlueprintInput): Crea
       categoryFocus: photo.detail,
     },
     commercialStrategy: { objective, channel, visualIntensity: ecommerce ? "RESTRAINED" : campaign ? "HIGH" : "ELEVATED", compositionalPriority },
-    creativeDirection: { concept, conceptSource: input.creativeConcept ? "SEMANTIC_PLANNING" : concept ? "CAMPAIGN_DNA" : "RESTRAINED_FALLBACK", campaignSceneTransformation: campaign, experimentation: campaign ? "HIGH" : "CONTROLLED" },
+    creativeDirection: {
+      concept,
+      conceptSource: input.creativeConcept
+        ? (input.creativeConceptProvenance ?? "SEMANTIC_PLANNING")
+        : concept
+          ? "CAMPAIGN_DNA"
+          : "RESTRAINED_FALLBACK",
+      campaignSceneTransformation: campaign,
+      experimentation: campaign ? "HIGH" : "CONTROLLED",
+    },
     artDirection,
     photographyDirection: { category: input.category, detailPriorities: photo.detail, realismPriorities: photo.realism, framingPriority },
     designDirection: { assetKind, communication: input.campaignCommunication, requiresFutureDeterministicCompositing: assetKind === "FINISHED_DESIGNED_ASSET" },
@@ -242,20 +269,47 @@ export function buildCreativeBlueprint(input: BuildCreativeBlueprintInput): Crea
   };
 }
 
-/** Compiles resolved decisions only; internal taxonomy/reasoning never reaches a provider. */
-export function compileProviderExecutionBrief(input: { blueprint: CreativeBlueprint; primaryTask: string; identityInstruction: string; referenceInstruction: string | null; explicitDirection: string[]; negativeConstraints: string[] }): string {
+/**
+ * Compiles resolved decisions only; internal taxonomy/reasoning never
+ * reaches a provider. Semantic order (quality-floor pass — see
+ * docs/creative-studio.md "Campaign Concept Contract"): PRODUCT TRUTH/
+ * IDENTITY LOCK -> DELIVERABLE -> CAMPAIGN PROPOSITION -> VISUAL
+ * MECHANISM -> PRODUCT ROLE -> genuine merchant direction (only when it
+ * adds real information — see `primaryTask`'s own doc comment) -> SCENE
+ * FREEDOM -> CANVAS HIERARCHY -> ART DIRECTION -> PHOTOGRAPHY -> DESIGN
+ * -> EXECUTION PRIORITIES -> CRITICAL AVOIDS. `primaryTask` is `null`
+ * (not a section) when the atomic clause list is nothing beyond the
+ * generic intent-framing sentence — see `synthesizeCreativePrompt`'s
+ * `primaryTask` computation.
+ */
+export function compileProviderExecutionBrief(input: { blueprint: CreativeBlueprint; primaryTask: string | null; identityInstruction: string; referenceInstruction: string | null; explicitDirection: string[]; negativeConstraints: string[] }): string {
   const { blueprint, primaryTask, identityInstruction, referenceInstruction, explicitDirection, negativeConstraints } = input;
   const art = blueprint.artDirection;
+  const canvasHierarchy = [art.heroTreatment, art.canvasArchitecture].filter(Boolean).join(" ");
+  const artDirectionSummary = [art.visualStory, art.productEnvironmentRelationship, art.materialLightingStrategy].filter(Boolean).join(" ");
   return [
-    identityInstruction, referenceInstruction, `DELIVERABLE: ${blueprint.brief.deliverableClass.toLowerCase().replace(/_/g, " ")}.`,
+    identityInstruction,
+    referenceInstruction,
+    `DELIVERABLE: ${blueprint.brief.deliverableClass.toLowerCase().replace(/_/g, " ")}.`,
     blueprint.creativeDirection.concept ? `SELECTED CAMPAIGN PROPOSITION: ${blueprint.creativeDirection.concept}.` : null,
-    `MERCHANT DIRECTION: ${primaryTask}.`,
+    art.visualMechanism ? `VISUAL MECHANISM: ${art.visualMechanism}` : null,
+    art.productRole ? `PRODUCT ROLE: ${art.productRole}` : null,
+    art.scrollStopDevice ? `SCROLL-STOP: ${art.scrollStopDevice}` : null,
+    primaryTask ? `MERCHANT DIRECTION: ${primaryTask}.` : null,
     blueprint.productTruth.sourceScenePolicy === "DISCARD_FOR_CAMPAIGN" ? "SCENE: Preserve the physical product only; replace incidental source scenery with a new product-derived commercial world." : null,
-    art.visualStory ? `VISUAL STORY: ${art.visualStory} HERO TREATMENT: ${art.heroTreatment ?? ""} CANVAS ARCHITECTURE: ${art.canvasArchitecture ?? ""} PRODUCT-WORLD RELATIONSHIP: ${art.productEnvironmentRelationship ?? ""}`.trim() : null,
+    canvasHierarchy ? `CANVAS HIERARCHY: ${canvasHierarchy}` : null,
+    artDirectionSummary ? `ART DIRECTION: ${artDirectionSummary}` : null,
     `PHOTOGRAPHY: Prioritize ${blueprint.photographyDirection.detailPriorities.slice(0, 3).join(", ")}; use ${blueprint.photographyDirection.realismPriorities.slice(0, 3).join(", ")}.`,
     blueprint.designDirection.assetKind === "PHOTOGRAPHY_ONLY" ? "DESIGN: Keep the result visual-first; do not add campaign copy, unrequested text, branding, claims, labels, or badges." : null,
     blueprint.designDirection.assetKind === "PHOTOGRAPHY_WITH_DESIGN_SPACE" ? "DESIGN: Reserve clean negative space for channel layout; keep the image visual-first without unrequested text." : null,
     blueprint.designDirection.assetKind === "FINISHED_DESIGNED_ASSET" ? `DESIGN: Use only approved ${blueprint.designDirection.communication.mode === "FACTUAL_CALLOUTS" ? "merchant-supplied" : "campaign"} copy in the ${blueprint.designDirection.communication.reservedTextArea.toLowerCase().replace(/_/g, " ")} region: ${[blueprint.designDirection.communication.headline, blueprint.designDirection.communication.supportingLine, ...blueprint.designDirection.communication.callouts].filter(Boolean).map((copy) => `“${copy}”`).join("; ")}. Do not add unapproved copy, branding, claims, or badges.` : null,
+    // Each semantic instruction reaches the provider once: `explicitDirection`
+    // carries `overallCreativeDirection` alone (which — deterministic or
+    // vendor-authored — already expresses the relevant inferred creative
+    // decisions in its own prose; see synthesizeCreativePrompt's own
+    // "never spliced into a real vendor's own prose" rule) — no separate,
+    // independently-truncated restatement of the same list is added
+    // alongside it (a real, confirmed duplication this fixes).
     explicitDirection.length > 0 ? `EXECUTION PRIORITIES: As the creative director, ensure: ${explicitDirection.join("; ")}.` : null,
     negativeConstraints.length > 0 ? `AVOID: ${negativeConstraints.slice(0, 3).join("; ")}.` : null,
   ].filter((section): section is string => Boolean(section)).join(" ");

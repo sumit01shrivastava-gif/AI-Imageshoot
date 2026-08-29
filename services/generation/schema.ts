@@ -54,7 +54,7 @@ const CreativeBlueprintSchema = z.object({
   }),
   creativeDirection: z.object({
     concept: z.string().min(1).nullable(),
-    conceptSource: z.enum(["SEMANTIC_PLANNING", "CAMPAIGN_DNA", "RESTRAINED_FALLBACK"]).default("RESTRAINED_FALLBACK"),
+    conceptSource: z.enum(["SEMANTIC_PLANNING", "CAMPAIGN_DNA", "RESTRAINED_FALLBACK", "PRODUCT_DERIVED_FLOOR"]).default("RESTRAINED_FALLBACK"),
     campaignSceneTransformation: z.boolean(),
     experimentation: z.enum(["CONTROLLED", "HIGH"]),
   }),
@@ -64,6 +64,11 @@ const CreativeBlueprintSchema = z.object({
     canvasArchitecture: z.string().min(1).max(360).nullable(),
     productEnvironmentRelationship: z.string().min(1).max(280).nullable(),
     materialLightingStrategy: z.string().min(1).max(320).nullable(),
+    // Campaign Concept Contract (quality-floor pass) — additive/nullable
+    // so a plan persisted before these fields existed parses safely.
+    visualMechanism: z.string().min(1).max(320).nullable().default(null),
+    productRole: z.string().min(1).max(280).nullable().default(null),
+    scrollStopDevice: z.string().min(1).max(280).nullable().default(null),
   }),
   photographyDirection: z.object({
     category: z.string().min(1).nullable(),
@@ -107,7 +112,19 @@ const CreativeBlueprintSchema = z.object({
       canvasArchitecture: z.string().min(1).max(360).nullable(),
       productEnvironmentRelationship: z.string().min(1).max(280).nullable(),
       materialLightingStrategy: z.string().min(1).max(320).nullable(),
-    }).default({ visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null }),
+      visualMechanism: z.string().min(1).max(320).nullable().default(null),
+      productRole: z.string().min(1).max(280).nullable().default(null),
+      scrollStopDevice: z.string().min(1).max(280).nullable().default(null),
+    }).default({
+      visualStory: null,
+      heroTreatment: null,
+      canvasArchitecture: null,
+      productEnvironmentRelationship: null,
+      materialLightingStrategy: null,
+      visualMechanism: null,
+      productRole: null,
+      scrollStopDevice: null,
+    }),
     photographyCharacter: z.array(z.string()).default([]),
     designAssetKind: z.enum(["PHOTOGRAPHY_ONLY", "PHOTOGRAPHY_WITH_DESIGN_SPACE", "FINISHED_DESIGNED_ASSET"]).default("PHOTOGRAPHY_ONLY"),
   }),
@@ -299,8 +316,20 @@ export const CreativeStudioPlanSchema = z.object({
           canvasArchitecture: z.string().min(1).max(360).nullable().default(null),
           productEnvironmentRelationship: z.string().min(1).max(280).nullable().default(null),
           materialLightingStrategy: z.string().min(1).max(320).nullable().default(null),
+          visualMechanism: z.string().min(1).max(320).nullable().default(null),
+          productRole: z.string().min(1).max(280).nullable().default(null),
+          scrollStopDevice: z.string().min(1).max(280).nullable().default(null),
         })
-        .default({ visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null }),
+        .default({
+          visualStory: null,
+          heroTreatment: null,
+          canvasArchitecture: null,
+          productEnvironmentRelationship: null,
+          materialLightingStrategy: null,
+          visualMechanism: null,
+          productRole: null,
+          scrollStopDevice: null,
+        }),
       /** Canonical cross-director contract; null only for older JSON plans. */
       creativeBlueprint: CreativeBlueprintSchema.nullable().default(null),
       overallCreativeDirection: z.string().min(1),

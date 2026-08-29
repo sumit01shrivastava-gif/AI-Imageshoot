@@ -181,6 +181,7 @@ describe("parseParsedIntent — campaign art direction", () => {
     expect(parseParsedIntent(minimalValidRaw()).campaignArtDirection).toEqual({
       visualStory: null, heroTreatment: null, canvasArchitecture: null,
       productEnvironmentRelationship: null, materialLightingStrategy: null,
+      visualMechanism: null, productRole: null, scrollStopDevice: null,
     });
   });
 });

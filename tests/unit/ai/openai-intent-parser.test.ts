@@ -89,8 +89,12 @@ describe("OpenAIIntentParsingProvider", () => {
     expect(decoded.creativeContext).toEqual(INPUT.creativeContext);
     expect(decoded.candidateResultCount).toBe(INPUT.candidateResultCount);
 
-    // Real structured-output mode, so the model can't return prose/markdown.
-    expect(capturedBody!.response_format).toEqual({ type: "json_object" });
+    // Real Structured Outputs mode (quality-floor pass, second round) —
+    // schema-enforced, not just "valid JSON" — so the model can't return
+    // prose/markdown NOR silently omit a required field.
+    const responseFormat = capturedBody!.response_format as { type: string; json_schema?: { strict?: boolean } };
+    expect(responseFormat.type).toBe("json_schema");
+    expect(responseFormat.json_schema?.strict).toBe(true);
   });
 
   it("includes an image_url content part per referenceImageUrls entry, in OpenAI's real vision-input shape", async () => {

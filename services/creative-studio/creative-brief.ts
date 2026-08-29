@@ -359,6 +359,129 @@ function resolveReferenceExecutionStrategy(input: BuildCreativeBriefInput): Refe
 }
 
 /**
+ * ## Campaign Concept Contract (quality-floor pass)
+ *
+ * A real, confirmed production failure: a request correctly classified
+ * `CAMPAIGN_CREATIVE` (the reference-execution-strategy fix worked) still
+ * produced a generic result, because `creativeConcept` alone is trivially
+ * satisfied by a mood/location adjective ("energetic red environment")
+ * that names an environment, not an idea — and when no concept was
+ * supplied at all, `creative-blueprint.ts`'s `RESTRAINED_FALLBACK` art
+ * direction is honest but product-agnostic boilerplate ("Build one
+ * product-derived commercial world...") that is true of literally any
+ * product. Neither failure mode is caught by checking "is
+ * `creativeConcept` non-null" alone.
+ *
+ * The fix is architectural, not a stronger prompt: for `CAMPAIGN_CREATIVE`
+ * requests, `buildCreativeBrief` below no longer accepts a bare
+ * `creativeConcept` as sufficient. It requires the concept to be
+ * accompanied by `campaignArtDirection.visualMechanism` AND `.productRole`
+ * — see `hasSubstantiveCampaignConcept` — a STRUCTURAL PRESENCE check
+ * (never word-count), because these two fields are exactly the parts of a
+ * real campaign proposition an adjective can't fake: WHAT physically
+ * happens in the canvas, and HOW the product itself participates. A real,
+ * multimodal-capable `IntentParsingProvider` is instructed
+ * (creative-director-instructions.ts) to always supply all three
+ * together for a campaign deliverable or supply none of them (never a
+ * concept alone) — so their joint presence is real evidence the model did
+ * the requested reasoning, not just named a mood.
+ *
+ * When that bar isn't met — the real parser silently fell back to the
+ * heuristic parser (which never supplies any of these), the real parser
+ * ran but only supplied a bare adjective, or a previous production
+ * incident of either kind — `buildProductDerivedCampaignConcept` below
+ * constructs a genuine, product-derived floor from Product Truth alone
+ * (`preservationRequirements`'s own shape/material/color/construction/
+ * hardware entries — the SAME anchors `identity-constraints.ts` already
+ * asserts as immutable, never invented facts). It does not need to
+ * outperform a real Creative Director; it needs to make it architecturally
+ * impossible for a campaign deliverable to reach the provider with an
+ * empty or purely-adjectival concept. This deliberately narrows (does not
+ * remove) the "no deterministic fallback for `creativeConcept`" principle
+ * from this file's earlier module doc comment: that principle still holds
+ * for every non-campaign case, and even here the fallback never invents
+ * anything beyond what Product Intelligence already observed and asserted
+ * as immutable — it recombines real facts into a real structural
+ * mechanism, it does not fabricate creative genius.
+ */
+
+/** Extracts the value from a `"prefix: value"`-shaped entry in
+ * `preservationRequirements` (see `identity-constraints.ts`'s
+ * `buildIdentityConstraints`, which produces exactly this shape) —
+ * reuses data already flowing into this function rather than requiring a
+ * second, raw-`IdentityAnchors` input parameter. Returns the FIRST match
+ * only (e.g. the first `"construction: ..."` entry when several exist) —
+ * good enough for "pick one concrete, real, known feature," not an
+ * exhaustive extraction. */
+function extractPreservationValue(preservationRequirements: string[], prefix: string): string | null {
+  const entry = preservationRequirements.find((item) => item.startsWith(`${prefix}: `));
+  return entry ? entry.slice(prefix.length + 2).trim() || null : null;
+}
+
+interface ProductDerivedCampaignConcept {
+  creativeConcept: string;
+  visualMechanism: string;
+  productRole: string;
+  scrollStopDevice: string;
+}
+
+/**
+ * Builds a genuine, non-generic campaign concept from ONLY what Product
+ * Intelligence actually observed — never a fabricated claim, benefit,
+ * material, or brand fact. Always returns something (never null): even a
+ * product with no analyzed anchors at all still has a `category`
+ * (`subjectPhrase` is always a real, non-empty phrase), so there is
+ * always at least one real fact to build the single most generic-but-true
+ * fallback around. See this section's own module doc comment for why
+ * this exists and what it deliberately does NOT do (invent performance
+ * claims, materials, or capabilities not already known).
+ */
+function buildProductDerivedCampaignConcept(input: BuildCreativeBriefInput): ProductDerivedCampaignConcept {
+  const shape = extractPreservationValue(input.preservationRequirements, "shape");
+  const material = extractPreservationValue(input.preservationRequirements, "material");
+  const primaryColor = extractPreservationValue(input.preservationRequirements, "primary color");
+  const construction = input.preservationRequirements
+    .filter((item) => item.startsWith("construction: "))
+    .map((item) => item.slice("construction: ".length).trim())
+    .filter(Boolean);
+  const hardware = input.preservationRequirements
+    .filter((item) => item.startsWith("hardware: "))
+    .map((item) => item.slice("hardware: ".length).trim())
+    .filter(Boolean);
+
+  // The single most concrete, real, known geometric/construction feature
+  // available — never a fabricated one. Priority: an observed shape
+  // description, then a specific construction detail, then a hardware
+  // detail, then falling back to "form" (still true, just less specific)
+  // only when nothing more concrete was ever observed.
+  const feature = shape ?? construction[0] ?? hardware[0] ?? null;
+  const colorOrMaterial = primaryColor ?? material ?? null;
+  const subject = input.subjectPhrase;
+  const featurePhrase = feature ? feature.toLowerCase() : "own form";
+  const colorPhrase = colorOrMaterial ? ` and its ${colorOrMaterial.toLowerCase()} presence` : "";
+
+  return {
+    creativeConcept: `A single-idea campaign built entirely from ${subject}'s ${featurePhrase}${colorPhrase} — the product's real geometry and color become the visual world itself, rather than a decorated backdrop behind it.`,
+    visualMechanism: `${subject}'s own ${featurePhrase} is echoed or extended by the surrounding composition, so the environment reads as a continuation of the product's real geometry rather than an unrelated setting.`,
+    productRole: `${subject} is the single graphic anchor the frame is built around — everything else in frame exists to reinforce its own ${colorOrMaterial ? colorOrMaterial.toLowerCase() : "form"}, never to compete with it.`,
+    scrollStopDevice: `The unexpected scale or graphic treatment of ${subject}'s own ${featurePhrase} as the structuring element of the frame is the immediate visual hook.`,
+  };
+}
+
+/**
+ * STRUCTURAL PRESENCE check — deliberately never word-count or length
+ * based (a long adjective list would still fail this; a short, concrete
+ * mechanism would still pass). A concept only counts as substantive when
+ * it's accompanied by BOTH `visualMechanism` (what physically happens)
+ * and `productRole` (how the product participates) — see this section's
+ * module doc comment for why a bare `creativeConcept` alone is not
+ * sufficient evidence of real campaign reasoning.
+ */
+function hasSubstantiveCampaignConcept(creativeConcept: string | null, art: CampaignArtDirection): boolean {
+  return Boolean(creativeConcept) && Boolean(art.visualMechanism) && Boolean(art.productRole);
+}
+
+/**
  * The small, deterministic "what should a professional creative director
  * add here" rule table — see module doc comment's "Explicit vs.
  * inferred". Each rule is conditioned on an explicit field already being
@@ -624,9 +747,12 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
       ? input.externalNegativeCreativeDecisions
       : inferNegativeCreativeDecisions(input);
 
-  // No deterministic fallback — see module doc comment for why genuine
-  // concept development is deliberately left to the real LLM path only.
-  const creativeConcept =
+  // No deterministic fallback for the RAW, vendor-supplied value — see
+  // module doc comment for why genuine concept development is left to
+  // the real LLM path only. The guaranteed floor for CAMPAIGN_CREATIVE
+  // (Campaign Concept Contract) is applied further below, once the
+  // strategy is known — see that section's own doc comment.
+  const rawCreativeConcept =
     input.externalCreativeConcept && input.externalCreativeConcept.trim().length > 0 ? input.externalCreativeConcept.trim() : null;
 
   // The parser is untrusted. Keep visual-only as the default; factual
@@ -655,19 +781,57 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
   // `personalizationApplied` lists are still computed and persisted
   // either way (traceability, tests), but only appended into the
   // COMPOSED sentence, never spliced into a real vendor's own prose.
+  //
+  // Uses `rawCreativeConcept` deliberately, not the guaranteed one
+  // computed below: a vendor's own holistic sentence is written to
+  // stand alone, and should never be silently rewritten just because
+  // the atomic `creativeConcept` field happened to need the
+  // Campaign Concept Contract floor.
   const overallCreativeDirection =
     input.externalCreativeDirection && input.externalCreativeDirection.trim().length > 0
       ? input.externalCreativeDirection.trim()
       : composeOverallCreativeDirection(input, transformations, personalizationApplied, inferredCreativeDecisions);
 
   const referenceExecutionStrategy = resolveReferenceExecutionStrategy(input);
+  const rawCampaignArtDirection = input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION;
+  const hasExplicitCreativeDirection = Boolean(
+    input.scene || input.style.length || input.lighting || input.composition || input.camera || input.colorDirection || rawCreativeConcept,
+  );
+
+  // Campaign Concept Contract guarantee (quality-floor pass) — see this
+  // file's dedicated module doc comment above `hasSubstantiveCampaignConcept`.
+  // Only for CAMPAIGN_CREATIVE, and only when nothing substantive was
+  // supplied AND there is no legitimate campaign-DNA carry-forward to
+  // inherit from instead (`buildCreativeBlueprint` itself resolves that
+  // inheritance when `creativeConcept` is null — see its own `concept`
+  // line — so this must not clobber that path with a fresh, unrelated
+  // deterministic concept on a genuine continuation turn).
+  const shouldInheritFromCampaignDNA = Boolean(input.previousCampaignDNA?.shouldCarryForward) && !hasExplicitCreativeDirection;
+  const needsGuaranteedCampaignConcept =
+    referenceExecutionStrategy === "CAMPAIGN_CREATIVE" &&
+    !hasSubstantiveCampaignConcept(rawCreativeConcept, rawCampaignArtDirection) &&
+    !shouldInheritFromCampaignDNA;
+  const productDerivedConcept = needsGuaranteedCampaignConcept ? buildProductDerivedCampaignConcept(input) : null;
+
+  const creativeConcept = productDerivedConcept ? productDerivedConcept.creativeConcept : rawCreativeConcept;
+  // Merge, never blanket-overwrite: a real vendor's own visualStory/
+  // heroTreatment/etc. are preserved even when the concept itself needed
+  // the deterministic floor — only the specific fields that made the
+  // concept non-substantive are filled in.
+  const campaignArtDirection: CampaignArtDirection = productDerivedConcept
+    ? {
+        ...rawCampaignArtDirection,
+        visualMechanism: rawCampaignArtDirection.visualMechanism ?? productDerivedConcept.visualMechanism,
+        productRole: rawCampaignArtDirection.productRole ?? productDerivedConcept.productRole,
+        scrollStopDevice: rawCampaignArtDirection.scrollStopDevice ?? productDerivedConcept.scrollStopDevice,
+      }
+    : rawCampaignArtDirection;
   // Kept as a public, backward-compatible boolean — every existing
   // caller (plan-builder.ts's `synthesizeCreativePrompt`, its own field
   // on `CreativeBrief`) still reads this exact field; it is now purely
   // derived from the canonical strategy rather than computed by its own
   // separate, `isEditTurn`-sensitive heuristic.
   const campaignSceneTransformation = referenceExecutionStrategy === "CAMPAIGN_CREATIVE";
-  const campaignArtDirection = input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION;
   const creativeBlueprint = buildCreativeBlueprint({
     intent: input.intent,
     mode: input.mode ?? "TEXT_TO_IMAGE",
@@ -676,10 +840,11 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     isEditTurn: input.isEditTurn,
     referenceExecutionStrategy,
     creativeConcept,
+    creativeConceptProvenance: productDerivedConcept ? "PRODUCT_DERIVED_FLOOR" : "SEMANTIC_PLANNING",
     campaignArtDirection,
     campaignCommunication,
     previousCampaignDNA: input.previousCampaignDNA,
-    hasExplicitCreativeDirection: Boolean(input.scene || input.style.length || input.lighting || input.composition || input.camera || input.colorDirection || creativeConcept),
+    hasExplicitCreativeDirection,
   });
 
   return {

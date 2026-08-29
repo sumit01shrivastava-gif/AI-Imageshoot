@@ -358,3 +358,118 @@ describe("buildCreativeBrief — creativeConcept and negativeCreativeDecisions (
     expect(brief.creativeConcept).toBe("A dramatic desert dune landscape.");
   });
 });
+
+/**
+ * Campaign Concept Contract (quality-floor pass, second round) — makes it
+ * architecturally impossible for a CAMPAIGN_CREATIVE deliverable to reach
+ * generation with an empty or purely-adjectival concept. See
+ * creative-brief.ts's own "Campaign Concept Contract" module doc comment.
+ */
+describe("buildCreativeBrief — Campaign Concept Contract (quality-floor pass, second round)", () => {
+  const capAnchors = [
+    "category: Headwear",
+    "shape: Six-panel structured crown with curved brim",
+    "material: Cotton twill",
+    "primary color: Red",
+    "construction: stitched panel seams",
+    "construction: top button",
+    "hardware: rear adjustable strap buckle",
+  ];
+
+  it("guarantees a real, product-derived concept + visual mechanism + product role when NOTHING was supplied for a CAMPAIGN_CREATIVE request — the exact production failure this fixes", () => {
+    const brief = buildCreativeBrief(
+      baseInput({ intent: "CREATE_SOCIAL", isEditTurn: true, scene: null, subjectPhrase: "the Red Baseball Cap", preservationRequirements: capAnchors }),
+    );
+    expect(brief.creativeConcept).not.toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).not.toBeNull();
+    expect(brief.campaignArtDirection.productRole).not.toBeNull();
+    expect(brief.campaignArtDirection.scrollStopDevice).not.toBeNull();
+    // Built from REAL, known facts only — never a generic mood/location
+    // word, and never a fact this product's anchors didn't establish.
+    expect(brief.creativeConcept).toMatch(/curved brim/i);
+    expect(brief.creativeConcept).not.toMatch(/waterproof|performance|heritage|endorsement|award-winning/i);
+    expect(brief.creativeBlueprint.creativeDirection.conceptSource).toBe("PRODUCT_DERIVED_FLOOR");
+  });
+
+  it("does NOT invent facts beyond what the anchors actually establish — a sparse product still gets a real, honest concept", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_BANNER", isEditTurn: true, scene: null, subjectPhrase: "the product", preservationRequirements: ["category: Widget"] }));
+    expect(brief.creativeConcept).not.toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).not.toBeNull();
+    expect(brief.campaignArtDirection.productRole).not.toBeNull();
+    // No shape/material/color was ever observed — the construction must
+    // still produce something real, never a fabricated specific claim.
+    expect(brief.creativeConcept).not.toMatch(/waterproof|premium quality|award-winning|patented|clinically|guaranteed/i);
+  });
+
+  it("does NOT override a real, substantive vendor-supplied concept (concept + visualMechanism + productRole all present)", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CREATE_SOCIAL",
+        isEditTurn: true,
+        scene: null,
+        externalCreativeConcept: "A genuinely specific, product-derived idea.",
+        externalCampaignArtDirection: {
+          visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null,
+          visualMechanism: "A real mechanism.", productRole: "A real product role.", scrollStopDevice: "A real hook.",
+        },
+      }),
+    );
+    expect(brief.creativeConcept).toBe("A genuinely specific, product-derived idea.");
+    expect(brief.campaignArtDirection.visualMechanism).toBe("A real mechanism.");
+    expect(brief.creativeBlueprint.creativeDirection.conceptSource).toBe("SEMANTIC_PLANNING");
+  });
+
+  it("treats a bare creativeConcept with no visualMechanism/productRole as NOT substantive — the guaranteed floor still fires (structural-presence check, never word-count)", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "CREATE_SOCIAL",
+        isEditTurn: true,
+        scene: null,
+        subjectPhrase: "the Red Baseball Cap",
+        preservationRequirements: capAnchors,
+        // A long, wordy, but still purely adjectival "concept" with no
+        // mechanism/role — must NOT count as substantive.
+        externalCreativeConcept: "An energetic, vibrant, premium, dynamic, cinematic red environment full of motion and light.",
+      }),
+    );
+    // The vendor's own (non-substantive) string is replaced — never left
+    // in place merely because SOME string was supplied.
+    expect(brief.creativeConcept).not.toBe("An energetic, vibrant, premium, dynamic, cinematic red environment full of motion and light.");
+    expect(brief.campaignArtDirection.visualMechanism).not.toBeNull();
+    expect(brief.creativeBlueprint.creativeDirection.conceptSource).toBe("PRODUCT_DERIVED_FLOOR");
+  });
+
+  it("never applies the guaranteed floor to a non-campaign strategy (PRODUCT_LOCKED_RECOMPOSITION) — restrained ecommerce/lifestyle requests are not forced into surreal campaign concepts", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CREATE_MARKETPLACE", isEditTurn: true, scene: null, preservationRequirements: [] }));
+    expect(brief.creativeConcept).toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).toBeNull();
+  });
+
+  it("never applies the guaranteed floor to PRECISION_EDIT", () => {
+    const brief = buildCreativeBrief(baseInput({ intent: "CHANGE_LIGHTING", isEditTurn: true, scene: null }));
+    expect(brief.creativeConcept).toBeNull();
+    expect(brief.campaignArtDirection.visualMechanism).toBeNull();
+  });
+
+  it("does not clobber a legitimate campaign-DNA carry-forward with a fresh, unrelated deterministic concept", () => {
+    const brief = buildCreativeBrief(
+      baseInput({
+        intent: "VARIATION",
+        isEditTurn: true,
+        scene: null,
+        previousCampaignDNA: {
+          shouldCarryForward: true,
+          carryForwardFields: ["CONCEPT", "ART_DIRECTION", "PHOTOGRAPHY", "DESIGN_DIRECTION"],
+          governingConcept: "The original, real campaign concept from an earlier turn.",
+          artDirection: { visualStory: null, heroTreatment: null, canvasArchitecture: null, productEnvironmentRelationship: null, materialLightingStrategy: null, visualMechanism: null, productRole: null, scrollStopDevice: null },
+          photographyCharacter: [],
+          designAssetKind: "PHOTOGRAPHY_ONLY",
+        },
+      }),
+    );
+    // buildCreativeBlueprint itself resolves the inherited concept when
+    // creativeConcept is null — the deterministic floor must not run
+    // first and hand it something unrelated instead.
+    expect(brief.creativeBlueprint.creativeDirection.concept).toBe("The original, real campaign concept from an earlier turn.");
+  });
+});

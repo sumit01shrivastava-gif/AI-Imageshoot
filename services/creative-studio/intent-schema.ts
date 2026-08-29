@@ -83,16 +83,48 @@ export const DEFAULT_CAMPAIGN_COMMUNICATION: CampaignCommunication = {
   reservedTextArea: "NONE",
 };
 
-/** The selected campaign's execution plan. These are concise conclusions,
+/**
+ * The selected campaign's execution plan. These are concise conclusions,
  * not candidate reasoning or a transcript. They let prompt synthesis keep
  * a campaign as one designed canvas rather than a product shot plus a list
- * of disconnected photography adjectives. */
+ * of disconnected photography adjectives.
+ *
+ * `visualMechanism`/`productRole`/`scrollStopDevice` (Campaign Concept
+ * Contract, quality-floor pass): a real, confirmed production failure —
+ * a genuinely CAMPAIGN_CREATIVE-classified request (the reference-
+ * execution-strategy fix worked correctly) still produced a generic
+ * result, because `creativeConcept` alone is too easy to satisfy with an
+ * adjective/mood phrase ("energetic red environment") that names an
+ * environment, not an idea. These three fields are the SAME kind of
+ * "concise conclusion, not reasoning" `visualStory`/`heroTreatment`/etc.
+ * already are, but ask specifically for the parts of a real campaign
+ * proposition an adjective can't fake: `visualMechanism` (WHAT physically
+ * happens in the canvas — see creative-director-instructions.ts's step C
+ * for the mechanism-category examples), `productRole` (how the product
+ * itself participates, not merely sits in front of a background), and
+ * `scrollStopDevice` (what creates immediate visual interest). See
+ * creative-brief.ts's "Campaign Concept Contract" section for how their
+ * STRUCTURAL PRESENCE (not word-count) is used to decide whether a
+ * supplied concept is substantive enough to use as-is, or whether the
+ * deterministic product-derived fallback must run instead.
+ */
 export const CampaignArtDirectionSchema = z.object({
   visualStory: z.string().min(1).max(420).nullable().default(null),
   heroTreatment: z.string().min(1).max(280).nullable().default(null),
   canvasArchitecture: z.string().min(1).max(360).nullable().default(null),
   productEnvironmentRelationship: z.string().min(1).max(280).nullable().default(null),
   materialLightingStrategy: z.string().min(1).max(320).nullable().default(null),
+  /** WHAT physically/visually happens in the canvas — e.g. "the bottle's
+   * own cap silhouette is echoed by an oversized architectural arch
+   * behind it" — never a location/mood word alone. `null` when no
+   * concept was proposed at all. */
+  visualMechanism: z.string().min(1).max(320).nullable().default(null),
+  /** How the product itself participates in the concept — never "placed
+   * in front of a background." `null` when no concept was proposed. */
+  productRole: z.string().min(1).max(280).nullable().default(null),
+  /** What creates immediate visual interest/scroll-stop. `null` when no
+   * concept was proposed. */
+  scrollStopDevice: z.string().min(1).max(280).nullable().default(null),
 });
 
 export type CampaignArtDirection = z.infer<typeof CampaignArtDirectionSchema>;
@@ -102,6 +134,9 @@ export const DEFAULT_CAMPAIGN_ART_DIRECTION: CampaignArtDirection = {
   canvasArchitecture: null,
   productEnvironmentRelationship: null,
   materialLightingStrategy: null,
+  visualMechanism: null,
+  productRole: null,
+  scrollStopDevice: null,
 };
 
 /**

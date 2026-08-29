@@ -26,11 +26,18 @@
  *     content-part shape, letting a genuinely multimodal call reason
  *     about a reference image's identity/pose/environment instead of
  *     only a text description of it.
- *   - `response_format: { type: "json_object" }` — OpenAI's real
- *     structured-output parameter; still independently validated by
- *     `parseParsedIntent` afterward (CLAUDE.md "Reject malformed
- *     provider output" — a model asked for JSON can still return
- *     something that fails the actual schema).
+ *   - `response_format: { type: "json_schema", ... strict: true }` —
+ *     OpenAI's Structured Outputs mode (quality-floor pass, second
+ *     round — this file previously used the weaker `{ type: "json_object" }`,
+ *     which only guarantees "valid JSON," not that any particular field
+ *     is present; see parsed-intent-json-schema.ts's own doc comment for
+ *     why this closes a real, confirmed field-omission risk on optional
+ *     -shaped fields like `creativeConcept`). Same model, same single
+ *     call, same endpoint — still independently validated by
+ *     `parseParsedIntent` afterward regardless (CLAUDE.md "Reject
+ *     malformed provider output" — schema presence guarantees are not a
+ *     substitute for that validation, and guarantee shape, never
+ *     semantic quality).
  *
  * Selected when `AI_PROVIDER=openai` (with `AI_PROVIDER_API_KEY` set) —
  * mirrors `services/generation/provider.server.ts`'s exact
@@ -48,6 +55,7 @@ import { getEnv } from "../../lib/validation/env.server";
 import { logger } from "../../lib/logging/logger.server";
 import { fetchWithTimeout, measureLatencyMs, ProviderRequestError, ProviderResponseError } from "./http-provider-utils.server";
 import { CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION } from "./creative-director-instructions";
+import { PARSED_INTENT_RESPONSE_FORMAT } from "./parsed-intent-json-schema";
 import type { IntentParsingProvider, ParseIntentInput, ParsedIntentRawOutput } from "./types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com";
@@ -101,7 +109,7 @@ export class OpenAIIntentParsingProvider implements IntentParsingProvider {
         },
         body: JSON.stringify({
           model: resolveModel(env),
-          response_format: { type: "json_object" },
+          response_format: PARSED_INTENT_RESPONSE_FORMAT,
           messages: [
             { role: "system", content: CREATIVE_DIRECTOR_SYSTEM_INSTRUCTION },
             { role: "user", content: userContent },

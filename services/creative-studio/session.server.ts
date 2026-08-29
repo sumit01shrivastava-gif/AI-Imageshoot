@@ -580,6 +580,20 @@ export async function sendCreativeMessage(
     // other field logged here.
     hasCreativeConcept: Boolean(brief?.creativeConcept),
     negativeCreativeDecisionCount: brief?.negativeCreativeDecisions.length ?? 0,
+    // Campaign Concept Contract observability (quality-floor pass, second
+    // round) — enough to diagnose "was this a real semantic-planning
+    // concept, or did the deterministic product-derived floor have to
+    // step in" purely from Railway logs, without needing raw DB/prompt
+    // access (the exact gap that made the prior production incident slow
+    // to diagnose). Every value here is a presence flag, count, or an
+    // already-safe enum value — never the concept/mechanism text itself.
+    referenceExecutionStrategy: brief?.creativeBlueprint?.referenceExecutionStrategy ?? null,
+    conceptSource: brief?.creativeBlueprint?.creativeDirection.conceptSource ?? null,
+    campaignConceptPresent: Boolean(brief?.creativeConcept),
+    visualMechanismPresent: Boolean(brief?.campaignArtDirection.visualMechanism),
+    campaignCommunicationMode: brief?.campaignCommunication.mode ?? null,
+    qualityProfile: brief?.creativeBlueprint?.qualityIntent.profile ?? null,
+    compiledBriefCharacterCount: plan.creativeDirection.prompt.length,
     planningMs: Date.now() - requestStartedAt,
     contextLoadMs,
     productIntelligenceMs,

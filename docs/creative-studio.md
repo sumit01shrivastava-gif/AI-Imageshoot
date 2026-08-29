@@ -484,6 +484,120 @@ Quality Director evaluation — `classifyReferenceExecutionStrategy` is a
 pure, synchronous, in-process function call inside the existing planning
 pass.
 
+## Campaign Concept Contract
+
+A/B forensic analysis of two real production jobs on the same product
+(same reference cap, same "create a social media creative for this
+product" request) found that fixing the reference execution strategy
+above was necessary but not sufficient: Job B correctly resolved
+`CAMPAIGN_CREATIVE`, correctly got `DISCARD_FOR_CAMPAIGN`/`CAMPAIGN`
+quality profile, and still produced a generic result (a Quality Director
+score of 6.7, down from Job A's 7.3 — the drop itself traced to the
+`CAMPAIGN` profile correctly re-weighting toward `creativeConcept`/
+`artDirection`, dimensions the `EDIT` profile had nearly ignored, not to
+a worse underlying image). The root cause: `creativeConcept` alone is
+trivially satisfied by a mood/location adjective ("energetic red
+environment") that names a place, not an idea, and when nothing at all
+was supplied, `creative-blueprint.ts`'s `RESTRAINED_FALLBACK` art
+direction — while honest — is product-agnostic boilerplate true of any
+product.
+
+**The fix is architectural, not a longer prompt.** For a
+`CAMPAIGN_CREATIVE` request, `services/creative-studio/creative-brief.ts`
+no longer accepts a bare `creativeConcept` as sufficient:
+
+- `CampaignArtDirectionSchema` (`intent-schema.ts`) gained three fields
+  making up the Campaign Concept Contract: `visualMechanism` (WHAT
+  physically/visually happens in the canvas — never a location/mood word
+  alone), `productRole` (HOW the product itself participates — never
+  "placed in front of a background"), `scrollStopDevice` (what creates
+  immediate visual interest).
+- `hasSubstantiveCampaignConcept` is a STRUCTURAL PRESENCE check (never
+  word-count or length) — a concept only counts as real when
+  `visualMechanism` AND `productRole` are also present alongside it. The
+  real LLM system instruction (`creative-director-instructions.ts`) is
+  told to always supply all three together for a campaign deliverable or
+  none of them — never a concept alone — so their joint presence is real
+  evidence the requested reasoning happened, not just a mood word.
+- When that bar isn't met — the real parser silently fell back to the
+  heuristic parser (which never supplies any of these), the real parser
+  ran but only supplied an adjective, or a repeat of the exact production
+  incident — `buildProductDerivedCampaignConcept` constructs a genuine,
+  non-generic concept from Product Truth ALONE: the same shape/material/
+  color/construction/hardware anchors `identity-constraints.ts` already
+  asserts as immutable (parsed back out of `preservationRequirements`,
+  reusing data already flowing through this function rather than a
+  second raw-anchors parameter), never a fabricated claim, benefit,
+  material, or brand fact. It does not need to outperform a real
+  Creative Director; it needs to make it architecturally impossible for
+  a campaign deliverable to reach the provider with an empty or
+  purely-adjectival concept. A real vendor's own already-substantive
+  fields (e.g. `visualStory`/`heroTreatment`) are merged with, never
+  blanket-overwritten by, this floor.
+- The floor never fires for `PRECISION_EDIT`/`PRODUCT_LOCKED_RECOMPOSITION`
+  (a restrained ecommerce/lifestyle request is never forced into a
+  surreal campaign concept it didn't ask for), and never clobbers a
+  legitimate campaign-DNA carry-forward turn (`previousCampaignDNA
+  .shouldCarryForward`) with a fresh, unrelated concept —
+  `buildCreativeBlueprint`'s own inheritance already resolves that case
+  correctly once `creativeConcept` stays `null`.
+- `conceptSource` (`CreativeBlueprint.creativeDirection`) gained a fourth
+  value, `PRODUCT_DERIVED_FLOOR`, alongside the existing
+  `SEMANTIC_PLANNING`/`CAMPAIGN_DNA`/`RESTRAINED_FALLBACK` — additive,
+  `.nullable()`/backward-compatible in the persisted schema.
+
+**Structured-output reliability**: `services/ai/openai-intent-parser.server.ts`
+migrated from basic `response_format: { type: "json_object" }` (guarantees
+only "valid JSON") to OpenAI's Structured Outputs `{ type: "json_schema",
+strict: true }` (`services/ai/parsed-intent-json-schema.ts`, mirroring
+`ParsedIntentSchema` field-for-field — duplicated, never imported, same
+domain-boundary reasoning `creative-director-instructions.ts` already
+follows) — guarantees every field's presence, closing the class of
+failure where a model silently omits an optional-shaped field. Same
+model, same endpoint, same single call — no new call, no model change.
+This guarantees SHAPE, never semantic quality: a model could still
+satisfy strict mode with a generic concept, which is exactly why the
+Campaign Concept Contract validation above is a separate, deterministic
+layer this schema doesn't replace. `parseParsedIntent`'s own Zod
+validation is unchanged and still the final authority.
+
+**Compiler fixes** (`services/creative-studio/creative-blueprint.ts`'s
+`compileProviderExecutionBrief`, `plan-builder.ts`'s
+`synthesizeCreativePrompt`): a real, confirmed duplication — the same two
+`inferredCreativeDecisions` sentences appeared twice inside
+`EXECUTION PRIORITIES:`, once via `overallCreativeDirection`'s own
+closing clause and again via a separate, independently-truncated
+`executionClause` — is fixed by removing the second, redundant splice
+(the file's own pre-existing "never spliced into a real vendor's own
+prose" rule already said this shouldn't happen). A generic, templated
+`MERCHANT DIRECTION:` line ("Eye-catching, social-media-ready product
+photography of X") for a bare request with no real creative specifics
+beyond the intent itself is now omitted entirely rather than restated as
+if it were meaningful direction — genuine merchant direction (an
+explicit scene, style, lighting, ...) is still always preserved verbatim.
+The compiled brief's semantic order now explicitly includes
+`VISUAL MECHANISM:`/`PRODUCT ROLE:`/`SCROLL-STOP:` right after the
+campaign proposition, and `CANVAS ARCHITECTURE:`/`VISUAL STORY:` are
+renamed `CANVAS HIERARCHY:`/`ART DIRECTION:` to match this pass's own
+semantic-priority naming.
+
+**Observability**: `session.server.ts`'s `creative_studio.plan.built` log
+line gained `referenceExecutionStrategy`, `conceptSource`,
+`campaignConceptPresent`, `visualMechanismPresent`,
+`campaignCommunicationMode`, `qualityProfile`, and
+`compiledBriefCharacterCount` — every value a presence flag, count, or
+already-safe enum, never the concept/mechanism text itself — so a future
+production incident of this exact shape ("was this a real semantic
+-planning concept or did the deterministic floor have to step in") is
+diagnosable from Railway logs alone, without needing direct database
+access.
+
+**Cost/latency**: no new planning call, no new generation call, no new
+Quality Director evaluation, no new provider call — every addition above
+is either a pure deterministic function inside the existing planning
+pass, or a stricter `response_format` on the SAME existing intent-parsing
+call.
+
 ## Image-to-image flow (Part 5)
 
 `GenerateImageInput` (`services/ai/types.ts`) gained two small, additive
