@@ -9,7 +9,7 @@ function blueprint(overrides: Partial<Parameters<typeof buildCreativeBlueprint>[
     category: "Watches",
     hasProductIntelligence: true,
     isEditTurn: false,
-    campaignSceneTransformation: true,
+    referenceExecutionStrategy: "CAMPAIGN_CREATIVE",
     creativeConcept: "A product-derived precision campaign world.",
     campaignArtDirection: DEFAULT_CAMPAIGN_ART_DIRECTION,
     campaignCommunication: DEFAULT_CAMPAIGN_COMMUNICATION,
@@ -29,7 +29,7 @@ describe("Creative Blueprint — Phase 1 director contracts", () => {
   });
 
   it("keeps an ecommerce product image restrained and visual-only instead of turning it into a campaign", () => {
-    const result = blueprint({ intent: "CREATE_MARKETPLACE", campaignSceneTransformation: false, creativeConcept: null });
+    const result = blueprint({ intent: "CREATE_MARKETPLACE", referenceExecutionStrategy: "PRODUCT_LOCKED_RECOMPOSITION", creativeConcept: null });
 
     expect(result.brief.deliverableClass).toBe("ECOMMERCE_PRODUCT_IMAGE");
     expect(result.commercialStrategy).toMatchObject({ objective: "ECOMMERCE_CLARITY", channel: "ECOMMERCE", visualIntensity: "RESTRAINED" });
@@ -38,7 +38,7 @@ describe("Creative Blueprint — Phase 1 director contracts", () => {
   });
 
   it("treats a product-on-model request as a distinct photography and quality concern", () => {
-    const result = blueprint({ intent: "ADD_MODEL", category: "Footwear", campaignSceneTransformation: false });
+    const result = blueprint({ intent: "ADD_MODEL", category: "Footwear", referenceExecutionStrategy: "PRODUCT_LOCKED_RECOMPOSITION" });
 
     expect(result.brief.deliverableClass).toBe("PRODUCT_ON_MODEL");
     expect(result.qualityIntent).toMatchObject({ profile: "MODEL_INTERACTION" });
@@ -47,7 +47,7 @@ describe("Creative Blueprint — Phase 1 director contracts", () => {
   });
 
   it("keeps an edit/continuation conservative about the requested source scene while carrying campaign DNA forward", () => {
-    const result = blueprint({ intent: "CHANGE_LIGHTING", mode: "IMAGE_EDIT", isEditTurn: true, campaignSceneTransformation: false });
+    const result = blueprint({ intent: "CHANGE_LIGHTING", mode: "IMAGE_EDIT", isEditTurn: true, referenceExecutionStrategy: "PRECISION_EDIT" });
 
     expect(result.brief).toMatchObject({ deliverableClass: "PRODUCT_EDIT", expectedFinish: "EDITED_RESULT", continuation: true });
     expect(result.productTruth.sourceScenePolicy).toBe("PRESERVE_REQUESTED");
@@ -61,7 +61,7 @@ describe("Creative Blueprint — Phase 1 director contracts", () => {
       intent: "CREATE_BANNER",
       mode: "IMAGE_TO_IMAGE",
       isEditTurn: true,
-      campaignSceneTransformation: false,
+      referenceExecutionStrategy: "CAMPAIGN_CREATIVE",
       creativeConcept: null,
       previousCampaignDNA: original.campaignDNA,
     });
@@ -77,7 +77,7 @@ describe("Creative Blueprint — Phase 1 director contracts", () => {
       intent: "CHANGE_LIGHTING",
       mode: "IMAGE_EDIT",
       isEditTurn: true,
-      campaignSceneTransformation: false,
+      referenceExecutionStrategy: "PRECISION_EDIT",
       creativeConcept: null,
       hasExplicitCreativeDirection: true,
     });

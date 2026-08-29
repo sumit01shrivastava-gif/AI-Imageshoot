@@ -128,7 +128,7 @@ import {
   type CampaignCommunication,
 } from "./intent-schema";
 import { resolveProductInteraction } from "../generation/product-interaction";
-import { buildCreativeBlueprint, type CreativeBlueprint, type PreviousCampaignDNA } from "./creative-blueprint";
+import { buildCreativeBlueprint, classifyReferenceExecutionStrategy, type CreativeBlueprint, type PreviousCampaignDNA, type ReferenceExecutionStrategy } from "./creative-blueprint";
 
 /** Style/lighting keywords that indicate a moody/dramatic treatment was
  * asked for — used only to decide whether to add a shadow-control
@@ -173,8 +173,6 @@ const FRESH_CREATIVE_INTENTS: ReadonlySet<CreativeIntentValue> = new Set([
   "CREATE_BANNER",
   "ADD_MODEL",
 ]);
-
-const CAMPAIGN_INTENT_PATTERN = /\b(exceptional|campaign|advertising|cinematic|impactful|striking|creative|premium|luxury|hero)\b/i;
 
 export interface CreativeBrief {
   /** One sentence naming what this generation is FOR — e.g. "Produce an
@@ -340,21 +338,24 @@ export interface BuildCreativeBriefInput {
   previousCampaignDNA?: PreviousCampaignDNA | null;
 }
 
-/** A product-first campaign creates a new world; a narrow edit or an
- * explicitly requested scene does not. This is category-general and
- * never relaxes the product lock. */
-function requiresCampaignSceneTransformation(input: BuildCreativeBriefInput): boolean {
-  if (input.isEditTurn || input.scene || !FRESH_CREATIVE_INTENTS.has(input.intent)) return false;
-  // A channel-deliverable such as social or banner creative is an explicit
-  // request for a newly art-directed campaign asset, even when the
-  // heuristic parser did not extract a separate adjective such as
-  // "cinematic" or "luxury". Previously "create a social media creative"
-  // produced CREATE_SOCIAL with an empty style array, leaving the source
-  // photograph's box/background eligible to anchor the generated scene.
-  // Marketplace remains deliberately excluded: that intent prioritizes a
-  // clear product listing image rather than autonomous campaign invention.
-  const campaignDeliverable = input.intent === "CREATE_SOCIAL" || input.intent === "CREATE_BANNER";
-  return campaignDeliverable || input.style.some((style) => CAMPAIGN_INTENT_PATTERN.test(style)) || Boolean(input.externalCreativeConcept?.trim());
+/**
+ * The canonical, INTENT-FIRST classification — see
+ * creative-blueprint.ts's `ReferenceExecutionStrategy`/
+ * `classifyReferenceExecutionStrategy` for the full reasoning and
+ * worked examples. This is the ONE place `isEditTurn`/mode are
+ * deliberately EXCLUDED from a campaign-scope decision — a reference
+ * image's mere presence (which makes `isEditTurn` true even on a
+ * request's first turn) must never, by itself, force a channel
+ * deliverable like "create a social media creative for this product"
+ * into precision-edit semantics (a real, confirmed production bug — see
+ * docs/creative-studio.md "Reference execution strategy"). An explicit
+ * merchant-named scene is the one legitimate override: it downgrades a
+ * campaign deliverable into a locked recomposition of exactly the scene
+ * that was asked for, never silently replaced by autonomous campaign
+ * invention.
+ */
+function resolveReferenceExecutionStrategy(input: BuildCreativeBriefInput): ReferenceExecutionStrategy {
+  return classifyReferenceExecutionStrategy(input.intent, Boolean(input.scene), input.previousCampaignDNA);
 }
 
 /**
@@ -370,7 +371,7 @@ function requiresCampaignSceneTransformation(input: BuildCreativeBriefInput): bo
 function inferCreativeDecisions(input: BuildCreativeBriefInput): string[] {
   const decisions: string[] = [];
 
-  if (requiresCampaignSceneTransformation(input)) {
+  if (resolveReferenceExecutionStrategy(input) === "CAMPAIGN_CREATIVE") {
     decisions.push(
       "Create a newly conceived campaign world from the product's own form, material, color, and commercial character; do not improve, recreate, or borrow the incidental source setting, packaging, display, props, lighting, or composition.",
     );
@@ -659,7 +660,13 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
       ? input.externalCreativeDirection.trim()
       : composeOverallCreativeDirection(input, transformations, personalizationApplied, inferredCreativeDecisions);
 
-  const campaignSceneTransformation = requiresCampaignSceneTransformation(input);
+  const referenceExecutionStrategy = resolveReferenceExecutionStrategy(input);
+  // Kept as a public, backward-compatible boolean — every existing
+  // caller (plan-builder.ts's `synthesizeCreativePrompt`, its own field
+  // on `CreativeBrief`) still reads this exact field; it is now purely
+  // derived from the canonical strategy rather than computed by its own
+  // separate, `isEditTurn`-sensitive heuristic.
+  const campaignSceneTransformation = referenceExecutionStrategy === "CAMPAIGN_CREATIVE";
   const campaignArtDirection = input.externalCampaignArtDirection ?? DEFAULT_CAMPAIGN_ART_DIRECTION;
   const creativeBlueprint = buildCreativeBlueprint({
     intent: input.intent,
@@ -667,7 +674,7 @@ export function buildCreativeBrief(input: BuildCreativeBriefInput): CreativeBrie
     category: input.category ?? null,
     hasProductIntelligence: input.preservationRequirements.length > 0,
     isEditTurn: input.isEditTurn,
-    campaignSceneTransformation,
+    referenceExecutionStrategy,
     creativeConcept,
     campaignArtDirection,
     campaignCommunication,

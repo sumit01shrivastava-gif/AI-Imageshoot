@@ -29,6 +29,11 @@ export const AspectRatioSchema = z.enum(ASPECT_RATIOS);
  * plans created before the blueprint contract existed.
  */
 const CreativeBlueprintSchema = z.object({
+  // Additive: a plan persisted before this canonical strategy field
+  // existed parses safely as `null` — never corrupts/rejects an older
+  // conversation. See services/creative-studio/creative-blueprint.ts's
+  // `ReferenceExecutionStrategy` doc comment.
+  referenceExecutionStrategy: z.enum(["PRECISION_EDIT", "PRODUCT_LOCKED_RECOMPOSITION", "CAMPAIGN_CREATIVE"]).nullable().default(null),
   brief: z.object({
     deliverableClass: z.enum(["ECOMMERCE_PRODUCT_IMAGE", "SOCIAL_CAMPAIGN_CREATIVE", "WEBSITE_BANNER", "LIFESTYLE_PRODUCT_PHOTOGRAPH", "PRODUCT_ON_MODEL", "PRODUCT_EDIT", "CAMPAIGN_VARIATION", "PREMIUM_PRODUCT_PHOTOGRAPH"]),
     transformationFreedom: z.enum(["NONE", "LIMITED", "HIGH"]),

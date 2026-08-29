@@ -371,6 +371,18 @@ function classifyIntent(message: string, hasExplicitVariationCount: boolean, has
     ["CREATE_BANNER", /\bbanner\b/i.test(lower)],
     ["CREATE_SOCIAL", /\b(instagram|tiktok|social media|social post)\b/i.test(lower)],
     ["CREATE_MARKETPLACE", /\b(amazon|marketplace|white background|ecommerce listing|product listing)\b/i.test(lower)],
+    // A generic advertising/campaign request with no more specific
+    // channel keyword (banner/social/marketplace already matched above)
+    // — "create an ad for this product", "create a campaign visual",
+    // "make a launch creative" — resolves to CREATE_SOCIAL, the closest
+    // existing channel-deliverable intent, rather than silently falling
+    // through to the generic CREATE_LIFESTYLE default (a real, once
+    // -confirmed gap: an advertising request with no reference to an
+    // existing result was previously misclassified as ordinary lifestyle
+    // photography, losing its campaign-deliverable treatment entirely —
+    // see services/creative-studio/creative-blueprint.ts's
+    // `ReferenceExecutionStrategy`).
+    ["CREATE_SOCIAL", /\b(ad|advertisement|advertising|campaign|promo|promotional|launch)\b/i.test(lower)],
     ["CHANGE_COLOR", COLOR_OVERRIDE_PATTERN.test(message) || (/\bcolou?r\b/i.test(lower) && /\b(change|make it|different)\b/i.test(lower))],
     ["CHANGE_LIGHTING", LIGHTING_PATTERN.test(message) || BRIGHTER_PATTERN.test(message) || DARKER_PATTERN.test(message)],
     ["CHANGE_CAMERA", CAMERA_PATTERN.test(message) && /\b(angle|camera|shot|zoom)\b/i.test(lower)],

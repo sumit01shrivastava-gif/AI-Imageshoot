@@ -386,6 +386,104 @@ Concrete changes:
   unrecognized/missing Content-Type still falls back to PNG rather than
   failing the request.
 
+## Reference execution strategy
+
+A confirmed production failure (generationJobId `cmtefbxcf0003i204vv563m1q` —
+a red baseball cap reference + "create a social media creative for this
+product") traced to one architectural bug: the planner effectively used
+`isEditTurn = hasReferenceImage && mode === "IMAGE_TO_IMAGE"` as the gate
+for whether the source scene could be replaced. Since uploading a product
+reference makes `isEditTurn` true even on a request's FIRST turn, a
+channel deliverable like CREATE_SOCIAL was silently treated as a
+precision edit — the provider brief asked for a "SOCIAL CAMPAIGN
+CREATIVE" while simultaneously instructing "use the reference as the
+exact starting point for this edit — preserve its current rendering," a
+self-contradicting brief. The model predictably produced an attractive
+product photograph in a generic environment instead of a distinctive
+campaign creative, and the Quality Director scored it against the wrong
+(EDIT) profile.
+
+**The root confusion**: `mode`/`isEditTurn` describe provider MODALITY
+(is a reference image being sent to ground generation) — they say
+nothing about what the merchant wants done with the product's
+SURROUNDING SCENE. `services/creative-studio/creative-blueprint.ts`'s
+`ReferenceExecutionStrategy` is the fix — a canonical,
+provider-modality-independent classification, computed INTENT-FIRST by
+`classifyReferenceExecutionStrategy` (never from `mode`/`isEditTurn`):
+
+- **PRECISION_EDIT** — the merchant wants the existing composition
+  modified (a narrow edit/remove/relight/recolor intent —
+  `EDIT_BACKGROUND`/`CHANGE_LIGHTING`/`CHANGE_CAMERA`/`CHANGE_PROPS`/
+  `CHANGE_COLOR`/`REMOVE_ELEMENT`/`ADD_ELEMENT`/`UPSCALE`). Preserve
+  product AND scene except what's explicitly requested.
+- **PRODUCT_LOCKED_RECOMPOSITION** — the reference is PRODUCT TRUTH, not
+  the creative canvas (`CREATE_LIFESTYLE`/`CREATE_MARKETPLACE`/
+  `CHANGE_SCENE`/`ADD_MODEL`/`CHANGE_MODEL`, or a channel deliverable
+  that named an explicit scene). Product locked; source environment/
+  composition/framing/props/lighting are all replaceable — a
+  merchant-directed new scene ("put this watch on black marble") still
+  fits here, since the scene is whatever was asked for, never
+  autonomously reinvented.
+- **CAMPAIGN_CREATIVE** — the reference is PRODUCT TRUTH, not the
+  creative canvas, and the Creative Director has full authority over
+  environment/composition/framing/lighting/props/campaign design
+  (`CREATE_SOCIAL`/`CREATE_BANNER` with no explicit scene named).
+
+`VARIATION`/`MULTI_VARIATION`/`REGENERATE`/`CHANGE_COMPOSITION` are
+ambiguous "adapt/repeat the current result" intents with no creative
+direction of their own — they inherit the strategy of whatever produced
+the result they're adapting (`previousCampaignDNA.shouldCarryForward`):
+"make it vertical" on a social campaign stays `CAMPAIGN_CREATIVE`; the
+same request on an ordinary product photo stays `PRECISION_EDIT`. A hard
+precision-edit intent (e.g. "remove the small object on the left") is
+always `PRECISION_EDIT` regardless of campaign continuation — a targeted
+edit of a campaign result is still a targeted edit.
+
+**What derives from the strategy** (`buildCreativeBlueprint`, all fixed
+in the same pass — previously each independently, and inconsistently,
+branched on `input.isEditTurn`):
+
+- `productTruth.sourceScenePolicy` — `DISCARD_FOR_CAMPAIGN` /
+  `REPLACEABLE` / `PRESERVE_REQUESTED`, a direct 1:1 mapping from the
+  strategy, with zero remaining `isEditTurn` dependency.
+- `brief.executionMode` — `FORMAT_ADAPTATION` only for a genuine
+  adaptation of an EXISTING finished campaign asset
+  (`previousCampaignDNA.shouldCarryForward` AND `isEditTurn`); a
+  first-ever campaign request can never be mistaken for reformatting a
+  campaign that doesn't exist yet.
+- `qualityIntent.profile` — `CAMPAIGN_CREATIVE`/`PRODUCT_LOCKED_RECOMPOSITION`
+  → `CAMPAIGN` (ecommerce/model-interaction deliverables still take
+  priority), `PRECISION_EDIT` → `EDIT`. `services/generation/quality-director.ts`
+  itself is unchanged — `qualityProfileForPlan` already reads
+  `blueprint.qualityIntent.profile` directly; fixing the blueprint fixed
+  the profile selection with no quality-director code change.
+- `conversationIntent.acknowledgementFocus` — `CAMPAIGN_TRANSFORMATION`/
+  `EDIT_CONTINUITY`/`PRODUCT_FIDELITY`, matching the strategy directly.
+
+`services/creative-studio/creative-brief.ts`'s public
+`CreativeBrief.campaignSceneTransformation: boolean` (read by
+`plan-builder.ts`'s `synthesizeCreativePrompt` to select the
+"source-of-truth, scene-replaceable" vs. "exact starting point, preserve
+current rendering" reference-fidelity clause) is unchanged in shape —
+now purely derived (`referenceExecutionStrategy === "CAMPAIGN_CREATIVE"`)
+rather than computed by its own separate, `isEditTurn`-sensitive
+heuristic. `services/ai/heuristic-intent-parser.ts` gained one
+additional classification rule (`ad`/`advertisement`/`advertising`/
+`campaign`/`promo`/`promotional`/`launch` → `CREATE_SOCIAL`) — a generic
+advertising request with no more specific channel keyword previously
+fell through to the `CREATE_LIFESTYLE` default, losing its
+campaign-deliverable treatment entirely.
+
+**Backward compatibility**: `GenerationPlan.creativeIntent.creativeBrief.creativeBlueprint.referenceExecutionStrategy`
+(`services/generation/schema.ts`) is `.nullable().default(null)` — a plan
+persisted before this field existed parses safely as `null`, never
+corrupting a historical conversation.
+
+**Cost/latency**: no new planning call, no new generation call, no new
+Quality Director evaluation — `classifyReferenceExecutionStrategy` is a
+pure, synchronous, in-process function call inside the existing planning
+pass.
+
 ## Image-to-image flow (Part 5)
 
 `GenerateImageInput` (`services/ai/types.ts`) gained two small, additive

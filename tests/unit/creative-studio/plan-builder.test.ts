@@ -1074,3 +1074,299 @@ describe("PRODUCT FIDELITY quality-floor pass — category-aware model interacti
     );
   });
 });
+
+/**
+ * Reference execution strategy — separates a request to EDIT the current
+ * image from a request to build a new campaign AROUND the referenced
+ * product. See services/creative-studio/creative-blueprint.ts's
+ * `ReferenceExecutionStrategy`.
+ *
+ * Mandatory production-failure regression: a real production request
+ * (generationJobId `cmtefbxcf0003i204vv563m1q`) — a red baseball cap
+ * reference image + "create a social media creative for this product" —
+ * was misclassified as a precision edit purely because uploading a
+ * product reference made `isEditTurn` true. The provider brief ended up
+ * asking for a "SOCIAL CAMPAIGN CREATIVE" while simultaneously
+ * instructing "use the reference as the exact starting point for this
+ * edit — preserve its current rendering," producing an attractive
+ * product photograph in a generic environment instead of a distinctive
+ * campaign creative. `llmIntent` below stands in for the real,
+ * configured LLM-backed intent parser (never the heuristic fallback,
+ * which never supplies `creativeConcept`) so this test exercises the
+ * exact production shape.
+ */
+describe("Reference execution strategy", () => {
+  it("MANDATORY PRODUCTION-FAILURE REGRESSION: a reference image + 'create a social media creative for this product' resolves to CAMPAIGN_CREATIVE, never a precision edit", async () => {
+    const parsedIntent = await llmIntent({
+      intent: "CREATE_SOCIAL",
+      mode: "IMAGE_TO_IMAGE",
+      scene: null,
+      changeSummary: "Create a social media creative for this product.",
+      creativeConcept: "The cap's structured brim becomes an architectural sunshade over a sunlit rooftop scene, turning everyday headwear into a bold silhouette.",
+      campaignArtDirection: {
+        visualStory: "The cap's silhouette anchors a bold, sunlit rooftop world built around its own structure.",
+        heroTreatment: "Keep the cap unmistakable and sharply lit as the dominant shape in frame.",
+        canvasArchitecture: "Place the cap off-centre with generous negative space for a social crop.",
+        productEnvironmentRelationship: "The rooftop's geometry echoes the cap's own brim curve.",
+        materialLightingStrategy: "Use bright, directional light that reveals the cap's stitching and fabric texture.",
+      },
+    });
+    // Reuses this file's own `product()`/`intelligence()` fixtures — the
+    // exact category is incidental to this test.
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/red-baseball-cap.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative for this product",
+    });
+
+    // deliverable / provider modality
+    expect(plan.creativeIntent!.intent).toBe("CREATE_SOCIAL");
+    expect(plan.creativeIntent!.mode).toBe("IMAGE_TO_IMAGE");
+
+    const blueprint = plan.creativeIntent!.creativeBrief!.creativeBlueprint!;
+    // reference execution strategy
+    expect(blueprint.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+    expect(plan.creativeIntent!.creativeBrief!.campaignSceneTransformation).toBe(true);
+    // source scene: disposable/transformable, never "preserve"
+    expect(blueprint.productTruth.sourceScenePolicy).toBe("DISCARD_FOR_CAMPAIGN");
+    // Quality Director profile
+    expect(blueprint.qualityIntent.profile).toBe("CAMPAIGN");
+
+    const brief = plan.creativeDirection.prompt;
+    // strong product lock
+    expect(brief).toMatch(/immutable subject/i);
+    // explicit source-scene freedom
+    expect(brief).toMatch(/replace incidental source scenery with a new product-derived commercial world/i);
+    // campaign proposition
+    expect(brief).toContain("SELECTED CAMPAIGN PROPOSITION:");
+    expect(brief).toMatch(/architectural sunshade/i);
+    // visual mechanism / canvas hierarchy (art direction)
+    expect(brief).toContain("VISUAL STORY:");
+    expect(brief).toContain("CANVAS ARCHITECTURE:");
+
+    // Must NOT contain contradictory precision-edit semantics.
+    expect(brief).not.toMatch(/exact starting point for this edit/i);
+    expect(brief).not.toMatch(/preserve (everything about its )?current rendering/i);
+    expect(brief).not.toMatch(/preserve existing composition/i);
+  });
+
+  it("A. reference + 'remove the background' → PRECISION_EDIT", async () => {
+    const parsedIntent = await intent("Remove the background", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "remove the background",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("PRECISION_EDIT");
+  });
+
+  it("B. reference + 'change the background to blue' → PRECISION_EDIT", async () => {
+    const parsedIntent = await intent("Change the background to blue", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "change the background to blue",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("PRECISION_EDIT");
+  });
+
+  it("C. reference + 'put this product in a luxury hotel' → PRODUCT_LOCKED_RECOMPOSITION", async () => {
+    const parsedIntent = await intent("Put this product in a luxury hotel", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "put this product in a luxury hotel",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("PRODUCT_LOCKED_RECOMPOSITION");
+  });
+
+  it("D. reference + 'create an ad for this product' → CAMPAIGN_CREATIVE", async () => {
+    const parsedIntent = await intent("Create an ad for this product", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create an ad for this product",
+    });
+    expect(plan.creativeIntent!.intent).toBe("CREATE_SOCIAL");
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("E. reference + 'create a social media creative' → CAMPAIGN_CREATIVE", async () => {
+    const parsedIntent = await intent("Create a social media creative", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("F. reference + 'create a banner' → CAMPAIGN_CREATIVE", async () => {
+    const parsedIntent = await intent("Create a banner", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create a banner",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("G. campaign + 'make it vertical' → retains campaign semantics (does not downgrade to PRECISION_EDIT just because the generated image is now the reference)", async () => {
+    const campaignIntent = await llmIntent({ intent: "CREATE_SOCIAL", mode: "IMAGE_TO_IMAGE", scene: null });
+    const campaignPlan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent: campaignIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative",
+    });
+    expect(campaignPlan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+
+    const followUpIntent = await intent("Make it vertical", 1);
+    const followUpPlan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent: followUpIntent,
+      previousResultUrl: "https://signed.example.test/campaign-result.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "make it vertical",
+      previousCampaignDNA: campaignPlan.creativeIntent!.creativeBrief!.creativeBlueprint!.campaignDNA,
+    });
+    expect(followUpPlan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("H. campaign + 'remove the small object on the left' → PRECISION_EDIT of the current campaign result", async () => {
+    const campaignIntent = await llmIntent({ intent: "CREATE_SOCIAL", mode: "IMAGE_TO_IMAGE", scene: null });
+    const campaignPlan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent: campaignIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative",
+    });
+
+    const followUpIntent = await intent("Remove the small object on the left", 1);
+    const followUpPlan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent: followUpIntent,
+      previousResultUrl: "https://signed.example.test/campaign-result.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "remove the small object on the left",
+      previousCampaignDNA: campaignPlan.creativeIntent!.creativeBrief!.creativeBlueprint!.campaignDNA,
+    });
+    expect(followUpPlan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("PRECISION_EDIT");
+  });
+
+  it("I. CAMPAIGN_CREATIVE resolves to the CAMPAIGN Quality Director profile", async () => {
+    const parsedIntent = await intent("Create a social media creative", 0);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.qualityIntent.profile).toBe("CAMPAIGN");
+  });
+
+  it("J. PRECISION_EDIT resolves to the EDIT Quality Director profile", async () => {
+    const parsedIntent = await intent("Remove the background", 1);
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "remove the background",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.qualityIntent.profile).toBe("EDIT");
+  });
+
+  it("K. product lock remains present across all three reference execution strategies", async () => {
+    const scenarios: Array<{ message: string; candidateResultCount: number; previousResultUrl: string | null }> = [
+      { message: "Remove the background", candidateResultCount: 1, previousResultUrl: "https://signed.example.test/reference.png" },
+      { message: "Put this product in a luxury hotel", candidateResultCount: 0, previousResultUrl: null },
+      { message: "Create a social media creative", candidateResultCount: 0, previousResultUrl: null },
+    ];
+    for (const scenario of scenarios) {
+      const parsedIntent = await intent(scenario.message, scenario.candidateResultCount);
+      const plan = buildCreativeGenerationPlan({
+        product: product(),
+        intelligence: intelligence(),
+        sourceMediaIds: [],
+        parsedIntent,
+        previousResultUrl: scenario.previousResultUrl,
+        creativeSessionId: "session-1",
+        rawInstruction: scenario.message,
+      });
+      expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/immutable subject/i);
+      expect(plan.creativeIntent!.identityConstraints.instruction).toMatch(/preserved exactly as shown/i);
+    }
+  });
+
+  it("does not allow IMAGE_TO_IMAGE mode alone to force PRECISION_EDIT for a channel deliverable", async () => {
+    const parsedIntent = await llmIntent({ intent: "CREATE_BANNER", mode: "IMAGE_TO_IMAGE", scene: null });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: "https://signed.example.test/reference.png",
+      creativeSessionId: "session-1",
+      rawInstruction: "create a banner",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("CAMPAIGN_CREATIVE");
+  });
+
+  it("an explicit merchant-named scene downgrades a channel deliverable to PRODUCT_LOCKED_RECOMPOSITION rather than autonomous campaign invention", async () => {
+    const parsedIntent = await llmIntent({ intent: "CREATE_SOCIAL", mode: "TEXT_TO_IMAGE", scene: "the existing presentation box" });
+    const plan = buildCreativeGenerationPlan({
+      product: product(),
+      intelligence: intelligence(),
+      sourceMediaIds: [],
+      parsedIntent,
+      previousResultUrl: null,
+      creativeSessionId: "session-1",
+      rawInstruction: "create a social media creative using the existing presentation box",
+    });
+    expect(plan.creativeIntent!.creativeBrief!.creativeBlueprint!.referenceExecutionStrategy).toBe("PRODUCT_LOCKED_RECOMPOSITION");
+  });
+});
