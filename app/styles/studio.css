@@ -961,8 +961,8 @@
   .studio-hero { justify-content: center; padding: 34px 16px max(28px, env(safe-area-inset-bottom)); gap: 16px; }
   .studio-hero-heading { font-size: 31px; }
   .studio-hero-sub { max-width: 300px; font-size: 14px; }
-  .studio-example-row { width: 100%; justify-content: center; max-width: 340px; }
-  .studio-example-chip { font-size: 11.5px; }
+  .studio-example-row { width: 100%; max-width: 340px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .studio-example-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; text-align: left; }
   .studio-composer-wrap { width: 100%; }
   .studio-composer { border-radius: 16px; }
   .studio-chat { height: calc(100dvh - 58px); min-height: calc(100dvh - 58px); }
