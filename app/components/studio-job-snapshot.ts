@@ -9,9 +9,18 @@ export function mergeStudioJobSnapshots<T extends { id: string; results: unknown
   snapshotJobs: T[],
 ): T[] {
   const previousById = new Map(loaderJobs.map((job) => [job.id, job]));
-  return snapshotJobs.map((snapshot) => {
-    const previous = previousById.get(snapshot.id);
-    if (!previous || snapshot.results.length > 0) return snapshot;
+  const snapshotById = new Map(snapshotJobs.map((job) => [job.id, job]));
+  const merged = loaderJobs.map((previous) => {
+    const snapshot = snapshotById.get(previous.id);
+    if (!snapshot) return previous;
+    if (snapshot.results.length > 0) return snapshot;
     return { ...snapshot, results: previous.results };
   });
+  // A snapshot can begin after an action-created job but before its loader
+  // response arrives. Preserve that new snapshot job too, in its status
+  // response order, rather than making a newer turn disappear.
+  for (const snapshot of snapshotJobs) {
+    if (!previousById.has(snapshot.id)) merged.push(snapshot);
+  }
+  return merged;
 }

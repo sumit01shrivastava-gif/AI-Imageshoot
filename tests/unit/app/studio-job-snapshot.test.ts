@@ -29,7 +29,18 @@ describe("Studio active-job snapshots", () => {
         { id: "older", status: "SUCCEEDED", results: [] },
       ],
     );
-    expect(merged[0]?.results).toEqual([{ id: "new-result" }]);
-    expect(merged[1]?.results).toEqual([{ id: "old-result" }]);
+    expect(merged.find((job) => job.id === "active")?.results).toEqual([{ id: "new-result" }]);
+    expect(merged.find((job) => job.id === "older")?.results).toEqual([{ id: "old-result" }]);
+  });
+
+  it("does not let an older polling response hide a newly loader-observed active job", () => {
+    const merged = mergeStudioJobSnapshots(
+      [
+        { id: "new", status: "QUEUED", results: [] },
+        { id: "older", status: "SUCCEEDED", results: [{ id: "old-result" }] },
+      ],
+      [{ id: "older", status: "SUCCEEDED", results: [] }],
+    );
+    expect(merged.map((job) => job.id)).toEqual(["new", "older"]);
   });
 });
