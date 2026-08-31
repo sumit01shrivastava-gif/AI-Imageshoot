@@ -10,13 +10,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { randomUUID } from "node:crypto";
-import { useFetcher, useLoaderData, useRevalidator, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator, type ActionFunctionArgs, type HeadersFunction, type LoaderFunctionArgs, type ShouldRevalidateFunction } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
 import { TenantMismatchError } from "../../lib/auth";
 import { withResultsSanitizedForClient } from "../../lib/storage";
 import { logger } from "../../lib/logging/logger.server";
 import {
   getCreativeSessionDetail,
+  getCreativeSessionGenerationStatus,
+  type CreativeSessionDetail,
   canRecordCreativeStudioTelemetry,
   sendCreativeMessage,
   selectCreativeResult,
@@ -36,6 +38,7 @@ import { StudioGenerationLoading } from "../components/studio-generation-loading
 import { StudioResultImage } from "../components/studio-result-image";
 import { isStudioLatencyEvent, type StudioLatencyEvent } from "../components/studio-ttfvi";
 import { isPendingStudioTurnReconciled, releaseOptimisticAttachments, type PendingStudioTurn } from "../components/studio-optimistic-turn";
+import { mergeStudioJobSnapshots } from "../components/studio-job-snapshot";
 import { generationProgressStage, hasActiveGeneration, isGenerationActiveStage, isResultRenderable, type GenerationProgressStage } from "../../services/generation/progress";
 
 const NOT_FOUND_RESPONSE = () => new Response("Conversation not found", { status: 404 });
@@ -66,6 +69,32 @@ function renderMessageContent(content: string) {
   return content.split(/\n/).map((line, index) => <span key={`${index}-${line}`}>{line || "\u00a0"}<br /></span>);
 }
 
+/** The dynamic conversation status is deliberately serialised once for both
+ * the full loader and the lightweight active-generation poll. */
+function serializeStudioJobs(jobs: CreativeSessionDetail["jobs"]) {
+  return jobs.map((job) => {
+    const sanitized = withResultsSanitizedForClient(job);
+    return {
+      id: sanitized.id,
+      type: sanitized.type,
+      status: sanitized.status,
+      errorMessage: sanitized.errorMessage,
+      retryCount: sanitized.retryCount,
+      providerName: sanitized.providerName,
+      startedAt: sanitized.startedAt,
+      completedAt: sanitized.completedAt,
+      durationMs: sanitized.durationMs,
+      batchId: sanitized.batchId,
+      creativeSessionId: sanitized.creativeSessionId,
+      createdAt: sanitized.createdAt,
+      updatedAt: sanitized.updatedAt,
+      results: sanitized.results,
+      progressStage: generationProgressStage(sanitized.status, sanitized.results.length),
+      product: sanitized.product,
+    };
+  });
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const loaderStartedAt = Date.now();
   const { context } = await requireWorkspaceContext(request);
@@ -89,38 +118,46 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Generation plans contain internal Creative Director/provider
     // prompts and must never be serialized into the browser loader data.
     // The Studio needs only lifecycle metadata and sanitized results.
-    jobs: detail.jobs.map((job) => {
-      const sanitized = withResultsSanitizedForClient(job);
-      return {
-        id: sanitized.id,
-        type: sanitized.type,
-        status: sanitized.status,
-        errorMessage: sanitized.errorMessage,
-        retryCount: sanitized.retryCount,
-        providerName: sanitized.providerName,
-        startedAt: sanitized.startedAt,
-        completedAt: sanitized.completedAt,
-        durationMs: sanitized.durationMs,
-        batchId: sanitized.batchId,
-        creativeSessionId: sanitized.creativeSessionId,
-        createdAt: sanitized.createdAt,
-        updatedAt: sanitized.updatedAt,
-        results: sanitized.results,
-        progressStage: generationProgressStage(sanitized.status, sanitized.results.length),
-        product: sanitized.product,
-      };
-    }),
+    jobs: serializeStudioJobs(detail.jobs),
     entitlement: detail.entitlement,
     planName: plan.name,
     telemetry: { ...detail.telemetry, loaderDurationMs: Date.now() - loaderStartedAt },
   };
 };
 
+// Conversation state is account-specific and changes while a worker runs.
+// Explicitly prevent browser/CDN reuse of an old loader payload.
+export const headers: HeadersFunction = () => ({ "Cache-Control": "private, no-store" });
+
+/** Status snapshots return directly to their fetcher; do not turn each
+ * one-second poll into a full transcript/shell reload. */
+export const shouldRevalidate: ShouldRevalidateFunction = ({ formData, defaultShouldRevalidate }) =>
+  formData?.get("intent") === "poll-generation-status" ? false : defaultShouldRevalidate;
+
 export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { context, userId, workspaceId } = await requireWorkspaceContext(request);
   const sessionId = params.sessionId!;
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "poll-generation-status") {
+    try {
+      const detail = await getCreativeSessionGenerationStatus(context, sessionId);
+      return {
+        ok: true as const,
+        kind: "generation-status" as const,
+        jobs: serializeStudioJobs(detail.jobs),
+        telemetry: detail.telemetry,
+      };
+    } catch (error) {
+      if (error instanceof CreativeSessionNotFoundError || error instanceof TenantMismatchError) throw NOT_FOUND_RESPONSE();
+      logger.warn("studio.poll_generation_status_failed", {
+        workspaceId, userId, sessionId,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      return { ok: false as const, error: GENERIC_ERROR };
+    }
+  }
 
   if (intent === "send-message") {
     const requestId = randomUUID();
@@ -262,6 +299,7 @@ export default function StudioConversation() {
   const { session, messages, jobs, entitlement, planName, telemetry } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const messageFetcher = useFetcher<typeof action>();
+  const statusFetcher = useFetcher<typeof action>();
   const selectFetcher = useFetcher<typeof action>();
   const reviewFetcher = useFetcher<typeof action>();
   const feedbackFetcher = useFetcher<typeof action>();
@@ -274,8 +312,12 @@ export default function StudioConversation() {
   const [pendingTurn, setPendingTurn] = useState<PendingStudioTurn | null>(null);
   const latencyEmittedRef = useRef(new Set<string>());
 
-  const latestJob = jobs[0] ?? null;
-  const isInFlight = hasActiveGeneration(jobs);
+  const polledJobs = statusFetcher.data && statusFetcher.data.ok && "kind" in statusFetcher.data && statusFetcher.data.kind === "generation-status"
+    ? statusFetcher.data.jobs
+    : null;
+  const observedJobs = polledJobs ? mergeStudioJobSnapshots(jobs, polledJobs) : jobs;
+  const latestJob = observedJobs[0] ?? null;
+  const isInFlight = hasActiveGeneration(observedJobs);
   const optimisticTurnReconciled = isPendingStudioTurnReconciled(pendingTurn, messages);
 
   const emitLatency = useCallback((
@@ -322,9 +364,20 @@ export default function StudioConversation() {
 
   useEffect(() => {
     if (!isInFlight) return;
-    const id = setInterval(() => revalidator.revalidate(), 1000);
-    return () => clearInterval(id);
-  }, [isInFlight, revalidator]);
+    const poll = () => {
+      if (statusFetcher.state === "idle") statusFetcher.submit({ intent: "poll-generation-status" }, { method: "POST" });
+    };
+    poll();
+    const id = window.setInterval(poll, 1000);
+    return () => window.clearInterval(id);
+  }, [isInFlight, statusFetcher]);
+
+  // A status snapshot gives the active image priority immediately. Once all
+  // work is terminal, refresh the canonical conversation history once.
+  useEffect(() => {
+    if (!polledJobs || hasActiveGeneration(polledJobs)) return;
+    revalidator.revalidate();
+  }, [polledJobs, revalidator]);
 
   // Derived directly from each fetcher's own last response — no local
   // state/effect needed (and no risk of the cascading-render pattern
@@ -382,12 +435,12 @@ export default function StudioConversation() {
   }, [emitLatency, telemetry.historicalResultCount, telemetry.loaderDurationMs, telemetry.resultSigningCount, telemetry.resultSigningMs]);
 
   useEffect(() => {
-    for (const job of jobs) {
+    for (const job of observedJobs) {
       if (job.progressStage === "COMPLETED" && job.results.length > 0) {
         emitLatency("QUALITY_TERMINAL_OBSERVED", job.id, job.results[0]?.id, { resultCount: job.results.length });
       }
     }
-  }, [emitLatency, jobs]);
+  }, [emitLatency, observedJobs]);
 
   useEffect(() => () => {
     if (pendingTurnRef.current) releaseOptimisticAttachments(pendingTurnRef.current.attachments);
@@ -471,12 +524,12 @@ export default function StudioConversation() {
               <div className="studio-message-content">{renderMessageContent(message.content)}</div>
             </div>
             {message.role === "ASSISTANT" && message.generationJobId && (() => {
-              const turnJob = jobs.find((job) => job.id === message.generationJobId);
+              const turnJob = observedJobs.find((job) => job.id === message.generationJobId);
               const turnResult = turnJob?.results.find((result) => result.id === session.currentResultId) ?? turnJob?.results[turnJob.results.length - 1];
               const active = turnJob && isGenerationActiveStage(turnJob.progressStage);
               if (!turnJob) return null;
               return <>
-                <div className="studio-turn-generation">
+                <div className="studio-turn-generation" data-loading={active && !isResultRenderable(turnJob.results.length) || undefined}>
                   {active && !isResultRenderable(turnJob.results.length) && <StudioGenerationLoading title={jobStatusPhrase(turnJob.progressStage, turnJob.results.length || 1)} stage={turnJob.progressStage as Exclude<GenerationProgressStage, "COMPLETED" | "FAILED">} />}
                   {turnJob.status === "FAILED" && <div className="studio-turn-error" role="status">{turnJob.errorMessage ?? "That request could not be completed. Your prompt and references are still here."}</div>}
                   {turnResult?.url && (
@@ -558,7 +611,7 @@ export default function StudioConversation() {
                 <div className="studio-message-content">{renderMessageContent(optimisticTurn.content)}</div>
               </div>
               <div className="studio-msg studio-msg-pending" data-role="ASSISTANT">I&rsquo;ve got it — I&rsquo;m shaping this into your next creative direction.</div>
-              <div className="studio-turn-generation"><StudioGenerationLoading title="Starting your creative request…" stage="PREPARING" /></div>
+              <div className="studio-turn-generation" data-loading="true"><StudioGenerationLoading title="Starting your creative request…" stage="PREPARING" /></div>
             </div>
           )}
           <div ref={transcriptEndRef} />

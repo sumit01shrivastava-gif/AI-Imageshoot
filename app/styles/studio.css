@@ -1302,7 +1302,7 @@
 @keyframes studio-loader-pulse { 0%,100% { opacity:.22; transform:translateY(0); } 50% { opacity:.9; transform:translateY(-3px); } }
 /* Active work is an inline conversation state, not a promise of a missing
    full-size image. The finished image still claims the full result area. */
-.studio-turn-generation:not(:has(.studio-turn-result)) { min-height: 104px; background: transparent; border: 0; justify-items: start; }
+.studio-turn-generation[data-loading="true"] { min-height: 104px; background: transparent; border: 0; justify-items: start; }
 .studio-generating { align-items: flex-start; text-align: left; padding: 14px 4px; gap: 5px; }
 .studio-generating-mark { transform: scale(.82); transform-origin: left center; margin-bottom: -2px; }
 .studio-generating-title { font-size: 13px; }
@@ -1319,7 +1319,7 @@
   .studio-chat-header { min-height:42px; padding:8px 16px 2px; }
   .studio-transcript { padding:18px 16px 22px; gap:22px; }
   .studio-msg[data-role="USER"], .studio-msg[data-role="ASSISTANT"] { max-width:100%; }
-  .studio-turn-generation { min-height:96px; border-radius:13px; }
+  .studio-turn-generation[data-loading="true"] { min-height:96px; border-radius:13px; }
   .studio-turn-result { max-height:none; }
   .studio-message-attachment { width:64px; height:64px; }
   .studio-chat-composer { padding:8px 12px max(10px,env(safe-area-inset-bottom)); }

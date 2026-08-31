@@ -34,7 +34,7 @@ export default function StudioFixture() {
               </div>
               <div className="studio-turn" data-role="ASSISTANT">
                 <div className="studio-msg" data-role="ASSISTANT">I’ll preserve the product and build the campaign around its character.</div>
-                <div className="studio-turn-generation"><StudioGenerationLoading stage="GENERATING" /></div>
+                <div className="studio-turn-generation" data-loading="true"><StudioGenerationLoading stage="GENERATING" /></div>
               </div>
               <div className="studio-turn" data-role="ASSISTANT">
                 <div className="studio-turn-generation"><img className="studio-turn-result" src={fixtureImage} alt="Fixture generated campaign" /></div>

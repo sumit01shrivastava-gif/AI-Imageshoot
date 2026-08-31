@@ -157,6 +157,11 @@ export interface CreativeSessionDetail {
   };
 }
 
+export interface CreativeSessionGenerationStatus {
+  jobs: GenerationJobRow[];
+  telemetry: CreativeSessionDetail["telemetry"];
+}
+
 /** Everything the Creative Studio route's loader needs in one call —
  * session, full message history, every generation job this session has
  * produced (most-recent-first — the "grid of generated variations" the
@@ -190,6 +195,41 @@ export async function getCreativeSessionDetail(context: AuthContext, sessionId: 
       resultSigningMs,
       resultSigningCount: historicalResultCount,
       historicalResultCount,
+    },
+  };
+}
+
+/**
+ * A narrow, authoritative status read for an active Studio conversation.
+ * It deliberately avoids re-signing every historical image on every poll:
+ * the browser already owns those links from the full transcript loader.
+ * Only non-terminal jobs can acquire a new durable result, so only those
+ * results need fresh signed URLs here. Terminal metadata still returns so
+ * the browser can stop polling without waiting for a broad loader refresh.
+ */
+export async function getCreativeSessionGenerationStatus(
+  context: AuthContext,
+  sessionId: string,
+): Promise<CreativeSessionGenerationStatus> {
+  const session = await getCreativeSession(context, sessionId);
+  if (!session) throw new CreativeSessionNotFoundError();
+
+  const jobsRaw = await listGenerationJobsForCreativeSession(context.shop, session.id);
+  const resultSigningStartedAt = Date.now();
+  let resultSigningCount = 0;
+  const jobs = await Promise.all(jobsRaw.map(async (job) => {
+    if (job.status === "SUCCEEDED" || job.status === "FAILED") return { ...job, results: [] };
+    resultSigningCount += job.results.length;
+    return { ...job, results: await resignResultUrls(job.results) };
+  }));
+  const resultSigningMs = Date.now() - resultSigningStartedAt;
+
+  return {
+    jobs,
+    telemetry: {
+      resultSigningMs,
+      resultSigningCount,
+      historicalResultCount: jobsRaw.reduce((count, job) => count + job.results.length, 0),
     },
   };
 }

@@ -12,7 +12,7 @@
  * loader always has been.
  */
 import { useEffect, useState } from "react";
-import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
+import type { HeadersFunction, LinksFunction, LoaderFunctionArgs, ShouldRevalidateFunction } from "react-router";
 import { Form, Link, Outlet, useLoaderData, useLocation, useParams } from "react-router";
 import { requireWorkspaceContext } from "../../lib/auth/standalone-session.server";
 import { listWorkspaceConversations } from "../../services/creative-studio/workspace-library.server";
@@ -166,3 +166,8 @@ export default function StudioShell() {
 }
 
 export const headers: HeadersFunction = () => ({});
+
+/** A child conversation's status poll has its own authenticated action
+ * response; reloading the workspace history every second would delay it. */
+export const shouldRevalidate: ShouldRevalidateFunction = ({ formData, defaultShouldRevalidate }) =>
+  formData?.get("intent") === "poll-generation-status" ? false : defaultShouldRevalidate;
