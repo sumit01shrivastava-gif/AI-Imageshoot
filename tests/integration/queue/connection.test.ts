@@ -103,9 +103,9 @@ describe("producer/worker Redis connection split", () => {
       expect(client.options.maxRetriesPerRequest).not.toBe(
         getProducerRedisConnection().options.maxRetriesPerRequest,
       );
-      // An empty worker uses BullMQ's maximum supported blocking interval.
-      // New jobs still wake BZPOPMIN immediately; this only halves idle
-      // fetch cycles compared with BullMQ's five-second default.
+      // An empty worker uses a longer BZPOPMIN interval. New jobs still wake
+      // it immediately; this avoids repeated idle fetch cycles without
+      // weakening stalled-job recovery.
       expect(worker.opts.drainDelay).toBe(IDLE_WORKER_DRAIN_DELAY_SECONDS);
     } finally {
       await worker.close();
