@@ -105,6 +105,19 @@ const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
   removeOnFail: true,
 };
 
+/**
+ * BullMQ 6.1.2 long-polls an empty queue through `BZPOPMIN`. Its own
+ * implementation caps that blocking call at ten seconds so it can recover a
+ * broken blocking connection. Use that maximum rather than BullMQ's five
+ * second default: adding a job still wakes the blocking call immediately, but
+ * an idle worker performs half as many empty-queue fetch cycles.
+ *
+ * Keep stalled-job checks at BullMQ's default interval. They are the recovery
+ * mechanism for a worker that dies while holding a job lock and must not be
+ * traded away merely to reduce idle Redis traffic.
+ */
+export const IDLE_WORKER_DRAIN_DELAY_SECONDS = 10;
+
 /** A queue is always a PRODUCER (`.add()`, called from an ordinary
  * request handler — Vercel serverless in this app, both the
  * Shopify-embedded routes and the standalone studio routes) — see
@@ -128,6 +141,7 @@ export function createWorker<PayloadType = unknown>(
   options?: Omit<WorkerOptions, "connection">,
 ): Worker<PayloadType> {
   const worker = new Worker<PayloadType>(name, processor, {
+    drainDelay: IDLE_WORKER_DRAIN_DELAY_SECONDS,
     ...options,
     connection: getWorkerRedisConnection(),
   });
